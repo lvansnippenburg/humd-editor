@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>md-editor</title>
+  </head>
+
+  <body>
+    <div id="app">
+      <!-- Sidebar Toggle (always visible) -->
+      <button id="sidebar-toggle" aria-label="Toggle sidebar">☰</button>
+
+      <!-- Sidebar / File Browser -->
+      <aside id="sidebar">
+        <header id="sidebar-header">
+          <h1>Files</h1>
+          <button id="new-file-btn" aria-label="Create new file">+</button>
+        </header>
+        <nav id="file-tree-container">
+          <ul id="file-tree"></ul>
+        </nav>
+      </aside>
+
+      <!-- Editor Pane -->
+      <section id="editor-pane">
+        <div id="note-tags"></div>
+        <textarea
+          id="editor"
+          placeholder="No file open. Select a markdown file from the sidebar."
+        ></textarea>
+      </section>
+
+      <!-- Preview Pane -->
+      <section id="preview-pane">
+        <iframe
+          id="preview"
+          title="Markdown preview"
+          sandbox="allow-scripts allow-same-origin"
+        ></iframe>
+        <aside id="backlinks-panel">
+          <details>
+            <summary id="backlinks-summary">Backlinks</summary>
+            <ul id="backlinks-list"></ul>
+          </details>
+        </aside>
+      </section>
+    </div>
+
+    <!-- Vault Picker Dialog -->
+    <dialog id="vault-picker-dialog">
+      <header>
+        <h2>Select Markdown Vault Folder</h2>
+      </header>
+      <div class="dialog-body">
+        <p>Enter the full path to your Markdown vault folder:</p>
+        <p style="font-size: 12px; color: #666; margin: 10px 0;">
+          Example: <code>/Users/yourname/Documents/my-vault</code>
+        </p>
+        <input
+          type="text"
+          id="vault-path-input"
+          placeholder="/Users/yourname/Documents/my-vault"
+          style="width: 100%; padding: 8px; margin: 10px 0; border: 1px solid var(--color-border); border-radius: 4px; font-family: var(--font-mono); font-size: 12px;"
+        />
+      </div>
+      <footer>
+        <button id="vault-picker-submit" class="primary">Select Folder</button>
+      </footer>
+    </dialog>
+
+    <!-- Settings Dialog -->
+    <dialog id="settings-dialog">
+      <header>
+        <h2>Settings</h2>
+        <button
+          id="close-settings"
+          aria-label="Close settings"
+          title="Close without saving"
+        >
+          ✕
+        </button>
+      </header>
+
+      <div class="settings-section macos-only">
+        <h3>Vault Location</h3>
+        <div class="vault-path-container">
+          <code id="vault-path-display">None selected</code>
+          <button id="pick-vault-btn" title="Choose a different folder">
+            Choose Folder...
+          </button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>Preview Styling</h3>
+        <p class="settings-hint">
+          Custom CSS applied to the markdown preview. Use standard CSS syntax.
+        </p>
+        <textarea
+          id="css-editor"
+          placeholder="/* Example: */
+body { font-size: 16px; }
+h1 { color: #2c3e50; margin-top: 2em; }
+code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }
+a { color: #3498db; text-decoration: none; }
+a:hover { text-decoration: underline; }"
+        ></textarea>
+      </div>
+
+      <footer>
+        <button id="save-settings-btn" class="primary" title="Save and apply changes">
+          Save Settings
+        </button>
+        <button id="cancel-settings-btn" title="Discard changes">
+          Cancel
+        </button>
+      </footer>
+    </dialog>
+
+    <!-- Status Bar -->
+    <div id="status-bar">
+      <span id="status-message"></span>
+    </div>
+
+    <!-- Tab Bar (iOS only) -->
+    <nav id="tab-bar">
+      <button class="tab-btn" data-tab="files">📁 Files</button>
+      <button class="tab-btn" data-tab="editor">✏️ Edit</button>
+      <button class="tab-btn" data-tab="preview">👁️ Preview</button>
+    </nav>
+
+    <!-- Settings Button (in tab bar on iOS) -->
+    <button id="settings-btn" class="settings-icon">⚙️</button>
+
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>
