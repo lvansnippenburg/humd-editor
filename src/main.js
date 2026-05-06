@@ -452,8 +452,8 @@ function closeFile() {
   if (filenameEl) filenameEl.textContent = "No file open";
   document.getElementById("note-tags").innerHTML = "";
   document.getElementById("preview").srcdoc = "<p>No file open</p>";
-  document.getElementById("backlinks-panel").style.display = "none";
   buildOutline();
+  buildLinksPanel();
   saveUiState();
 }
 
@@ -478,11 +478,11 @@ async function loadFile(path) {
     // Update preview
     await updatePreview();
 
-    // Update backlinks panel
-    await updateBacklinksPanel(path);
-
     // Update tags bar
     await updateTagsBar(path);
+
+    // Update links panel
+    buildLinksPanel();
 
     // Collapse sidebar on mobile after selection
     if (currentPlatform === "ios") {
@@ -578,6 +578,7 @@ function onEditorInput(e) {
   previewDebounceTimer = setTimeout(() => {
     updatePreview();
     if (activeSidebarTab === "outline") buildOutline();
+    if (activeSidebarTab === "links") buildLinksPanel();
   }, 300);
 
   // Auto-save debounce (800ms)
@@ -674,8 +675,6 @@ async function saveCurrentFile() {
     // Rebuild link index after save
     await buildLinkIndex();
 
-    // Refresh backlinks and tags
-    await updateBacklinksPanel(currentFilePath);
     await updateTagsBar(currentFilePath);
 
     showStatus("Saved");
@@ -754,50 +753,6 @@ function findNoteByName(name) {
   return walk(fileTreeCache);
 }
 
-async function updateBacklinksPanel(filePath) {
-  try {
-    const stem = filePath
-      .split("/")
-      .pop()
-      .replace(/\.md$/, "");
-    const backlinks = await invoke("get_backlinks", {
-      vaultPath: currentVaultPath,
-      noteStem: stem
-    });
-
-    const backlinksPanel = document.getElementById("backlinks-panel");
-    const backlinksList = document.getElementById("backlinks-list");
-    const backlinksSummary = document.getElementById("backlinks-summary");
-
-    backlinksPanel.style.display = "block";
-    backlinksList.innerHTML = "";
-
-    if (!backlinks || backlinks.length === 0) {
-      backlinksSummary.textContent = "Backlinks";
-      const li = document.createElement("li");
-      li.className = "backlinks-empty";
-      li.textContent = "No backlinks";
-      backlinksList.appendChild(li);
-      return;
-    }
-
-    backlinksSummary.textContent = `Backlinks (${backlinks.length})`;
-
-    backlinks.forEach((noteStem) => {
-      const li = document.createElement("li");
-      const a = document.createElement("a");
-      a.textContent = noteStem;
-      a.addEventListener("click", async () => {
-        const path = findNoteByName(noteStem);
-        if (path) await loadFile(path);
-      });
-      li.appendChild(a);
-      backlinksList.appendChild(li);
-    });
-  } catch (error) {
-    console.warn("Failed to update backlinks:", error);
-  }
-}
 
 async function updateTagsBar(filePath) {
   try {
@@ -878,8 +833,10 @@ function switchSidebarTab(tab) {
   });
   document.getElementById("file-tree-container").style.display = tab === "files" ? "" : "none";
   document.getElementById("outline-container").style.display = tab === "outline" ? "block" : "none";
+  document.getElementById("links-container").style.display = tab === "links" ? "block" : "none";
   document.getElementById("new-file-btn").style.display = tab === "files" ? "" : "none";
   if (tab === "outline") buildOutline();
+  if (tab === "links") buildLinksPanel();
 }
 
 function stripMarkdown(text) {
@@ -943,6 +900,53 @@ function buildOutline() {
       scrollEditorToLine(lineIndex);
       scrollPreviewToHeader(display);
     });
+    list.appendChild(li);
+  });
+}
+
+function buildLinksPanel() {
+  const list = document.getElementById("links-list");
+  list.innerHTML = "";
+
+  const content = document.getElementById("editor").value;
+  if (!content || !currentFilePath) {
+    const li = document.createElement("li");
+    li.className = "links-empty";
+    li.textContent = currentFilePath ? "No links found" : "No file open";
+    list.appendChild(li);
+    return;
+  }
+
+  const wikilinkRe = /\[\[([^\]|]+)(?:\|[^\]]*)?\]\]/g;
+  const seen = new Set();
+  const links = [];
+  let match;
+  while ((match = wikilinkRe.exec(content)) !== null) {
+    const stem = match[1].trim();
+    if (stem && !seen.has(stem.toLowerCase())) {
+      seen.add(stem.toLowerCase());
+      links.push(stem);
+    }
+  }
+
+  if (links.length === 0) {
+    const li = document.createElement("li");
+    li.className = "links-empty";
+    li.textContent = "No links found";
+    list.appendChild(li);
+    return;
+  }
+
+  links.forEach((stem) => {
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.textContent = stem;
+    a.addEventListener("click", async () => {
+      const path = findNoteByName(stem);
+      if (path) await loadFile(path);
+      else showStatus(`Note not found: ${stem}`);
+    });
+    li.appendChild(a);
     list.appendChild(li);
   });
 }
