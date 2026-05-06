@@ -17,6 +17,10 @@ let currentPlatform = "macos";
 let currentVaultPath = null;
 let currentFilePath = null;
 let currentUserCss = "";
+let currentSpellCheck = true;
+let previewVisible = true;
+let savedEditorFlexBasis = null;
+let activeSidebarTab = "files";
 let isDirty = false;
 let isInitialized = false;
 
@@ -49,6 +53,8 @@ async function initialize() {
     const settings = await invoke("get_settings");
     console.log("Settings retrieved:", settings);
     currentUserCss = settings.userCss || settings.user_css || "";
+    currentSpellCheck = settings.spellCheck ?? settings.spell_check ?? true;
+    document.getElementById("editor").spellcheck = currentSpellCheck;
 
     // 3. Setup vault path
     let vaultPath = settings.vaultPath || settings.vault_path;
@@ -88,6 +94,7 @@ async function initialize() {
     // 4. Initialize UI
     console.log("Setting up event listeners...");
     setupEventListeners();
+    restoreUiState(settings);
 
     console.log("Refreshing file tree...");
     await refreshFileTree();
@@ -100,12 +107,17 @@ async function initialize() {
     initializeFileWatcher();
 
     isInitialized = true;
-    console.log("Initialization complete!");
-    // Auto-expand sidebar on first launch (macOS)
-    if (currentPlatform === "macos") {
-      document.getElementById("sidebar").classList.add("expanded");
+
+    // Restore last open file
+    const lastOpenFile = settings.lastOpenFile || settings.last_open_file;
+    if (lastOpenFile) {
+      await loadFile(lastOpenFile).catch(() => {});
     }
-    showStatus("Ready");
+
+    if (!currentFilePath) {
+      showStatus("Ready");
+    }
+    console.log("Initialization complete!");
   } catch (error) {
     console.error("Initialization failed:", error);
     console.error("Stack:", error.stack);
@@ -125,64 +137,159 @@ async function initialize() {
 
 // ===== VAULT PICKER DIALOG =====
 
-function showVaultPicker() {
-  return new Promise((resolve) => {
-    const dialog = document.getElementById("vault-picker-dialog");
-    const input = document.getElementById("vault-path-input");
-    const submitBtn = document.getElementById("vault-picker-submit");
-
-    input.value = "";
-    input.focus();
-
-    const handleSubmit = () => {
-      const path = input.value.trim();
-      dialog.close();
-      cleanupHandlers();
-      resolve(path);
-    };
-
-    const handleKeyPress = (e) => {
-      if (e.key === "Enter") {
-        handleSubmit();
-      }
-    };
-
-    const cleanupHandlers = () => {
-      submitBtn.removeEventListener("click", handleSubmit);
-      input.removeEventListener("keypress", handleKeyPress);
-      dialog.removeEventListener("cancel", handleCancel);
-    };
-
-    const handleCancel = () => {
-      cleanupHandlers();
-      resolve("");
-    };
-
-    submitBtn.addEventListener("click", handleSubmit);
-    input.addEventListener("keypress", handleKeyPress);
-    dialog.addEventListener("cancel", handleCancel);
-
-    dialog.showModal();
+async function showVaultPicker() {
+  // Use Tauri native dialog instead of custom HTML dialog
+  const selected = await window.__TAURI__.dialog.open({
+    directory: true,
+    multiple: false,
+    title: "Select your Markdown vault folder",
   });
+  return selected || "";
+}
+
+async function changeVaultFolder() {
+  const selected = await window.__TAURI__.dialog.open({
+    directory: true,
+    multiple: false,
+    title: "Select your Markdown vault folder",
+  });
+  if (!selected) return;
+
+  currentVaultPath = selected;
+  document.getElementById("vault-path-display").textContent = selected;
+
+  // Save the new vault path
+  await invoke("save_settings", {
+    vaultPath: selected,
+    userCss: currentUserCss,
+  });
+
+  // Refresh everything
+  await refreshFileTree();
+  await buildLinkIndex();
+  closeFile();
 }
 
 // ===== EVENT LISTENERS =====
 
-function setupEventListeners() {
-  // Sidebar toggle (desktop)
-  document
-    .getElementById("sidebar-toggle")
-    .addEventListener("click", toggleSidebar);
+function togglePreview() {
+  const editorPane = document.getElementById("editor-pane");
 
+  if (previewVisible) {
+    // Hiding: save the current editor width so it restores when shown again
+    const w = editorPane.getBoundingClientRect().width;
+    if (w > 0) savedEditorFlexBasis = w;
+    editorPane.style.flex = "";
+  } else {
+    // Showing: restore saved editor width
+    if (savedEditorFlexBasis) {
+      editorPane.style.flex = `0 0 ${savedEditorFlexBasis}px`;
+    }
+  }
+
+  previewVisible = !previewVisible;
+  const pane = document.getElementById("preview-pane");
+  const btn = document.getElementById("preview-toggle-btn");
+  const editorHandle = document.getElementById("editor-resize");
+  pane.style.display = previewVisible ? "" : "none";
+  editorHandle.style.display = previewVisible ? "" : "none";
+  btn.classList.toggle("active", previewVisible);
+  btn.title = previewVisible ? "Hide preview (⌘E)" : "Show preview (⌘E)";
+  btn.setAttribute("aria-label", previewVisible ? "Hide preview" : "Show preview");
+
+  saveUiState();
+}
+
+function startDrag(handle, startX, onDrag, onEnd) {
+  const iframe = document.getElementById("preview");
+  handle.classList.add("dragging");
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+  if (iframe) iframe.style.pointerEvents = "none";
+
+  function onMouseMove(e) {
+    onDrag(e.clientX - startX);
+  }
+
+  function onMouseUp() {
+    handle.classList.remove("dragging");
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    if (iframe) iframe.style.pointerEvents = "";
+    document.removeEventListener("mousemove", onMouseMove);
+    document.removeEventListener("mouseup", onMouseUp);
+    if (onEnd) onEnd();
+  }
+
+  document.addEventListener("mousemove", onMouseMove);
+  document.addEventListener("mouseup", onMouseUp);
+}
+
+function initResizableHandles() {
+  if (currentPlatform === "ios") return;
+
+  const sidebar = document.getElementById("sidebar");
+  const sidebarHandle = document.getElementById("sidebar-resize");
+  const editorPane = document.getElementById("editor-pane");
+  const editorHandle = document.getElementById("editor-resize");
+  const app = document.getElementById("app");
+
+  sidebarHandle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    const startWidth = sidebar.getBoundingClientRect().width;
+    startDrag(sidebarHandle, e.clientX, (dx) => {
+      const newWidth = Math.max(160, Math.min(480, startWidth + dx));
+      sidebar.style.flex = `0 0 ${newWidth}px`;
+    }, saveUiState);
+  });
+
+  editorHandle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    const startWidth = editorPane.getBoundingClientRect().width;
+    startDrag(editorHandle, e.clientX, (dx) => {
+      const appWidth = app.getBoundingClientRect().width;
+      const sidebarWidth = sidebar.getBoundingClientRect().width;
+      const maxWidth = appWidth - sidebarWidth - 200 - 10;
+      const newWidth = Math.max(200, Math.min(maxWidth, startWidth + dx));
+      editorPane.style.flex = `0 0 ${newWidth}px`;
+      savedEditorFlexBasis = newWidth;
+    }, saveUiState);
+  });
+}
+
+function setupEventListeners() {
   // Editor
   const editor = document.getElementById("editor");
   editor.addEventListener("input", onEditorInput);
   editor.addEventListener("keydown", onEditorKeydown);
 
+  // Preview toggle
+  document
+    .getElementById("preview-toggle-btn")
+    .addEventListener("click", togglePreview);
+
+  // Global Cmd+E shortcut for preview toggle
+  document.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "e") {
+      e.preventDefault();
+      togglePreview();
+    }
+  });
+
+  // Sidebar tabs
+  document.querySelectorAll(".sidebar-tab").forEach((btn) => {
+    btn.addEventListener("click", () => switchSidebarTab(btn.dataset.tab));
+  });
+
   // New file button
   document
     .getElementById("new-file-btn")
     .addEventListener("click", promptNewFile);
+
+  // Change vault folder button
+  document
+    .getElementById("change-vault-btn")
+    .addEventListener("click", changeVaultFolder);
 
   // Settings
   document
@@ -199,13 +306,16 @@ function setupEventListeners() {
     .addEventListener("click", saveSettings);
   document
     .getElementById("pick-vault-btn")
-    .addEventListener("click", pickVaultFolder);
+    ?.addEventListener("click", pickVaultFolder);
 
   // iOS tabs
   if (currentPlatform === "ios") {
     document.querySelectorAll(".tab-btn").forEach((btn) => {
       btn.addEventListener("click", (e) => switchTab(e.target.dataset.tab));
     });
+    document
+      .getElementById("settings-tab-btn")
+      ?.addEventListener("click", openSettingsDialog);
     // Default to editor tab on iOS
     switchTab("editor");
   }
@@ -215,6 +325,8 @@ function setupEventListeners() {
   dialog.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeSettingsDialog();
   });
+
+  initResizableHandles();
 }
 
 // ===== FILE TREE =====
@@ -224,8 +336,49 @@ async function refreshFileTree() {
     const nodes = await invoke("list_vault", { vaultPath: currentVaultPath });
     fileTreeCache = nodes;
     renderFileTree(nodes);
+    if (currentFilePath) await revealFileInTree(currentFilePath);
   } catch (error) {
     console.error("Failed to refresh file tree:", error);
+  }
+}
+
+// Expand every ancestor directory of filePath so its file-item is in the DOM.
+async function revealFileInTree(filePath) {
+  if (!filePath || !currentVaultPath) return;
+
+  const relative = filePath.startsWith(currentVaultPath)
+    ? filePath.slice(currentVaultPath.length).replace(/^\//, "")
+    : filePath;
+  const segments = relative.split("/");
+
+  // Nothing to expand for vault-root files.
+  if (segments.length <= 1) return;
+
+  let dirPath = currentVaultPath;
+  for (let i = 0; i < segments.length - 1; i++) {
+    dirPath = dirPath + "/" + segments[i];
+
+    // Find the <ul data-path="..."> that represents this directory's children.
+    let nestedUl = null;
+    for (const ul of document.querySelectorAll("#file-tree-container ul[data-path]")) {
+      if (ul.dataset.path === dirPath) { nestedUl = ul; break; }
+    }
+    if (!nestedUl) continue;
+
+    const dirLi = nestedUl.closest(".tree-dir");
+    if (!dirLi) continue;
+
+    if (dirLi.classList.contains("collapsed")) {
+      dirLi.classList.remove("collapsed");
+      const icon = dirLi.querySelector(".tree-icon");
+      if (icon) icon.textContent = "▾";
+    }
+
+    if (!nestedUl.dataset.loaded) {
+      const children = await invoke("list_dir", { dirPath });
+      renderFileTree(children, nestedUl);
+      nestedUl.dataset.loaded = "true";
+    }
   }
 }
 
@@ -240,41 +393,38 @@ function renderFileTree(nodes, container = null) {
 
     if (node.is_dir) {
       // Directory
-      li.innerHTML = `
-        <button class="folder-toggle" data-path="${node.path}">▶</button>
-        <span class="file-item folder-icon" data-path="${node.path}">${node.name}</span>
-      `;
+      li.className = "tree-dir collapsed";
+      const label = document.createElement("div");
+      label.className = "tree-label";
+      label.innerHTML = `<span class="tree-icon">▸</span><span>${node.name}</span>`;
 
-      const toggle = li.querySelector(".folder-toggle");
       const nested = document.createElement("ul");
-      nested.className = "file-tree-nested";
-      nested.style.display = "none";
       nested.dataset.path = node.path;
 
-      toggle.addEventListener("click", async (e) => {
+      label.addEventListener("click", async (e) => {
         e.stopPropagation();
-        if (nested.style.display === "none") {
-          if (!nested.dataset.loaded) {
-            const children = await invoke("list_dir", { dirPath: node.path });
-            renderFileTree(children, nested);
-            nested.dataset.loaded = "true";
-          }
-          nested.style.display = "block";
-          toggle.textContent = "▼";
-        } else {
-          nested.style.display = "none";
-          toggle.textContent = "▶";
+        const isCollapsed = li.classList.contains("collapsed");
+        li.classList.toggle("collapsed");
+        const icon = label.querySelector(".tree-icon");
+        icon.textContent = isCollapsed ? "▾" : "▸";
+
+        if (isCollapsed && !nested.dataset.loaded) {
+          const children = await invoke("list_dir", { dirPath: node.path });
+          renderFileTree(children, nested);
+          nested.dataset.loaded = "true";
         }
       });
 
+      li.appendChild(label);
+      li.appendChild(nested);
       container.appendChild(li);
-      container.appendChild(nested);
     } else {
       // File
-      li.innerHTML = `<span class="file-item file-icon" data-path="${node.path}">${node.name}</span>`;
-      const fileItem = li.querySelector(".file-item");
+      li.className = "file-item file-icon";
+      li.dataset.path = node.path;
+      li.textContent = node.name;
 
-      fileItem.addEventListener("click", () => {
+      li.addEventListener("click", () => {
         loadFile(node.path);
       });
 
@@ -294,6 +444,19 @@ function renderFileTree(nodes, container = null) {
   }
 }
 
+function closeFile() {
+  currentFilePath = null;
+  isDirty = false;
+  document.getElementById("editor").value = "";
+  const filenameEl = document.getElementById("editor-filename");
+  if (filenameEl) filenameEl.textContent = "No file open";
+  document.getElementById("note-tags").innerHTML = "";
+  document.getElementById("preview").srcdoc = "<p>No file open</p>";
+  document.getElementById("backlinks-panel").style.display = "none";
+  buildOutline();
+  saveUiState();
+}
+
 async function loadFile(path) {
   try {
     const content = await invoke("read_file", { filePath: path });
@@ -303,13 +466,13 @@ async function loadFile(path) {
     isDirty = false;
     editor.value = content;
 
-    // Update active state in file tree
+    const filenameEl = document.getElementById("editor-filename");
+    if (filenameEl) filenameEl.textContent = path.split("/").pop();
+
+    // Expand ancestor dirs so the file item is in the DOM, then mark it active.
+    await revealFileInTree(path);
     document.querySelectorAll(".file-item").forEach((item) => {
-      if (item.dataset.path === path) {
-        item.classList.add("active");
-      } else {
-        item.classList.remove("active");
-      }
+      item.classList.toggle("active", item.dataset.path === path);
     });
 
     // Update preview
@@ -327,6 +490,8 @@ async function loadFile(path) {
     }
 
     showStatus(`Opened: ${path.split("/").pop()}`);
+    buildOutline();
+    saveUiState();
   } catch (error) {
     console.error("Failed to load file:", error);
     showStatus(`Error loading file: ${error.message || error}`);
@@ -408,10 +573,11 @@ function onEditorInput(e) {
 
   isDirty = true;
 
-  // Preview debounce (300ms)
+  // Preview + outline debounce (300ms)
   clearTimeout(previewDebounceTimer);
   previewDebounceTimer = setTimeout(() => {
     updatePreview();
+    if (activeSidebarTab === "outline") buildOutline();
   }, 300);
 
   // Auto-save debounce (800ms)
@@ -532,6 +698,7 @@ async function updatePreview() {
     const html = await invoke("render_markdown", {
       markdown: content,
       userCss: currentUserCss,
+      filePath: currentFilePath,
     });
 
     document.getElementById("preview").srcdoc = html;
@@ -599,33 +766,34 @@ async function updateBacklinksPanel(filePath) {
     });
 
     const backlinksPanel = document.getElementById("backlinks-panel");
-    const backlinkslist = document.getElementById("backlinks-list");
+    const backlinksList = document.getElementById("backlinks-list");
+    const backlinksSummary = document.getElementById("backlinks-summary");
+
+    backlinksPanel.style.display = "block";
+    backlinksList.innerHTML = "";
 
     if (!backlinks || backlinks.length === 0) {
-      backlinksPanel.style.display = "none";
+      backlinksSummary.textContent = "Backlinks";
+      const li = document.createElement("li");
+      li.className = "backlinks-empty";
+      li.textContent = "No backlinks";
+      backlinksList.appendChild(li);
       return;
     }
 
-    backlinksPanel.style.display = "block";
-    backlinkslist.innerHTML = "";
+    backlinksSummary.textContent = `Backlinks (${backlinks.length})`;
 
     backlinks.forEach((noteStem) => {
       const li = document.createElement("li");
       const a = document.createElement("a");
       a.textContent = noteStem;
-      a.style.cursor = "pointer";
       a.addEventListener("click", async () => {
         const path = findNoteByName(noteStem);
-        if (path) {
-          await loadFile(path);
-        }
+        if (path) await loadFile(path);
       });
       li.appendChild(a);
-      backlinkslist.appendChild(li);
+      backlinksList.appendChild(li);
     });
-
-    // Update summary text
-    document.getElementById("backlinks-summary").textContent = `Backlinks (${backlinks.length})`;
   } catch (error) {
     console.warn("Failed to update backlinks:", error);
   }
@@ -701,26 +869,161 @@ async function initializeFileWatcher() {
   }
 }
 
+// ===== SIDEBAR TABS & OUTLINE =====
+
+function switchSidebarTab(tab) {
+  activeSidebarTab = tab;
+  document.querySelectorAll(".sidebar-tab").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.tab === tab);
+  });
+  document.getElementById("file-tree-container").style.display = tab === "files" ? "" : "none";
+  document.getElementById("outline-container").style.display = tab === "outline" ? "block" : "none";
+  document.getElementById("new-file-btn").style.display = tab === "files" ? "" : "none";
+  if (tab === "outline") buildOutline();
+}
+
+function stripMarkdown(text) {
+  return text
+    .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2") // [[link|alias]] → alias
+    .replace(/\[\[([^\]]+)\]\]/g, "$1")             // [[link]] → link
+    .replace(/\*\*([^*]+)\*\*/g, "$1")              // **bold**
+    .replace(/\*([^*]+)\*/g, "$1")                  // *italic*
+    .replace(/_([^_]+)_/g, "$1")                    // _italic_
+    .replace(/`([^`]+)`/g, "$1")                    // `code`
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")        // [text](url)
+    .trim();
+}
+
+function headerSlug(text) {
+  // Same algorithm comrak uses for header_ids: lowercase, spaces→hyphens, keep a-z 0-9 hyphens only
+  return Array.from(text.toLowerCase())
+    .map((c) => (/[a-z0-9]/.test(c) ? c : c === " " ? "-" : ""))
+    .join("")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function buildOutline() {
+  const list = document.getElementById("outline-list");
+  list.innerHTML = "";
+
+  const content = document.getElementById("editor").value;
+  if (!content || !currentFilePath) {
+    const li = document.createElement("li");
+    li.className = "outline-empty";
+    li.textContent = currentFilePath ? "No headings found" : "No file open";
+    list.appendChild(li);
+    return;
+  }
+
+  const lines = content.split("\n");
+  const headers = [];
+  lines.forEach((line, lineIndex) => {
+    const match = line.match(/^(#{1,6})\s+(.+)/);
+    if (match) {
+      headers.push({ level: match[1].length, text: match[2].trim(), lineIndex });
+    }
+  });
+
+  if (headers.length === 0) {
+    const li = document.createElement("li");
+    li.className = "outline-empty";
+    li.textContent = "No headings found";
+    list.appendChild(li);
+    return;
+  }
+
+  headers.forEach(({ level, text, lineIndex }) => {
+    const display = stripMarkdown(text);
+    const li = document.createElement("li");
+    li.className = `outline-item h${level}`;
+    li.textContent = display;
+    li.title = display;
+    li.addEventListener("click", () => {
+      scrollEditorToLine(lineIndex);
+      scrollPreviewToHeader(display);
+    });
+    list.appendChild(li);
+  });
+}
+
+function scrollEditorToLine(lineIndex) {
+  const editor = document.getElementById("editor");
+  const lineHeight = parseFloat(getComputedStyle(editor).lineHeight) || 23;
+  editor.scrollTop = Math.max(0, lineIndex * lineHeight);
+}
+
+function scrollPreviewToHeader(headerText) {
+  const iframe = document.getElementById("preview");
+  const id = headerSlug(headerText);
+  iframe.contentWindow?.postMessage({ type: "scroll-to-heading", id }, "*");
+}
+
+// ===== UI STATE PERSISTENCE =====
+
+function restoreUiState(settings) {
+  if (currentPlatform === "ios") return;
+
+  if (settings.sidebarWidth) {
+    document.getElementById("sidebar").style.flex = `0 0 ${settings.sidebarWidth}px`;
+  }
+
+  if (settings.editorWidth) {
+    savedEditorFlexBasis = settings.editorWidth;
+  }
+
+  const savedPreview = settings.previewVisible;
+  if (savedPreview === false) {
+    // Directly set state without going through togglePreview (avoids saveUiState during init)
+    previewVisible = false;
+    document.getElementById("preview-pane").style.display = "none";
+    document.getElementById("editor-resize").style.display = "none";
+    const btn = document.getElementById("preview-toggle-btn");
+    btn.classList.remove("active");
+    btn.title = "Show preview (⌘E)";
+    btn.setAttribute("aria-label", "Show preview");
+    // Editor expands freely when preview is hidden
+  } else if (savedEditorFlexBasis) {
+    document.getElementById("editor-pane").style.flex = `0 0 ${savedEditorFlexBasis}px`;
+  }
+}
+
+async function saveUiState() {
+  if (!isInitialized || currentPlatform === "ios") return;
+  try {
+    const sidebarWidth = document.getElementById("sidebar").getBoundingClientRect().width || null;
+    const editorWidth = previewVisible
+      ? (document.getElementById("editor-pane").getBoundingClientRect().width || null)
+      : null;
+    await invoke("save_ui_state", {
+      sidebarWidth: sidebarWidth > 0 ? sidebarWidth : null,
+      editorWidth: editorWidth && editorWidth > 0 ? editorWidth : null,
+      previewVisible,
+      lastOpenFile: currentFilePath,
+    });
+  } catch (_) {}
+}
+
 // ===== SETTINGS =====
 
 let settingsBeforeEdit = {
   vaultPath: null,
   userCss: "",
+  spellCheck: true,
 };
 
 function openSettingsDialog() {
   const dialog = document.getElementById("settings-dialog");
-  const cssEditor = document.getElementById("css-editor");
 
-  // Store current values for cancel
   settingsBeforeEdit = {
     vaultPath: currentVaultPath,
     userCss: currentUserCss,
+    spellCheck: currentSpellCheck,
   };
 
-  // Populate dialog
   document.getElementById("vault-path-display").textContent = currentVaultPath;
-  cssEditor.value = currentUserCss;
+  document.getElementById("css-editor").value = currentUserCss;
+  document.getElementById("spell-check-toggle").checked = currentSpellCheck;
 
   dialog.showModal();
 }
@@ -732,6 +1035,7 @@ function closeSettingsDialog() {
 async function saveSettings() {
   try {
     const newCss = document.getElementById("css-editor").value;
+    const newSpellCheck = document.getElementById("spell-check-toggle").checked;
     let newVaultPath = currentVaultPath;
 
     // Check if vault path changed
@@ -754,9 +1058,12 @@ async function saveSettings() {
     await invoke("save_settings", {
       vaultPath: newVaultPath,
       userCss: newCss,
+      spellCheck: newSpellCheck,
     });
 
     currentUserCss = newCss;
+    currentSpellCheck = newSpellCheck;
+    document.getElementById("editor").spellcheck = newSpellCheck;
 
     // If vault changed, reload everything
     if (newVaultPath !== currentVaultPath) {
@@ -782,10 +1089,11 @@ async function saveSettings() {
 }
 
 function cancelSettings() {
-  // Restore previous values
   document.getElementById("vault-path-display").textContent =
     settingsBeforeEdit.vaultPath;
   document.getElementById("css-editor").value = settingsBeforeEdit.userCss;
+  document.getElementById("spell-check-toggle").checked =
+    settingsBeforeEdit.spellCheck;
   closeSettingsDialog();
 }
 
@@ -854,7 +1162,6 @@ function switchTab(tabName) {
   switch (tabName) {
     case "files":
       document.getElementById("sidebar").classList.add("active");
-      document.getElementById("sidebar").classList.add("expanded");
       break;
     case "editor":
       document.getElementById("editor-pane").classList.add("active");

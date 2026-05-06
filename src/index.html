@@ -2,6 +2,9 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>md-editor</title>
@@ -9,38 +12,76 @@
 
   <body>
     <div id="app">
-      <!-- Sidebar Toggle (always visible) -->
-      <button id="sidebar-toggle" aria-label="Toggle sidebar">☰</button>
-
       <!-- Sidebar / File Browser -->
       <aside id="sidebar">
-        <header id="sidebar-header">
-          <h1>Files</h1>
-          <button id="new-file-btn" aria-label="Create new file">+</button>
-        </header>
-        <nav id="file-tree-container">
+        <div id="sidebar-header">
+          <div id="sidebar-tabs">
+            <button class="sidebar-tab active" data-tab="files">Files</button>
+            <button class="sidebar-tab" data-tab="outline">Outline</button>
+          </div>
+          <button id="new-file-btn" class="icon-btn" aria-label="Create new file" title="New file">
+            <svg width="14" height="14" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M8 2.75C8 2.47386 7.77614 2.25 7.5 2.25C7.22386 2.25 7 2.47386 7 2.75V7H2.75C2.47386 7 2.25 7.22386 2.25 7.5C2.25 7.77614 2.47386 8 2.75 8H7V12.25C7 12.5261 7.22386 12.75 7.5 12.75C7.77614 12.75 8 12.5261 8 12.25V8H12.25C12.5261 8 12.75 7.77614 12.75 7.5C12.75 7.22386 12.5261 7 12.25 7H8V2.75Z" fill="currentColor"/>
+            </svg>
+          </button>
+        </div>
+        <div id="file-tree-container">
           <ul id="file-tree"></ul>
-        </nav>
+        </div>
+        <div id="outline-container">
+          <ul id="outline-list"></ul>
+        </div>
+        <div id="sidebar-footer">
+          <button id="change-vault-btn" class="icon-btn" aria-label="Change vault folder" title="Change vault folder">
+            <svg width="14" height="14" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M1 1C0.447715 1 0 1.44772 0 2V13C0 13.5523 0.447715 14 1 14H14C14.5523 14 15 13.5523 15 13V5C15 4.44772 14.5523 4 14 4H7.41421L5.70711 2.29289C5.52234 2.10812 5.27086 2 5 2H1ZM1 3H5L6.70711 4.70711C6.89188 4.89188 7.14336 5 7.41421 5H14V13H1V3Z" fill="currentColor"/>
+            </svg>
+          </button>
+          <button id="settings-btn" class="icon-btn" aria-label="Open settings" title="Settings">
+            <svg width="14" height="14" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M7.07095 0.899951C6.67391 0.899951 6.32977 1.16078 6.22742 1.54437L5.88257 2.82839C5.57339 2.90161 5.27341 3.00426 4.98636 3.13416L3.89027 2.44564C3.56498 2.24739 3.14894 2.31248 2.89672 2.60012L2.09672 3.56012C1.84450 3.84776 1.84450 4.26826 2.09672 4.55590L2.78524 5.32752C2.65534 5.61457 2.55269 5.91455 2.47947 6.22373L1.19545 6.56858C0.811859 6.67093 0.55103 7.01508 0.55103 7.41212V8.58788C0.55103 8.98492 0.811859 9.32907 1.19545 9.43142L2.47947 9.77627C2.55269 10.0854 2.65534 10.3854 2.78524 10.6725L2.09672 11.4441C1.84450 11.7317 1.84450 12.1522 2.09672 12.4399L2.89672 13.3999C3.14894 13.6875 3.56498 13.7526 3.89027 13.5544L4.98636 12.8658C5.27341 12.9957 5.57339 13.0984 5.88257 13.1716L6.22742 14.4556C6.32977 14.8392 6.67391 15.1001 7.07095 15.1001H8.24671C8.64375 15.1001 8.98789 14.8392 9.09024 14.4556L9.43509 13.1716C9.74427 13.0984 10.0443 12.9957 10.3313 12.8658L11.4274 13.5544C11.7527 13.7526 12.1687 13.6875 12.4209 13.3999L13.2209 12.4399C13.4732 12.1522 13.4732 11.7317 13.2209 11.4441L12.5324 10.6725C12.6623 10.3854 12.765 10.0854 12.8382 9.77627L14.1222 9.43142C14.5058 9.32907 14.7666 8.98492 14.7666 8.58788V7.41212C14.7666 7.01508 14.5058 6.67093 14.1222 6.56858L12.8382 6.22373C12.765 5.91455 12.6623 5.61457 12.5324 5.32752L13.2209 4.55590C13.4732 4.26826 13.4732 3.84776 13.2209 3.56012L12.4209 2.60012C12.1687 2.31248 11.7527 2.24739 11.4274 2.44564L10.3313 3.13416C10.0443 3.00426 9.74427 2.90161 9.43509 2.82839L9.09024 1.54437C8.98789 1.16078 8.64375 0.899951 8.24671 0.899951H7.07095ZM4.9967 7.5C4.9967 6.12129 6.12129 4.9967 7.5 4.9967C8.87871 4.9967 10.0033 6.12129 10.0033 7.5C10.0033 8.87871 8.87871 10.0033 7.5 10.0033C6.12129 10.0033 4.9967 8.87871 4.9967 7.5Z" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd"/>
+            </svg>
+          </button>
+        </div>
       </aside>
+
+      <div class="resize-handle" id="sidebar-resize"></div>
 
       <!-- Editor Pane -->
       <section id="editor-pane">
+        <div id="editor-tab-bar">
+          <div id="editor-tab">
+            <span id="editor-filename">No file open</span>
+          </div>
+          <div class="tab-bar-spacer"></div>
+          <button id="preview-toggle-btn" class="icon-btn active" title="Hide preview (⌘E)" aria-label="Toggle preview">
+            <svg width="14" height="14" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M7.5 11C4.80285 11 2.52952 9.62184 1.09622 7.50001C2.52952 5.37816 4.80285 4 7.5 4C10.1971 4 12.4705 5.37816 13.9038 7.50001C12.4705 9.62183 10.1971 11 7.5 11ZM7.5 3C4.30786 3 1.65639 4.70638 0.0760002 7.23501C-0.0253338 7.39715 -0.0253334 7.60288 0.0760014 7.76501C1.65639 10.2936 4.30786 12 7.5 12C10.6921 12 13.3436 10.2936 14.924 7.76501C15.0253 7.60288 15.0253 7.39715 14.924 7.23501C13.3436 4.70638 10.6921 3 7.5 3ZM7.5 9.5C8.60457 9.5 9.5 8.60457 9.5 7.5C9.5 6.39543 8.60457 5.5 7.5 5.5C6.39543 5.5 5.5 6.39543 5.5 7.5C5.5 8.60457 6.39543 9.5 7.5 9.5Z" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd"/>
+            </svg>
+          </button>
+        </div>
         <div id="note-tags"></div>
         <textarea
           id="editor"
-          placeholder="No file open. Select a markdown file from the sidebar."
+          spellcheck="true"
+          placeholder="Select a file to start editing..."
         ></textarea>
       </section>
 
+      <div class="resize-handle" id="editor-resize"></div>
+
       <!-- Preview Pane -->
       <section id="preview-pane">
+        <div id="preview-header">
+          <span>Preview</span>
+        </div>
         <iframe
           id="preview"
           title="Markdown preview"
           sandbox="allow-scripts allow-same-origin"
         ></iframe>
-        <aside id="backlinks-panel">
-          <details>
+        <aside id="backlinks-panel" style="display:none">
+          <details open>
             <summary id="backlinks-summary">Backlinks</summary>
             <ul id="backlinks-list"></ul>
           </details>
@@ -48,39 +89,16 @@
       </section>
     </div>
 
-    <!-- Vault Picker Dialog -->
-    <dialog id="vault-picker-dialog">
-      <header>
-        <h2>Select Markdown Vault Folder</h2>
-      </header>
-      <div class="dialog-body">
-        <p>Enter the full path to your Markdown vault folder:</p>
-        <p style="font-size: 12px; color: #666; margin: 10px 0;">
-          Example: <code>/Users/yourname/Documents/my-vault</code>
-        </p>
-        <input
-          type="text"
-          id="vault-path-input"
-          placeholder="/Users/yourname/Documents/my-vault"
-          style="width: 100%; padding: 8px; margin: 10px 0; border: 1px solid var(--color-border); border-radius: 4px; font-family: var(--font-mono); font-size: 12px;"
-        />
-      </div>
-      <footer>
-        <button id="vault-picker-submit" class="primary">Select Folder</button>
-      </footer>
-    </dialog>
-
     <!-- Settings Dialog -->
     <dialog id="settings-dialog">
       <header>
         <h2>Settings</h2>
         <button
           id="close-settings"
+          class="icon-btn"
           aria-label="Close settings"
-          title="Close without saving"
-        >
-          ✕
-        </button>
+          title="Close"
+        >✕</button>
       </header>
 
       <div class="settings-section macos-only">
@@ -91,6 +109,14 @@
             Choose Folder...
           </button>
         </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>Editor</h3>
+        <label class="settings-toggle">
+          <input type="checkbox" id="spell-check-toggle" checked />
+          <span>Enable spell check</span>
+        </label>
       </div>
 
       <div class="settings-section">
@@ -126,13 +152,11 @@ a:hover { text-decoration: underline; }"
 
     <!-- Tab Bar (iOS only) -->
     <nav id="tab-bar">
-      <button class="tab-btn" data-tab="files">📁 Files</button>
-      <button class="tab-btn" data-tab="editor">✏️ Edit</button>
-      <button class="tab-btn" data-tab="preview">👁️ Preview</button>
+      <button class="tab-btn" data-tab="files">Files</button>
+      <button class="tab-btn" data-tab="editor">Edit</button>
+      <button class="tab-btn" data-tab="preview">Preview</button>
+      <button class="tab-btn" id="settings-tab-btn">Settings</button>
     </nav>
-
-    <!-- Settings Button (in tab bar on iOS) -->
-    <button id="settings-btn" class="settings-icon">⚙️</button>
 
     <script type="module" src="/main.js"></script>
   </body>

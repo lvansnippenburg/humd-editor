@@ -13,6 +13,25 @@ pub struct Settings {
     #[serde(rename = "userCss")]
     #[serde(default)]
     pub user_css: String,
+    #[serde(rename = "spellCheck")]
+    #[serde(default = "default_spell_check")]
+    pub spell_check: bool,
+    #[serde(rename = "sidebarWidth")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sidebar_width: Option<f64>,
+    #[serde(rename = "editorWidth")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub editor_width: Option<f64>,
+    #[serde(rename = "previewVisible")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_visible: Option<bool>,
+    #[serde(rename = "lastOpenFile")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_open_file: Option<String>,
+}
+
+fn default_spell_check() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -20,6 +39,11 @@ impl Default for Settings {
         Self {
             vault_path: None,
             user_css: String::new(),
+            spell_check: true,
+            sidebar_width: None,
+            editor_width: None,
+            preview_visible: None,
+            last_open_file: None,
         }
     }
 }
@@ -61,26 +85,61 @@ fn save_settings(
     app: tauri::AppHandle,
     vault_path: Option<String>,
     user_css: String,
+    spell_check: Option<bool>,
 ) -> Result<(), String> {
-    let settings = Settings {
-        vault_path,
-        user_css,
-    };
-
     let settings_path = get_settings_path(&app)?;
 
-    // Create parent directory if it doesn't exist
-    if let Some(parent) = settings_path.parent() {
+    // Load existing to preserve UI state fields
+    let mut settings = if settings_path.exists() {
+        let content = fs::read_to_string(&settings_path)
+            .map_err(|e| format!("Failed to read settings: {}", e))?;
+        serde_json::from_str::<Settings>(&content).unwrap_or_default()
+    } else {
+        Settings::default()
+    };
+
+    settings.vault_path = vault_path;
+    settings.user_css = user_css;
+    settings.spell_check = spell_check.unwrap_or(true);
+
+    write_settings(&settings_path, &settings)
+}
+
+#[tauri::command]
+fn save_ui_state(
+    app: tauri::AppHandle,
+    sidebar_width: Option<f64>,
+    editor_width: Option<f64>,
+    preview_visible: bool,
+    last_open_file: Option<String>,
+) -> Result<(), String> {
+    let settings_path = get_settings_path(&app)?;
+
+    let mut settings = if settings_path.exists() {
+        let content = fs::read_to_string(&settings_path)
+            .map_err(|e| format!("Failed to read settings: {}", e))?;
+        serde_json::from_str::<Settings>(&content).unwrap_or_default()
+    } else {
+        Settings::default()
+    };
+
+    settings.sidebar_width = sidebar_width;
+    settings.editor_width = editor_width;
+    settings.preview_visible = Some(preview_visible);
+    settings.last_open_file = last_open_file;
+
+    write_settings(&settings_path, &settings)
+}
+
+fn write_settings(path: &std::path::Path, settings: &Settings) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create config directory: {}", e))?;
     }
-
-    let json = serde_json::to_string_pretty(&settings)
+    let json = serde_json::to_string_pretty(settings)
         .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-
-    fs::write(&settings_path, json)
+    fs::write(path, json)
         .map_err(|e| format!("Failed to write settings: {}", e))?;
-
     Ok(())
 }
 
@@ -219,7 +278,7 @@ fn create_new_file(vault_path: String, name: String) -> Result<String, String> {
 // ===== PHASE 3: MARKDOWN RENDERING =====
 
 #[tauri::command]
-fn render_markdown(markdown: String, user_css: String) -> Result<String, String> {
+fn render_markdown(markdown: String, user_css: String, file_path: Option<String>) -> Result<String, String> {
     // Strip YAML front matter before processing
     let content = strip_front_matter(&markdown);
     let preprocessed = preprocess_footnotes(&content);
@@ -229,8 +288,16 @@ fn render_markdown(markdown: String, user_css: String) -> Result<String, String>
     options.extension.strikethrough = true;
     options.extension.table = true;
     options.extension.wikilinks_title_after_pipe = true;
+    options.extension.header_ids = Some(String::new());
 
     let html = comrak::markdown_to_html(&preprocessed, &options);
+
+    // Embed local images as base64 data URIs so they load in the sandboxed iframe.
+    let html = if let Some(ref path) = file_path {
+        embed_local_images(&html, path)
+    } else {
+        html
+    };
 
     let click_intercept = r#"
 <script>
@@ -239,6 +306,12 @@ document.addEventListener('click', function(e) {
   if (a && a.href) {
     e.preventDefault();
     window.parent.postMessage({ type: 'wikilink', href: a.getAttribute('href') }, '*');
+  }
+});
+window.addEventListener('message', function(e) {
+  if (e.data && e.data.type === 'scroll-to-heading') {
+    var el = document.getElementById(e.data.id);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 });
 </script>
@@ -258,6 +331,7 @@ body {{
   margin: 0 auto;
   color: #333;
 }}
+img {{ max-width: 100%; height: auto; }}
 @media (prefers-color-scheme: dark) {{
   body {{ background-color: #1e1e1e; color: #e0e0e0; }}
   a {{ color: #6da3f5; }}
@@ -274,6 +348,55 @@ body {{
     );
 
     Ok(full_html)
+}
+
+fn embed_local_images(html: &str, file_path: &str) -> String {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use once_cell::sync::Lazy;
+    use std::path::PathBuf;
+
+    static IMG_SRC_RE: Lazy<Regex> = Lazy::new(|| {
+        // Captures the opening up-to-and-including src=", the path, and the closing ".
+        Regex::new(r#"(<img\b[^>]*?\bsrc=")([^"]+)(")"#).unwrap()
+    });
+
+    let file_dir = Path::new(file_path)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+
+    IMG_SRC_RE.replace_all(html, |caps: &regex::Captures| {
+        let prefix = &caps[1];
+        let src    = &caps[2];
+        let suffix = &caps[3];
+
+        // Leave data URIs and external URLs untouched.
+        if src.starts_with("data:") || src.contains("://") {
+            return caps[0].to_string();
+        }
+
+        let abs_path: PathBuf = if src.starts_with('/') {
+            PathBuf::from(src)
+        } else {
+            file_dir.join(src)
+        };
+
+        let data = match fs::read(&abs_path) {
+            Ok(d) => d,
+            Err(_) => return caps[0].to_string(),
+        };
+
+        let mime = match abs_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str() {
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif"          => "image/gif",
+            "svg" | "svgz" => "image/svg+xml",
+            "webp"         => "image/webp",
+            "bmp"          => "image/bmp",
+            "ico"          => "image/x-icon",
+            _              => "image/png",
+        };
+
+        format!("{}data:{};base64,{}{}", prefix, mime, STANDARD.encode(&data), suffix)
+    }).to_string()
 }
 
 // ===== PHASE 6: SETTINGS DIALOG =====
@@ -616,12 +739,14 @@ fn preprocess_footnotes(markdown: &str) -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             get_settings,
             save_settings,
+            save_ui_state,
             get_platform,
             get_ios_documents_path,
             list_vault,
