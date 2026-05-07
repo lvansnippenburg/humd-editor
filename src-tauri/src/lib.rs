@@ -34,6 +34,9 @@ pub struct Settings {
     #[serde(rename = "lastOpenFile")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_open_file: Option<String>,
+    #[serde(rename = "openFiles")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_files: Option<Vec<String>>,
 }
 
 fn default_spell_check() -> bool {
@@ -52,6 +55,7 @@ impl Default for Settings {
             editor_width: None,
             preview_visible: None,
             last_open_file: None,
+            open_files: None,
         }
     }
 }
@@ -142,6 +146,7 @@ fn save_ui_state(
     editor_width: Option<f64>,
     preview_visible: bool,
     last_open_file: Option<String>,
+    open_files: Option<Vec<String>>,
 ) -> Result<(), String> {
     let settings_path = get_settings_path(&app)?;
 
@@ -157,6 +162,7 @@ fn save_ui_state(
     settings.editor_width = editor_width;
     settings.preview_visible = Some(preview_visible);
     settings.last_open_file = last_open_file;
+    settings.open_files = open_files;
 
     write_settings(&settings_path, &settings)
 }

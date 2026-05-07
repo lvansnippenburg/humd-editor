@@ -78,8 +78,24 @@ async function initialize() {
     isInitialized = true;
 
     const lastOpenFile = settings.lastOpenFile || settings.last_open_file;
-    if (lastOpenFile) {
-      await loadFile(lastOpenFile).catch(() => {});
+    const openFiles = settings.openFiles || settings.open_files || (lastOpenFile ? [lastOpenFile] : []);
+
+    if (openFiles.length > 0) {
+      // Read all files in parallel, create tab objects without rendering
+      const results = await Promise.allSettled(
+        openFiles.map(path => invoke("read_file", { filePath: path }))
+      );
+      results.forEach((result, i) => {
+        if (result.status === "fulfilled") {
+          const tabId = `tab-${++tabCounter}`;
+          tabs.push({ id: tabId, path: openFiles[i], isDirty: false, content: result.value });
+        }
+      });
+      // Render and activate the previously active tab (or the last one)
+      if (tabs.length > 0) {
+        const activeTab = tabs.find(t => t.path === lastOpenFile) || tabs[tabs.length - 1];
+        await switchToTab(activeTab.id);
+      }
     }
 
     if (!currentFilePath) showStatus("Ready");
@@ -695,6 +711,17 @@ function handleLinkClick(href) {
 
 // ===== BLOCK ACTIVATION / EDITING =====
 
+function isCursorInCode(value, pos) {
+  // Fenced code block: first line of the block starts with ``` or ~~~
+  if (/^(`{3,}|~{3,})/.test(value)) return true;
+  // Inline code: toggle at each backtick before the cursor; odd count = inside code span
+  let inCode = false;
+  for (let i = 0; i < pos; i++) {
+    if (value[i] === "`") inCode = !inCode;
+  }
+  return inCode;
+}
+
 async function activateBlock(blockEl) {
   if (blockEl.dataset.id === editingBlockId) return;
 
@@ -746,7 +773,7 @@ async function activateBlock(blockEl) {
     // Zotero Better BibTeX CAYW: \@ triggers the citation picker
     if (e.key === "@" && !e.metaKey && !e.ctrlKey && !e.altKey) {
       const pos = ta.selectionStart;
-      if (pos >= 1 && ta.value[pos - 1] === "\\") {
+      if (pos >= 1 && ta.value[pos - 1] === "\\" && !isCursorInCode(ta.value, pos - 1)) {
         e.preventDefault();
         const insertPos = pos - 1;
         // Remove the backslash trigger
@@ -1229,6 +1256,7 @@ async function saveUiState() {
       editorWidth: null,
       previewVisible: true,
       lastOpenFile: currentFilePath,
+      openFiles: tabs.map(t => t.path),
     });
   } catch (_) {}
 }
