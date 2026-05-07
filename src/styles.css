@@ -17,9 +17,14 @@
 
   --font-ui:   "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "Menlo", "Monaco", "Consolas", monospace;
+  --font-prose: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 
   --t-fast:   100ms ease;
   --t-normal: 120ms ease;
+
+  --prose-size: 14.5px;
+  --prose-line: 1.7;
+  --prose-max:  680px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -266,6 +271,7 @@ body[data-platform="ios"] .resize-handle {
   font-style: italic;
 }
 
+/* ===== FILE TREE ===== */
 #file-tree {
   list-style: none;
   padding: 0;
@@ -375,19 +381,6 @@ body[data-platform="ios"] .resize-handle {
   overflow: hidden;
 }
 
-.tab-bar-spacer {
-  flex: 1;
-}
-
-#preview-toggle-btn {
-  align-self: center;
-  margin-bottom: 0;
-}
-
-body[data-platform="ios"] #preview-toggle-btn {
-  display: none;
-}
-
 #editor-tab {
   display: flex;
   align-items: center;
@@ -405,7 +398,7 @@ body[data-platform="ios"] #preview-toggle-btn {
 
 #editor-filename {
   font-weight: 500;
-  max-width: 220px;
+  max-width: 300px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -434,54 +427,215 @@ body[data-platform="ios"] #preview-toggle-btn {
   font-weight: 500;
 }
 
-#editor {
+/* ===== BLOCKS EDITOR ===== */
+#blocks-editor {
   flex: 1;
-  padding: 20px 24px;
-  border: none;
+  overflow-y: auto;
+  padding: 24px 0;
   background: var(--bg-primary);
+}
+
+.no-file-msg {
+  padding: 24px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* ===== BLOCK ===== */
+.block {
+  max-width: var(--prose-max);
+  margin: 0 auto;
+  padding: 3px 24px;
+  border-radius: 5px;
+  cursor: text;
+  position: relative;
+  min-height: 1.6em;
+}
+
+.block:hover:not(.editing) {
+  background: var(--hover-bg);
+}
+
+/* ===== BLOCK TEXTAREA (editing state) ===== */
+.block-textarea {
+  display: block;
+  width: 100%;
+  min-height: 1.6em;
+  border: none;
+  background: var(--bg-secondary);
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 13.5px;
+  font-size: 13px;
   line-height: 1.7;
   resize: none;
   outline: none;
-}
-
-#editor::placeholder {
-  color: var(--text-secondary);
-  opacity: 0.5;
-}
-
-/* ===== PREVIEW PANE ===== */
-#preview-pane {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-width: 200px;
+  padding: 6px 10px;
+  border-radius: 4px;
   overflow: hidden;
 }
 
-#preview-header {
-  display: flex;
-  align-items: center;
-  height: 37px;
-  padding: 0 16px;
-  border-bottom: 1px solid var(--border);
+/* ===== FRONT MATTER BLOCK ===== */
+.block-frontmatter pre {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
   background: var(--bg-secondary);
-  flex-shrink: 0;
-  font-size: 11px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  border-left: 3px solid var(--border);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ===== PROSE STYLES (rendered blocks) ===== */
+.block.rendered {
+  font-family: var(--font-prose);
+  font-size: var(--prose-size);
+  line-height: var(--prose-line);
+  color: var(--text-primary);
+}
+
+.block.rendered p {
+  margin: 0 0 0.25em;
+}
+
+.block.rendered p:last-child {
+  margin-bottom: 0;
+}
+
+.block.rendered h1,
+.block.rendered h2,
+.block.rendered h3,
+.block.rendered h4,
+.block.rendered h5,
+.block.rendered h6 {
   font-weight: 600;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
+  line-height: 1.3;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.block.rendered h1 { font-size: 1.75em; }
+.block.rendered h2 { font-size: 1.4em; }
+.block.rendered h3 { font-size: 1.15em; }
+.block.rendered h4 { font-size: 1em; }
+.block.rendered h5 { font-size: 0.9em; color: var(--text-secondary); }
+.block.rendered h6 { font-size: 0.85em; color: var(--text-secondary); }
+
+.block.rendered a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.block.rendered a:hover {
+  text-decoration: underline;
+}
+
+.block.rendered code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: var(--bg-secondary);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+
+.block.rendered pre {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: 0;
+}
+
+.block.rendered pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.85em;
+  line-height: 1.6;
+}
+
+.block.rendered blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 14px;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.block.rendered ul,
+.block.rendered ol {
+  padding-left: 1.5em;
+  margin: 0;
+}
+
+.block.rendered li {
+  margin: 0.15em 0;
+}
+
+.block.rendered li > p {
+  margin: 0;
+}
+
+.block.rendered table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.9em;
+}
+
+.block.rendered th,
+.block.rendered td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.block.rendered th {
+  background: var(--bg-secondary);
+  font-weight: 600;
+}
+
+.block.rendered tr:nth-child(even) td {
+  background: var(--hover-bg);
+}
+
+.block.rendered img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+
+.block.rendered hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 0;
+}
+
+.block.rendered del {
   color: var(--text-secondary);
 }
 
-#preview {
-  flex: 1;
-  border: none;
-  background: var(--bg-primary);
+.block.rendered sup {
+  font-size: 0.75em;
 }
 
+.block.rendered .footnote-definition {
+  font-size: 0.875em;
+  color: var(--text-secondary);
+}
+
+/* Spacing between blocks */
+.block + .block {
+  margin-top: 2px;
+}
+
+/* Consolidated footnotes at end of document */
+#footnotes-section {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 4px;
+}
 
 /* ===== STATUS BAR ===== */
 #status-bar {
@@ -726,13 +880,11 @@ body[data-platform="ios"] #sidebar.active {
   flex: 1;
 }
 
-body[data-platform="ios"] #editor-pane,
-body[data-platform="ios"] #preview-pane {
+body[data-platform="ios"] #editor-pane {
   display: none;
 }
 
-body[data-platform="ios"] #editor-pane.active,
-body[data-platform="ios"] #preview-pane.active {
+body[data-platform="ios"] #editor-pane.active {
   display: flex;
 }
 

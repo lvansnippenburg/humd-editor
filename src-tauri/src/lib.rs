@@ -278,6 +278,26 @@ fn create_new_file(vault_path: String, name: String) -> Result<String, String> {
 // ===== PHASE 3: MARKDOWN RENDERING =====
 
 #[tauri::command]
+fn render_block(markdown: String, file_path: Option<String>) -> Result<String, String> {
+    let preprocessed = preprocess_footnotes(&markdown);
+
+    let mut options = comrak::ComrakOptions::default();
+    options.extension.footnotes = true;
+    options.extension.strikethrough = true;
+    options.extension.table = true;
+    options.extension.wikilinks_title_after_pipe = true;
+    options.extension.header_ids = Some(String::new());
+
+    let mut html = comrak::markdown_to_html(&preprocessed, &options);
+
+    if let Some(ref path) = file_path {
+        html = embed_local_images(&html, path);
+    }
+
+    Ok(html)
+}
+
+#[tauri::command]
 fn render_markdown(markdown: String, user_css: String, file_path: Option<String>) -> Result<String, String> {
     // Strip YAML front matter before processing
     let content = strip_front_matter(&markdown);
@@ -754,6 +774,7 @@ pub fn run() {
             read_file,
             write_file,
             create_new_file,
+            render_block,
             render_markdown,
             build_link_index,
             get_backlinks,
