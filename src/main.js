@@ -589,13 +589,54 @@ async function activateBlock(blockEl) {
     if (activeSidebarTab === "links") buildLinksPanel();
   });
 
+  let zoteroPending = false;
+
   ta.addEventListener("blur", async () => {
+    if (zoteroPending) return; // keep block alive while Zotero picker is open
     if (editingBlockId === blockEl.dataset.id) {
       await saveBlock(blockEl, true);
     }
   });
 
-  ta.addEventListener("keydown", e => handleBlockKeydown(e, blockEl, ta));
+  ta.addEventListener("keydown", async e => {
+    // Zotero Better BibTeX CAYW: \@ triggers the citation picker
+    if (e.key === "@" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      const pos = ta.selectionStart;
+      if (pos >= 1 && ta.value[pos - 1] === "\\") {
+        e.preventDefault();
+        const insertPos = pos - 1;
+        // Remove the backslash trigger
+        ta.value = ta.value.slice(0, insertPos) + ta.value.slice(pos);
+        ta.selectionStart = ta.selectionEnd = insertPos;
+        blockEl.dataset.markdown = ta.value;
+
+        zoteroPending = true;
+        showStatus("Opening Zotero citation picker…");
+        try {
+          const raw = (await invoke("fetch_zotero_cayw")).trim();
+          if (!raw) { showStatus("No citation selected"); return; }
+
+          // Ensure the string is wrapped in [...]; CAYW usually includes them
+          // but guard against bare "@key" returns just in case.
+          const citation = raw.startsWith("[") ? raw : `[${raw}]`;
+
+          const cur = ta.value;
+          ta.value = cur.slice(0, insertPos) + citation + cur.slice(insertPos);
+          ta.selectionStart = ta.selectionEnd = insertPos + citation.length;
+          blockEl.dataset.markdown = ta.value;
+          ta.dispatchEvent(new Event("input"));
+          showStatus("Citation inserted");
+        } catch {
+          showStatus("Zotero not available — is Zotero running with Better BibTeX?", true);
+        } finally {
+          zoteroPending = false;
+          ta.focus();
+        }
+        return;
+      }
+    }
+    handleBlockKeydown(e, blockEl, ta);
+  });
 
   blockEl.appendChild(ta);
   blockEl.scrollIntoView({ block: "nearest" });
@@ -1080,6 +1121,53 @@ async function loadCitations() {
   }
 }
 
+// Map pandoc locator abbreviations to CSL label names.
+const LOCATOR_TYPES = [
+  [/^pp?\.\s*/, "page"],
+  [/^chaps?\.\s*/i, "chapter"],
+  [/^sec\.\s*/i, "section"],
+  [/^fig\.\s*/i, "figure"],
+  [/^vol\.\s*/i, "volume"],
+  [/^no\.\s*/i, "issue"],
+  [/^¶\s*/, "paragraph"],
+  [/^§\s*/, "section"],
+];
+
+function parseLocator(str) {
+  for (const [re, label] of LOCATOR_TYPES) {
+    const m = str.match(re);
+    if (m) return { label, locator: str.slice(m[0].length).trim() };
+  }
+  return { label: "page", locator: str.trim() };
+}
+
+// Parse a pandoc citation inner string (content between [ and ]) into a
+// citeproc citation object with full prefix/locator/label support.
+// e.g. "See: @key1, p. 45; @key2, p. 55"
+// →  { citationItems: [{ id, prefix, locator, label }, ...], properties: { noteIndex: 0 } }
+function parseCitationInner(inner) {
+  const citationItems = [];
+  for (const segment of inner.split(";")) {
+    const s = segment.trim();
+    const atIdx = s.indexOf("@");
+    if (atIdx === -1) continue;
+
+    const keyMatch = s.slice(atIdx).match(/^@([^\s,;\]]+)/);
+    if (!keyMatch) continue;
+
+    const key = keyMatch[1];
+    const prefix = s.slice(0, atIdx).trim();          // text before @key
+    const after  = s.slice(atIdx + 1 + key.length)   // text after @key
+                    .replace(/^,\s*/, "").trim();      // strip leading ", "
+
+    const item = { id: key };
+    if (prefix) item.prefix = prefix + " ";           // citeproc needs trailing space
+    if (after)  Object.assign(item, parseLocator(after));
+    citationItems.push(item);
+  }
+  return { citationItems, properties: { noteIndex: 0 } };
+}
+
 async function processCitations() {
   document.getElementById("citation-bibliography")?.remove();
 
@@ -1095,14 +1183,18 @@ async function processCitations() {
   // Shared Cite instance over all references (needed for correct numeric ordering)
   const allCite = new Cite(citeBibData);
 
-  // Collect text nodes that contain [@key] patterns, in DOM order
+  // Pandoc citation pattern: [...] containing at least one @key.
+  // Handles bare [@key], locators [@key, p. 66], and prefixes [See: @key, p. 66].
+  const CITE_RE = /(\[[^\]]*@[^\]]+\])/;
+
+  // Collect text nodes that contain pandoc citation patterns, in DOM order
   const textNodes = [];
   container.querySelectorAll(".block.rendered").forEach(block => {
     if (block.id === "footnotes-section" || block.id === "citation-bibliography") return;
     const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
     let node;
     while ((node = walker.nextNode())) {
-      if (/\[@[^\]]+\]/.test(node.textContent)) textNodes.push(node);
+      if (CITE_RE.test(node.textContent)) textNodes.push(node);
     }
   });
 
@@ -1111,22 +1203,22 @@ async function processCitations() {
   // Track cited keys in appearance order (for bibliography ordering)
   const citedKeys = [];
 
-  // Replace [@key] patterns in each text node with formatted inline citations
+  // Replace citation patterns in each text node with formatted inline citations
   for (const textNode of textNodes) {
-    const parts = textNode.textContent.split(/(\[@[^\]]+\])/);
+    const parts = textNode.textContent.split(CITE_RE);
     if (parts.length <= 1) continue;
 
     const fragment = document.createDocumentFragment();
     for (const part of parts) {
-      const m = part.match(/^\[@([^\]]+)\]$/);
+      const m = part.match(/^\[([^\]]*@[^\]]*)\]$/);
       if (!m) {
         fragment.appendChild(document.createTextNode(part));
         continue;
       }
 
-      // Parse semicolon-or-comma-separated keys: [@smith2023; jones2021]
-      const keys = m[1].split(/[;,]+/).map(k => k.trim().replace(/^@/, "")).filter(Boolean);
-      const validKeys = keys.filter(k => refMap[k]);
+      const citObj = parseCitationInner(m[1]);
+      const validItems = citObj.citationItems.filter(item => refMap[item.id]);
+      const validKeys = validItems.map(item => item.id);
       validKeys.forEach(k => { if (!citedKeys.includes(k)) citedKeys.push(k); });
 
       const span = document.createElement("span");
@@ -1134,13 +1226,14 @@ async function processCitations() {
 
       if (validKeys.length > 0) {
         try {
-          const html = allCite.format("citation", { format: "html", template, entry: validKeys });
+          const entry = { citationItems: validItems, properties: { noteIndex: 0 } };
+          const html = allCite.format("citation", { format: "html", template, entry });
           span.innerHTML = html;
         } catch {
           span.textContent = citeSimpleInline(validKeys, refMap);
         }
       } else {
-        span.textContent = part; // Keep literal if key not found
+        span.textContent = part;
       }
       fragment.appendChild(span);
     }
@@ -1167,6 +1260,7 @@ async function processCitations() {
     console.warn("Bibliography formatting failed:", e);
   }
 }
+
 
 function citeSimpleInline(keys, refMap) {
   const parts = keys.map(k => {
@@ -1328,14 +1422,18 @@ function switchTab(tabName) {
 
 // ===== UI HELPERS =====
 
-function showStatus(message) {
-  console.log(`Status: ${message}`);
+function showStatus(message, isError = false) {
   const statusBar = document.getElementById("status-bar");
   const statusMessage = document.getElementById("status-message");
   if (statusBar && statusMessage) {
     statusMessage.textContent = message;
+    statusBar.classList.toggle("error", isError);
     statusBar.classList.add("visible");
-    setTimeout(() => statusBar.classList.remove("visible"), 3000);
+    clearTimeout(statusBar._hideTimer);
+    statusBar._hideTimer = setTimeout(
+      () => statusBar.classList.remove("visible", "error"),
+      isError ? 8000 : 3000
+    );
   }
 }
 

@@ -736,6 +736,12 @@ body[data-platform="ios"] .resize-handle {
   opacity: 1;
 }
 
+#status-bar.error {
+  background: color-mix(in srgb, #c0392b 15%, var(--bg-tertiary));
+  border-color: #c0392b;
+  color: #c0392b;
+}
+
 /* ===== DIALOG ===== */
 dialog {
   border: 1px solid var(--border);

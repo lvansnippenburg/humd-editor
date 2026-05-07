@@ -279,6 +279,19 @@ fn read_file(file_path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn fetch_zotero_cayw() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        match ureq::get("http://127.0.0.1:23119/better-bibtex/cayw?format=pandoc").call() {
+            Ok(response) => response.into_string().map_err(|e| e.to_string()),
+            Err(ureq::Error::Status(code, _)) => Err(format!("Zotero returned HTTP {}", code)),
+            Err(e) => Err(format!("Zotero not available: {}", e)),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 fn write_file(file_path: String, content: String) -> Result<(), String> {
     fs::write(&file_path, &content)
         .map_err(|e| format!("Failed to write file: {}", e))
@@ -804,6 +817,7 @@ pub fn run() {
             list_dir,
             read_file,
             write_file,
+            fetch_zotero_cayw,
             create_new_file,
             render_block,
             render_markdown,
