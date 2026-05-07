@@ -16,6 +16,12 @@ pub struct Settings {
     #[serde(rename = "spellCheck")]
     #[serde(default = "default_spell_check")]
     pub spell_check: bool,
+    #[serde(rename = "cslJsonPath")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub csl_json_path: Option<String>,
+    #[serde(rename = "cslStylePath")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub csl_style_path: Option<String>,
     #[serde(rename = "sidebarWidth")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sidebar_width: Option<f64>,
@@ -40,6 +46,8 @@ impl Default for Settings {
             vault_path: None,
             user_css: String::new(),
             spell_check: true,
+            csl_json_path: None,
+            csl_style_path: None,
             sidebar_width: None,
             editor_width: None,
             preview_visible: None,
@@ -89,7 +97,7 @@ fn save_settings(
 ) -> Result<(), String> {
     let settings_path = get_settings_path(&app)?;
 
-    // Load existing to preserve UI state fields
+    // Load existing to preserve UI state fields and citation paths
     let mut settings = if settings_path.exists() {
         let content = fs::read_to_string(&settings_path)
             .map_err(|e| format!("Failed to read settings: {}", e))?;
@@ -101,6 +109,28 @@ fn save_settings(
     settings.vault_path = vault_path;
     settings.user_css = user_css;
     settings.spell_check = spell_check.unwrap_or(true);
+
+    write_settings(&settings_path, &settings)
+}
+
+#[tauri::command]
+fn save_citation_settings(
+    app: tauri::AppHandle,
+    csl_json_path: Option<String>,
+    csl_style_path: Option<String>,
+) -> Result<(), String> {
+    let settings_path = get_settings_path(&app)?;
+
+    let mut settings = if settings_path.exists() {
+        let content = fs::read_to_string(&settings_path)
+            .map_err(|e| format!("Failed to read settings: {}", e))?;
+        serde_json::from_str::<Settings>(&content).unwrap_or_default()
+    } else {
+        Settings::default()
+    };
+
+    settings.csl_json_path = csl_json_path;
+    settings.csl_style_path = csl_style_path;
 
     write_settings(&settings_path, &settings)
 }
@@ -766,6 +796,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_settings,
             save_settings,
+            save_citation_settings,
             save_ui_state,
             get_platform,
             get_ios_documents_path,

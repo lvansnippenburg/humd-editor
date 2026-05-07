@@ -106,6 +106,26 @@
       </div>
 
       <div class="settings-section">
+        <h3>Citations</h3>
+        <p class="settings-hint">
+          Bibliography file (CSL JSON or BibTeX) and CSL style for formatting citations.
+          Use <code>[@key]</code> in your text to cite a reference.
+        </p>
+        <label class="settings-label">Bibliography file</label>
+        <div class="file-path-container">
+          <code id="bib-path-display" class="path-display">None selected</code>
+          <button id="pick-bib-btn" title="Choose bibliography file">Choose File…</button>
+          <button id="clear-bib-btn" class="icon-btn" title="Clear">✕</button>
+        </div>
+        <label class="settings-label" style="margin-top:10px">CSL style file</label>
+        <div class="file-path-container">
+          <code id="csl-path-display" class="path-display">None selected (defaults to APA)</code>
+          <button id="pick-csl-btn" title="Choose CSL style file">Choose File…</button>
+          <button id="clear-csl-btn" class="icon-btn" title="Clear">✕</button>
+        </div>
+      </div>
+
+      <div class="settings-section">
         <h3>Preview Styling</h3>
         <p class="settings-hint">
           Custom CSS applied to the rendered content. Use standard CSS syntax.
@@ -143,6 +163,8 @@ a:hover { text-decoration: underline; }"
       <button class="tab-btn" id="settings-tab-btn">Settings</button>
     </nav>
 
+    <script src="/assets/citation.min.js"></script>
+    <script>window.Cite = require('citation-js');</script>
     <script type="module" src="/main.js"></script>
   </body>
 </html>

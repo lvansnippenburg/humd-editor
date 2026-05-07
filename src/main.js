@@ -15,6 +15,8 @@ let currentVaultPath = null;
 let currentFilePath = null;
 let currentUserCss = "";
 let currentSpellCheck = true;
+let currentBibPath = null;
+let currentCslPath = null;
 let isDirty = false;
 let isInitialized = false;
 let editingBlockId = null;
@@ -22,6 +24,10 @@ let blockIdCounter = 0;
 let activeSidebarTab = "files";
 let autoSaveTimer = null;
 let fileTreeCache = [];
+
+// Citation engine state
+let citeBibData = null;   // Array of CSL JSON objects parsed from bibliography file
+let citeTemplateName = null; // Registered CSL template name (or null → use 'apa')
 
 // ===== INITIALIZATION =====
 
@@ -35,6 +41,8 @@ async function initialize() {
     const settings = await invoke("get_settings");
     currentUserCss = settings.userCss || settings.user_css || "";
     currentSpellCheck = settings.spellCheck ?? settings.spell_check ?? true;
+    currentBibPath = settings.cslJsonPath || settings.csl_json_path || null;
+    currentCslPath = settings.cslStylePath || settings.csl_style_path || null;
     applyUserCss(currentUserCss);
 
     let vaultPath = settings.vaultPath || settings.vault_path;
@@ -62,6 +70,7 @@ async function initialize() {
     await refreshFileTree();
     await buildLinkIndex();
     initializeFileWatcher();
+    await loadCitations();
 
     isInitialized = true;
 
@@ -127,6 +136,22 @@ function setupEventListeners() {
   document.getElementById("cancel-settings-btn").addEventListener("click", cancelSettings);
   document.getElementById("save-settings-btn").addEventListener("click", saveSettings);
   document.getElementById("pick-vault-btn")?.addEventListener("click", pickVaultFolder);
+  document.getElementById("pick-bib-btn")?.addEventListener("click", () => pickFileForSetting(
+    "bib-path-display",
+    ["json", "bib"],
+    "Select bibliography file (CSL JSON or BibTeX)"
+  ));
+  document.getElementById("clear-bib-btn")?.addEventListener("click", () => {
+    document.getElementById("bib-path-display").textContent = "None selected";
+  });
+  document.getElementById("pick-csl-btn")?.addEventListener("click", () => pickFileForSetting(
+    "csl-path-display",
+    ["csl", "xml"],
+    "Select CSL style file"
+  ));
+  document.getElementById("clear-csl-btn")?.addEventListener("click", () => {
+    document.getElementById("csl-path-display").textContent = "None selected (defaults to APA)";
+  });
 
   if (currentPlatform === "ios") {
     document.querySelectorAll(".tab-btn").forEach(btn => {
@@ -446,6 +471,7 @@ async function renderAllBlocks(markdownBlocks) {
   });
   await Promise.all(els.map(el => renderBlockEl(el, footnoteDefs)));
   consolidateFootnotes();
+  await processCitations();
 }
 
 function createBlockElement(markdown) {
@@ -622,6 +648,7 @@ async function saveBlock(blockEl, triggerFileSave) {
 
   if (triggerFileSave) {
     consolidateFootnotes();
+    await processCitations();
     saveCurrentFile();
     if (activeSidebarTab === "outline") buildOutline();
     if (activeSidebarTab === "links") buildLinksPanel();
@@ -1021,15 +1048,155 @@ function applyUserCss(css) {
   styleEl.textContent = scopeUserCss(css);
 }
 
+// ===== CITATIONS =====
+
+const Cite = window.Cite;
+
+async function loadCitations() {
+  citeBibData = null;
+  citeTemplateName = null;
+
+  if (!currentBibPath) return;
+
+  try {
+    const raw = await invoke("read_file", { filePath: currentBibPath });
+    const parsed = new Cite(raw);
+    citeBibData = parsed.get(); // CSL JSON array
+  } catch (e) {
+    console.warn("Failed to load bibliography:", e);
+    showStatus("Warning: could not load bibliography file");
+    return;
+  }
+
+  if (currentCslPath) {
+    try {
+      const cslXml = await invoke("read_file", { filePath: currentCslPath });
+      citeTemplateName = "user-csl";
+      Cite.plugins.config.get("@csl").templates.add(citeTemplateName, cslXml);
+    } catch (e) {
+      console.warn("Failed to load CSL style:", e);
+      citeTemplateName = null;
+    }
+  }
+}
+
+async function processCitations() {
+  document.getElementById("citation-bibliography")?.remove();
+
+  if (!citeBibData || citeBibData.length === 0) return;
+
+  const template = citeTemplateName || "apa";
+  const container = document.getElementById("blocks-editor");
+
+  // Build reference map: id → CSL object
+  const refMap = {};
+  citeBibData.forEach(ref => { refMap[ref.id] = ref; });
+
+  // Shared Cite instance over all references (needed for correct numeric ordering)
+  const allCite = new Cite(citeBibData);
+
+  // Collect text nodes that contain [@key] patterns, in DOM order
+  const textNodes = [];
+  container.querySelectorAll(".block.rendered").forEach(block => {
+    if (block.id === "footnotes-section" || block.id === "citation-bibliography") return;
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (/\[@[^\]]+\]/.test(node.textContent)) textNodes.push(node);
+    }
+  });
+
+  if (textNodes.length === 0) return;
+
+  // Track cited keys in appearance order (for bibliography ordering)
+  const citedKeys = [];
+
+  // Replace [@key] patterns in each text node with formatted inline citations
+  for (const textNode of textNodes) {
+    const parts = textNode.textContent.split(/(\[@[^\]]+\])/);
+    if (parts.length <= 1) continue;
+
+    const fragment = document.createDocumentFragment();
+    for (const part of parts) {
+      const m = part.match(/^\[@([^\]]+)\]$/);
+      if (!m) {
+        fragment.appendChild(document.createTextNode(part));
+        continue;
+      }
+
+      // Parse semicolon-or-comma-separated keys: [@smith2023; jones2021]
+      const keys = m[1].split(/[;,]+/).map(k => k.trim().replace(/^@/, "")).filter(Boolean);
+      const validKeys = keys.filter(k => refMap[k]);
+      validKeys.forEach(k => { if (!citedKeys.includes(k)) citedKeys.push(k); });
+
+      const span = document.createElement("span");
+      span.className = validKeys.length > 0 ? "citation-ref" : "citation-ref citation-missing";
+
+      if (validKeys.length > 0) {
+        try {
+          const html = allCite.format("citation", { format: "html", template, entry: validKeys });
+          span.innerHTML = html;
+        } catch {
+          span.textContent = citeSimpleInline(validKeys, refMap);
+        }
+      } else {
+        span.textContent = part; // Keep literal if key not found
+      }
+      fragment.appendChild(span);
+    }
+    textNode.parentNode.replaceChild(fragment, textNode);
+  }
+
+  // Append formatted bibliography for cited references
+  if (citedKeys.length === 0) return;
+
+  try {
+    const bibHtml = allCite.format("bibliography", {
+      format: "html",
+      template,
+      entry: citedKeys,
+      nosort: true,
+    });
+
+    const wrapper = document.createElement("div");
+    wrapper.id = "citation-bibliography";
+    wrapper.className = "block rendered";
+    wrapper.innerHTML = `<h2>References</h2>${bibHtml}`;
+    container.appendChild(wrapper);
+  } catch (e) {
+    console.warn("Bibliography formatting failed:", e);
+  }
+}
+
+function citeSimpleInline(keys, refMap) {
+  const parts = keys.map(k => {
+    const ref = refMap[k];
+    if (!ref) return `@${k}`;
+    const auth = ref.author?.[0];
+    const year = ref.issued?.["date-parts"]?.[0]?.[0];
+    const name = auth?.family || auth?.literal || k;
+    return year ? `${name}, ${year}` : name;
+  });
+  return `(${parts.join("; ")})`;
+}
+
 // ===== SETTINGS =====
 
-let settingsBeforeEdit = { vaultPath: null, userCss: "", spellCheck: true };
+let settingsBeforeEdit = { vaultPath: null, userCss: "", spellCheck: true, bibPath: null, cslPath: null };
 
 function openSettingsDialog() {
-  settingsBeforeEdit = { vaultPath: currentVaultPath, userCss: currentUserCss, spellCheck: currentSpellCheck };
+  settingsBeforeEdit = {
+    vaultPath: currentVaultPath,
+    userCss: currentUserCss,
+    spellCheck: currentSpellCheck,
+    bibPath: currentBibPath,
+    cslPath: currentCslPath,
+  };
   document.getElementById("vault-path-display").textContent = currentVaultPath;
   document.getElementById("css-editor").value = currentUserCss;
   document.getElementById("spell-check-toggle").checked = currentSpellCheck;
+  document.getElementById("bib-path-display").textContent = currentBibPath || "None selected";
+  document.getElementById("csl-path-display").textContent = currentCslPath || "None selected (defaults to APA)";
   document.getElementById("settings-dialog").showModal();
 }
 
@@ -1045,6 +1212,11 @@ async function saveSettings() {
     const displayedPath = document.getElementById("vault-path-display").textContent;
     if (displayedPath !== currentVaultPath) newVaultPath = displayedPath;
 
+    const bibDisplay = document.getElementById("bib-path-display").textContent;
+    const newBibPath = (bibDisplay && bibDisplay !== "None selected") ? bibDisplay : null;
+    const cslDisplay = document.getElementById("csl-path-display").textContent;
+    const newCslPath = (cslDisplay && !cslDisplay.startsWith("None selected")) ? cslDisplay : null;
+
     try {
       await invoke("list_vault", { vaultPath: newVaultPath });
     } catch {
@@ -1053,10 +1225,21 @@ async function saveSettings() {
     }
 
     await invoke("save_settings", { vaultPath: newVaultPath, userCss: newCss, spellCheck: newSpellCheck });
+    await invoke("save_citation_settings", { cslJsonPath: newBibPath, cslStylePath: newCslPath });
     currentUserCss = newCss;
     currentSpellCheck = newSpellCheck;
     applyUserCss(newCss);
     document.querySelectorAll(".block-textarea").forEach(ta => { ta.spellcheck = newSpellCheck; });
+
+    // Reload citations if paths changed
+    const bibChanged = newBibPath !== currentBibPath;
+    const cslChanged = newCslPath !== currentCslPath;
+    currentBibPath = newBibPath;
+    currentCslPath = newCslPath;
+    if (bibChanged || cslChanged) {
+      await loadCitations();
+      await processCitations();
+    }
 
     if (newVaultPath !== currentVaultPath) {
       currentVaultPath = newVaultPath;
@@ -1079,6 +1262,8 @@ function cancelSettings() {
   document.getElementById("vault-path-display").textContent = settingsBeforeEdit.vaultPath;
   document.getElementById("css-editor").value = settingsBeforeEdit.userCss;
   document.getElementById("spell-check-toggle").checked = settingsBeforeEdit.spellCheck;
+  document.getElementById("bib-path-display").textContent = settingsBeforeEdit.bibPath || "None selected";
+  document.getElementById("csl-path-display").textContent = settingsBeforeEdit.cslPath || "None selected (defaults to APA)";
   closeSettingsDialog();
 }
 
@@ -1099,6 +1284,28 @@ async function pickVaultFolder() {
       } catch {
         showStatus(`Cannot access folder: ${folderPath}`);
       }
+    }
+  } catch (error) {
+    showStatus(`Error: ${error.message || error}`);
+  }
+}
+
+async function pickFileForSetting(displayId, extensions, title) {
+  try {
+    let filePath = null;
+    if (window.__TAURI__?.dialog) {
+      filePath = await window.__TAURI__.dialog.open({
+        directory: false,
+        multiple: false,
+        title,
+        filters: [{ name: "Files", extensions }],
+      });
+    }
+    if (!filePath) {
+      filePath = prompt(`Enter the full path to the file:\n(${extensions.join(", ")} files)`);
+    }
+    if (filePath?.trim()) {
+      document.getElementById(displayId).textContent = filePath.trim();
     }
   } catch (error) {
     showStatus(`Error: ${error.message || error}`);

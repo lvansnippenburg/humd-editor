@@ -637,6 +637,81 @@ body[data-platform="ios"] .resize-handle {
   padding-top: 4px;
 }
 
+/* ===== CITATIONS ===== */
+.citation-ref {
+  color: var(--text-secondary);
+  font-size: 0.9em;
+  cursor: default;
+}
+.citation-ref a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.citation-ref a:hover { text-decoration: underline; }
+
+.citation-missing {
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-radius: 2px;
+  padding: 0 2px;
+}
+
+#citation-bibliography {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+#citation-bibliography h2 {
+  font-size: 1em;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+#citation-bibliography .csl-entry {
+  margin-bottom: 8px;
+  font-size: 0.9em;
+  line-height: 1.5;
+  padding-left: 1.5em;
+  text-indent: -1.5em;
+}
+#citation-bibliography .csl-left-margin {
+  float: left;
+  padding-right: 0.5em;
+  min-width: 2em;
+  text-align: right;
+}
+#citation-bibliography .csl-right-inline {
+  display: block;
+  overflow: hidden;
+}
+
+/* Settings: file path rows */
+.file-path-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.path-display {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8em;
+  padding: 4px 6px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.settings-label {
+  display: block;
+  font-size: 0.85em;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+
 /* ===== STATUS BAR ===== */
 #status-bar {
   position: fixed;
