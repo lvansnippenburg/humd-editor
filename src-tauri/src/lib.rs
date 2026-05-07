@@ -279,8 +279,8 @@ fn read_file(file_path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn fetch_zotero_cayw() -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+async fn fetch_zotero_cayw(window: tauri::WebviewWindow) -> Result<String, String> {
+    let result = tauri::async_runtime::spawn_blocking(|| {
         match ureq::get("http://127.0.0.1:23119/better-bibtex/cayw?format=pandoc").call() {
             Ok(response) => response.into_string().map_err(|e| e.to_string()),
             Err(ureq::Error::Status(code, _)) => Err(format!("Zotero returned HTTP {}", code)),
@@ -288,7 +288,10 @@ async fn fetch_zotero_cayw() -> Result<String, String> {
         }
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    let _ = window.set_focus();
+    result
 }
 
 #[tauri::command]

@@ -470,7 +470,7 @@ async function renderAllBlocks(markdownBlocks) {
     return el;
   });
   await Promise.all(els.map(el => renderBlockEl(el, footnoteDefs)));
-  consolidateFootnotes();
+  await consolidateFootnotes();
   await processCitations();
 }
 
@@ -480,7 +480,7 @@ function createBlockElement(markdown) {
   div.dataset.markdown = markdown;
   div.dataset.id = `blk-${++blockIdCounter}`;
   div.addEventListener("click", e => {
-    if (e.target.tagName !== "A" && !div.classList.contains("editing")) {
+    if (!e.target.closest("a, sup") && !div.classList.contains("editing")) {
       activateBlock(div);
     }
   });
@@ -540,8 +540,11 @@ async function renderBlockEl(blockEl, footnoteDefs = "") {
 
 function handleLinkClick(href) {
   if (!href) return;
+  if (href.startsWith("#")) {
+    document.getElementById(href.slice(1))?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    return;
+  }
   if (href.startsWith("http://") || href.startsWith("https://")) {
-    // Open external URLs via Tauri opener plugin
     invoke("plugin:opener|open_url", { url: href }).catch(() => {});
   } else {
     const stem = href.replace(/^\.\//, "").replace(/\.md$/, "");
@@ -635,6 +638,27 @@ async function activateBlock(blockEl) {
         return;
       }
     }
+    // Double Enter at end of block → create new block below
+    if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
+      const pos = ta.selectionStart;
+      if (pos > 0 && pos === ta.value.length && ta.value[pos - 1] === "\n") {
+        e.preventDefault();
+        ta.value = ta.value.slice(0, pos - 1);
+        ta.dispatchEvent(new Event("input"));
+        blockEl.dataset.markdown = ta.value;
+        await saveBlock(blockEl, true);
+        const newEl = createBlockElement("");
+        const next = blockEl.nextElementSibling;
+        if (next) {
+          document.getElementById("blocks-editor").insertBefore(newEl, next);
+        } else {
+          document.getElementById("blocks-editor").appendChild(newEl);
+        }
+        activateBlock(newEl);
+        return;
+      }
+    }
+
     handleBlockKeydown(e, blockEl, ta);
   });
 
@@ -687,8 +711,9 @@ async function saveBlock(blockEl, triggerFileSave) {
     await renderBlockEl(blockEl, footnoteDefs);
   }
 
+  await consolidateFootnotes();
+
   if (triggerFileSave) {
-    consolidateFootnotes();
     await processCitations();
     saveCurrentFile();
     if (activeSidebarTab === "outline") buildOutline();
@@ -932,11 +957,22 @@ function buildOutline() {
 
 // ===== FOOTNOTE CONSOLIDATION =====
 
-function consolidateFootnotes() {
+async function consolidateFootnotes() {
   const container = document.getElementById("blocks-editor");
 
   // Remove any previously consolidated section
   document.getElementById("footnotes-section")?.remove();
+
+  // Blocks that have sup refs but no section.footnotes have been previously
+  // consolidated and lost their rendered definitions. Re-render them now so
+  // their section.footnotes is present for the sweep below.
+  const footnoteDefs = extractFootnoteDefs(getEditorContent());
+  const stale = [...container.querySelectorAll(".block.rendered")].filter(
+    b => b.querySelector("sup.footnote-ref a") && !b.querySelector("section.footnotes")
+  );
+  if (stale.length > 0) {
+    await Promise.all(stale.map(b => renderBlockEl(b, footnoteDefs)));
+  }
 
   let globalN = 0;
   const collectedDefs = [];
@@ -946,19 +982,15 @@ function consolidateFootnotes() {
     const section = block.querySelector("section.footnotes");
     if (!section) return;
 
-    // For each inline superscript reference in this block, assign the next
-    // global number and update both the ref and its matching definition.
     block.querySelectorAll("sup.footnote-ref a").forEach(refA => {
       globalN++;
-      const oldFnId  = (refA.getAttribute("href") || "").slice(1); // "fn1"
-      const oldRefId =  refA.getAttribute("id")   || "";           // "fnref1"
+      const oldFnId  = (refA.getAttribute("href") || "").slice(1);
+      const oldRefId =  refA.getAttribute("id")   || "";
 
-      // Update inline reference
       refA.setAttribute("href", `#fn${globalN}`);
       refA.setAttribute("id",   `fnref${globalN}`);
       refA.textContent = `[${globalN}]`;
 
-      // Find matching definition and update its IDs
       const def = section.querySelector(`li[id="${oldFnId}"]`);
       if (def) {
         def.setAttribute("id", `fn${globalN}`);
@@ -973,10 +1005,9 @@ function consolidateFootnotes() {
 
   if (collectedDefs.length === 0) return;
 
-  // Build a single footnotes block at the end
   const wrapper = document.createElement("div");
   wrapper.id = "footnotes-section";
-  wrapper.className = "block rendered";  // inherits prose + user CSS
+  wrapper.className = "block rendered";
 
   const sec = document.createElement("section");
   sec.className = "footnotes";

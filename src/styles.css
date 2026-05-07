@@ -456,6 +456,10 @@ body[data-platform="ios"] .resize-handle {
   background: var(--hover-bg);
 }
 
+#blocks-editor:has(.block.editing) .block:hover:not(.editing) {
+  background: transparent;
+}
+
 /* ===== BLOCK TEXTAREA (editing state) ===== */
 .block-textarea {
   display: block;
