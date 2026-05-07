@@ -333,6 +333,7 @@ fn render_block(markdown: String, file_path: Option<String>) -> Result<String, S
     options.extension.table = true;
     options.extension.wikilinks_title_after_pipe = true;
     options.extension.header_ids = Some(String::new());
+    options.render.unsafe_ = true;
 
     let mut html = comrak::markdown_to_html(&preprocessed, &options);
 
@@ -355,6 +356,7 @@ fn render_markdown(markdown: String, user_css: String, file_path: Option<String>
     options.extension.table = true;
     options.extension.wikilinks_title_after_pipe = true;
     options.extension.header_ids = Some(String::new());
+    options.render.unsafe_ = true;
 
     let html = comrak::markdown_to_html(&preprocessed, &options);
 

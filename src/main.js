@@ -715,6 +715,8 @@ async function activateBlock(blockEl) {
   ta.className = "block-textarea";
   ta.value = markdown;
   ta.spellcheck = currentSpellCheck;
+  ta.setAttribute("autocorrect", "off");
+  ta.setAttribute("autocapitalize", "none");
 
   function autoResize() {
     ta.style.height = "auto";
