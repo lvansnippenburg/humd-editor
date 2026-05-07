@@ -378,30 +378,84 @@ body[data-platform="ios"] .resize-handle {
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  gap: 2px;
 }
 
-#editor-tab {
+.editor-tab {
   display: flex;
   align-items: center;
+  gap: 4px;
   height: 28px;
-  padding: 0 12px;
+  padding: 0 6px 0 12px;
   font-size: 12px;
-  color: var(--text-primary);
-  background: var(--bg-primary);
+  color: var(--text-secondary);
+  background: transparent;
   border-radius: 6px 6px 0 0;
-  border: 1px solid var(--border);
-  border-bottom-color: var(--bg-primary);
+  border: 1px solid transparent;
+  border-bottom: none;
   position: relative;
   bottom: -1px;
+  cursor: pointer;
+  flex-shrink: 0;
+  user-select: none;
+  white-space: nowrap;
 }
 
-#editor-filename {
+.editor-tab:hover {
+  color: var(--text-primary);
+  background: var(--hover-bg);
+}
+
+.editor-tab.active {
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border-color: var(--border);
+  border-bottom-color: var(--bg-primary);
+}
+
+.tab-filename {
   font-weight: 500;
-  max-width: 300px;
+  max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tab-filename.tab-dirty::before {
+  content: '●';
+  font-size: 8px;
+  margin-right: 4px;
+  opacity: 0.6;
+}
+
+.tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: 3px;
+  font-size: 14px;
+  padding: 0;
+  line-height: 1;
+  opacity: 0;
+  flex-shrink: 0;
+}
+
+.editor-tab:hover .tab-close,
+.editor-tab.active .tab-close {
+  opacity: 1;
+}
+
+.tab-close:hover {
+  background: var(--hover-bg);
+  color: var(--text-primary);
 }
 
 #note-tags {

@@ -23,6 +23,9 @@ let editingBlockId = null;
 let blockIdCounter = 0;
 let activeSidebarTab = "files";
 let autoSaveTimer = null;
+let tabs = [];        // [{ id, path, isDirty, content }]
+let activeTabId = null;
+let tabCounter = 0;
 let fileTreeCache = [];
 
 // Citation engine state
@@ -301,37 +304,172 @@ function renderFileTree(nodes, container = null) {
   }
 }
 
+function getActiveTab() {
+  return tabs.find(t => t.id === activeTabId) || null;
+}
+
+function renderTabBar() {
+  const bar = document.getElementById("editor-tab-bar");
+  bar.innerHTML = "";
+  tabs.forEach(tab => {
+    const el = document.createElement("div");
+    el.className = "editor-tab" + (tab.id === activeTabId ? " active" : "");
+    el.dataset.tabId = tab.id;
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "tab-filename" + (tab.isDirty ? " tab-dirty" : "");
+    nameEl.textContent = tab.path.split("/").pop();
+    nameEl.title = tab.path;
+    el.appendChild(nameEl);
+
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "tab-close";
+    closeBtn.title = "Close tab";
+    closeBtn.textContent = "×";
+    closeBtn.addEventListener("click", e => { e.stopPropagation(); closeTab(tab.id); });
+    el.appendChild(closeBtn);
+
+    el.addEventListener("click", () => switchToTab(tab.id));
+    bar.appendChild(el);
+  });
+}
+
+async function switchToTab(tabId) {
+  if (tabId === activeTabId) return;
+
+  // Flush active tab state to memory and save if dirty
+  if (activeTabId !== null) {
+    const cur = getActiveTab();
+    if (cur) {
+      clearTimeout(autoSaveTimer);
+      if (editingBlockId) {
+        const el = document.querySelector(`[data-id="${editingBlockId}"]`);
+        if (el) { const ta = el.querySelector("textarea"); if (ta) el.dataset.markdown = ta.value; }
+      }
+      cur.content = getEditorContent();
+      cur.isDirty = isDirty;
+      if (cur.isDirty) {
+        try {
+          await invoke("write_file", { filePath: cur.path, content: cur.content });
+          cur.isDirty = false;
+        } catch (e) { console.error("Auto-save on tab switch failed:", e); }
+      }
+    }
+  }
+
+  editingBlockId = null;
+  activeTabId = tabId;
+  const tab = tabs.find(t => t.id === tabId);
+  currentFilePath = tab.path;
+  isDirty = tab.isDirty;
+
+  const blocks = parseBlocks(tab.content);
+  await renderAllBlocks(blocks);
+
+  await revealFileInTree(tab.path);
+  document.querySelectorAll(".file-item").forEach(item => {
+    item.classList.toggle("active", item.dataset.path === tab.path);
+  });
+
+  await updateTagsBar(tab.path);
+  buildOutline();
+  buildLinksPanel();
+  renderTabBar();
+  saveUiState();
+}
+
+async function closeTab(tabId) {
+  const tab = tabs.find(t => t.id === tabId);
+  if (!tab) return;
+
+  if (tabId === activeTabId && isDirty) {
+    await saveCurrentFile();
+  } else if (tab.isDirty) {
+    try { await invoke("write_file", { filePath: tab.path, content: tab.content }); }
+    catch (e) { console.error("Failed to save on close:", e); }
+  }
+
+  const idx = tabs.indexOf(tab);
+  tabs.splice(idx, 1);
+
+  if (tabId === activeTabId) {
+    editingBlockId = null;
+    activeTabId = null;
+    if (tabs.length > 0) {
+      await switchToTab(tabs[Math.min(idx, tabs.length - 1)].id);
+    } else {
+      currentFilePath = null;
+      isDirty = false;
+      document.getElementById("note-tags").innerHTML = "";
+      document.getElementById("blocks-editor").innerHTML =
+        '<p class="no-file-msg">Select a file to start editing...</p>';
+      buildOutline();
+      buildLinksPanel();
+      renderTabBar();
+      saveUiState();
+    }
+  } else {
+    renderTabBar();
+  }
+}
+
 function closeFile() {
+  // Close all tabs (used when changing vault)
+  tabs = [];
+  activeTabId = null;
   currentFilePath = null;
   isDirty = false;
   editingBlockId = null;
-  const filenameEl = document.getElementById("editor-filename");
-  if (filenameEl) filenameEl.textContent = "No file open";
   document.getElementById("note-tags").innerHTML = "";
   document.getElementById("blocks-editor").innerHTML =
     '<p class="no-file-msg">Select a file to start editing...</p>';
   buildOutline();
   buildLinksPanel();
+  renderTabBar();
   saveUiState();
 }
 
 async function loadFile(path) {
   try {
+    // If already open in a tab, just switch to it
+    const existing = tabs.find(t => t.path === path);
+    if (existing) {
+      await switchToTab(existing.id);
+      return;
+    }
+
     const content = await invoke("read_file", { filePath: path });
+
+    // Flush current tab to memory before adding new one
+    if (activeTabId !== null) {
+      const cur = getActiveTab();
+      if (cur) {
+        clearTimeout(autoSaveTimer);
+        if (editingBlockId) {
+          const el = document.querySelector(`[data-id="${editingBlockId}"]`);
+          if (el) { const ta = el.querySelector("textarea"); if (ta) el.dataset.markdown = ta.value; }
+        }
+        cur.content = getEditorContent();
+        cur.isDirty = isDirty;
+      }
+    }
+
+    const tabId = `tab-${++tabCounter}`;
+    const tab = { id: tabId, path, isDirty: false, content };
+    tabs.push(tab);
+
+    editingBlockId = null;
+    activeTabId = tabId;
     currentFilePath = path;
     isDirty = false;
-    editingBlockId = null;
 
-    const filenameEl = document.getElementById("editor-filename");
-    if (filenameEl) filenameEl.textContent = path.split("/").pop();
+    const blocks = parseBlocks(content);
+    await renderAllBlocks(blocks);
 
     await revealFileInTree(path);
     document.querySelectorAll(".file-item").forEach(item => {
       item.classList.toggle("active", item.dataset.path === path);
     });
-
-    const blocks = parseBlocks(content);
-    await renderAllBlocks(blocks);
 
     await updateTagsBar(path);
     buildLinksPanel();
@@ -339,6 +477,7 @@ async function loadFile(path) {
 
     if (currentPlatform === "ios") switchTab("editor");
     showStatus(`Opened: ${path.split("/").pop()}`);
+    renderTabBar();
     saveUiState();
   } catch (error) {
     console.error("Failed to load file:", error);
@@ -585,7 +724,7 @@ async function activateBlock(blockEl) {
   ta.addEventListener("input", () => {
     autoResize();
     blockEl.dataset.markdown = ta.value;
-    isDirty = true;
+    if (!isDirty) { isDirty = true; renderTabBar(); }
     clearTimeout(autoSaveTimer);
     autoSaveTimer = setTimeout(saveCurrentFile, 800);
     if (activeSidebarTab === "outline") buildOutline();
@@ -800,6 +939,9 @@ async function saveCurrentFile() {
     const content = getEditorContent();
     await invoke("write_file", { filePath: currentFilePath, content });
     isDirty = false;
+    const cur = getActiveTab();
+    if (cur) { cur.isDirty = false; cur.content = content; }
+    renderTabBar();
     await buildLinkIndex();
     await updateTagsBar(currentFilePath);
     showStatus("Saved");
