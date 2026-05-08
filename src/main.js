@@ -17,20 +17,96 @@ let currentUserCss = "";
 let currentSpellCheck = true;
 let currentBibPath = null;
 let currentCslPath = null;
+let previewVisible = true;
+let savedEditorFlexBasis = null;
 let isDirty = false;
 let isInitialized = false;
-let editingBlockId = null;
-let blockIdCounter = 0;
 let activeSidebarTab = "files";
-let autoSaveTimer = null;
-let tabs = [];        // [{ id, path, isDirty, content }]
+let previewDebounceTimer = null;
+let autoSaveDebounceTimer = null;
+let editorScrollTimer = null;
+let suppressEditorScroll = false;   // true while preview→editor sync is in progress
+let suppressPreviewScroll = false;  // true while editor→preview sync is in progress
+let dragDidOccur = false;    // suppresses click after a completed mouse-drag
+let tabs = [];               // [{ id, path, isDirty, content }]
 let activeTabId = null;
 let tabCounter = 0;
 let fileTreeCache = [];
 
 // Citation engine state
-let citeBibData = null;   // Array of CSL JSON objects parsed from bibliography file
-let citeTemplateName = null; // Registered CSL template name (or null → use 'apa')
+let citeBibData = null;
+let citeTemplateName = null;
+
+// ===== FILE TREE ICONS =====
+
+const ICON_CHEVRON = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 16 16"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+const ICON_FOLDER_CLOSED = `<svg class="folder-svg-closed" xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 16 16"><path fill="none" stroke="var(--icon-folder)" stroke-linecap="round" stroke-linejoin="round" d="M4.5 4.5H12c.83 0 1.5.67 1.5 1.5v6c0 .83-.67 1.5-1.5 1.5H2A1.5 1.5 0 0 1 .5 12V3.5a1 1 0 0 1 1-1h5a1 1 0 0 1 1 1v1"/></svg>`;
+
+const ICON_FOLDER_OPEN = `<svg class="folder-svg-open" xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 16 16"><path fill="none" stroke="var(--icon-folder)" stroke-linecap="round" stroke-linejoin="round" d="m1.87 8l.7-2.74a1 1 0 0 1 .96-.76h10.94a1 1 0 0 1 .97 1.24l-1.75 7a1 1 0 0 1-.97.76H2A1.5 1.5 0 0 1 .5 12V3.5a1 1 0 0 1 1-1h5a1 1 0 0 1 1 1v1"/></svg>`;
+
+const ICON_FILE_MD = `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 16 16"><path fill="none" stroke="var(--icon-md)" stroke-linecap="round" stroke-linejoin="round" d="m9.25 8.25l2.25 2.25l2.25-2.25M3.5 11V5.5l2.04 3l1.96-3V11m4-.5V5M1.65 2.5h12.7c.59 0 1.15.49 1.15 1v9c0 .51-.56 1-1.15 1H1.65c-.59 0-1.15-.49-1.15-1V3.58c0-.5.56-1.08 1.15-1.08"/></svg>`;
+
+const ICON_FILE_GENERIC = `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 15 15"><path fill="none" stroke="var(--icon-file)" stroke-linecap="round" stroke-linejoin="round" d="M3 2.5C3 2.22 3.22 2 3.5 2H9.09c.13 0 .26.05.35.15l2.41 2.41c.1.09.15.22.15.35V12.5c0 .28-.22.5-.5.5h-8c-.28 0-.5-.22-.5-.5v-10ZM3.5 3H8.5V5.5c0 .28.22.5.5.5H11.5V12h-8V3Z"/></svg>`;
+
+function getFileIcon(name) {
+  const ext = name.split(".").pop().toLowerCase();
+  return ext === "md" ? ICON_FILE_MD : ICON_FILE_GENERIC;
+}
+
+// ===== INLINE RENAME =====
+
+async function startInlineRename(nameEl, oldPath) {
+  if (!nameEl.isConnected) return; // tree was refreshed since right-click
+
+  const oldName = oldPath.split("/").pop();
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "tree-rename-input";
+  input.value = oldName;
+  nameEl.replaceWith(input);
+  input.focus();
+  const dotIdx = oldName.lastIndexOf(".");
+  input.setSelectionRange(0, dotIdx > 0 ? dotIdx : oldName.length);
+
+  let done = false;
+
+  async function commit() {
+    if (done) return;
+    done = true;
+    const newName = input.value.trim();
+    if (!newName || newName === oldName) { input.replaceWith(nameEl); return; }
+    try {
+      const newPath = await invoke("rename_file", { oldPath, newName });
+      tabs.forEach(t => {
+        if (t.path === oldPath) {
+          t.path = newPath;
+          if (t.id === activeTabId) currentFilePath = newPath;
+        }
+      });
+      renderTabBar();
+      await refreshFileTree();
+      if (currentFilePath === newPath) await revealFileInTree(newPath);
+      showStatus(`Renamed to "${newName}"`);
+    } catch (err) {
+      input.replaceWith(nameEl);
+      showStatus(`Rename failed: ${err}`, true);
+    }
+  }
+
+  function cancel() {
+    if (done) return;
+    done = true;
+    input.replaceWith(nameEl);
+  }
+
+  input.addEventListener("blur", commit);
+
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); commit(); }
+    if (e.key === "Escape") { e.preventDefault(); input.removeEventListener("blur", commit); cancel(); }
+  });
+}
 
 // ===== INITIALIZATION =====
 
@@ -46,7 +122,7 @@ async function initialize() {
     currentSpellCheck = settings.spellCheck ?? settings.spell_check ?? true;
     currentBibPath = settings.cslJsonPath || settings.csl_json_path || null;
     currentCslPath = settings.cslStylePath || settings.csl_style_path || null;
-    applyUserCss(currentUserCss);
+    document.getElementById("editor").spellcheck = currentSpellCheck;
 
     let vaultPath = settings.vaultPath || settings.vault_path;
 
@@ -81,7 +157,6 @@ async function initialize() {
     const openFiles = settings.openFiles || settings.open_files || (lastOpenFile ? [lastOpenFile] : []);
 
     if (openFiles.length > 0) {
-      // Read all files in parallel, create tab objects without rendering
       const results = await Promise.allSettled(
         openFiles.map(path => invoke("read_file", { filePath: path }))
       );
@@ -91,7 +166,6 @@ async function initialize() {
           tabs.push({ id: tabId, path: openFiles[i], isDirty: false, content: result.value });
         }
       });
-      // Render and activate the previously active tab (or the last one)
       if (tabs.length > 0) {
         const activeTab = tabs.find(t => t.path === lastOpenFile) || tabs[tabs.length - 1];
         await switchToTab(activeTab.id);
@@ -144,6 +218,18 @@ async function changeVaultFolder() {
 function setupEventListeners() {
   initResizableHandles();
 
+  const editor = document.getElementById("editor");
+  editor.addEventListener("input", onEditorInput);
+  editor.addEventListener("keydown", onEditorKeydown);
+  editor.addEventListener("scroll", onEditorScroll, { passive: true });
+
+  document.getElementById("preview-toggle-btn").addEventListener("click", togglePreview);
+
+  document.addEventListener("keydown", e => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "e") { e.preventDefault(); togglePreview(); }
+    if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); saveCurrentFile(); }
+  });
+
   document.querySelectorAll(".sidebar-tab").forEach(btn => {
     btn.addEventListener("click", () => switchSidebarTab(btn.dataset.tab));
   });
@@ -184,32 +270,199 @@ function setupEventListeners() {
     if (e.key === "Escape") closeSettingsDialog();
   });
 
-  // Click on empty area below blocks → activate last block
-  document.getElementById("blocks-editor").addEventListener("click", e => {
-    if (e.target === document.getElementById("blocks-editor") && currentFilePath) {
-      const blocks = document.querySelectorAll(".block");
-      if (blocks.length > 0) activateBlock(blocks[blocks.length - 1]);
+  // Messages from preview iframe
+  window.addEventListener("message", async msg => {
+    if (msg.data.type === "wikilink") {
+      const stem = (msg.data.href || "").replace(/^\.\//, "").replace(/\.md$/, "");
+      const path = findNoteByName(stem);
+      if (path) await loadFile(path);
+      else showStatus(`Note not found: ${stem}`);
+      return;
     }
-  });
 
-  document.addEventListener("keydown", e => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "s") {
-      e.preventDefault();
-      saveCurrentFile();
+    if (msg.data.type === "preview-scroll") {
+      if (suppressPreviewScroll || !currentFilePath) return;
+      const { currentId, nextId, fraction } = msg.data;
+      const positions = getEditorHeadingPositions();
+      const editor = document.getElementById("editor");
+
+      let targetScrollTop;
+      if (positions.length === 0 || currentId === null && nextId === null) {
+        targetScrollTop = fraction * Math.max(0, editor.scrollHeight - editor.clientHeight);
+      } else {
+        const cur = currentId ? positions.find(h => h.slug === currentId) : null;
+        const nxt = nextId ? positions.find(h => h.slug === nextId) : null;
+        if (!cur && !nxt) {
+          targetScrollTop = fraction * Math.max(0, editor.scrollHeight - editor.clientHeight);
+        } else if (cur && nxt) {
+          targetScrollTop = cur.pixelTop + fraction * (nxt.pixelTop - cur.pixelTop);
+        } else if (cur) {
+          targetScrollTop = cur.pixelTop + fraction * (editor.scrollHeight - cur.pixelTop);
+        } else {
+          targetScrollTop = fraction * nxt.pixelTop;
+        }
+      }
+
+      suppressEditorScroll = true;
+      editor.scrollTop = targetScrollTop;
+      setTimeout(() => { suppressEditorScroll = false; }, 300);
     }
   });
 }
 
+// ===== FILE DRAG (mouse-event based, bypasses WKWebView native drag) =====
+
+function addFileMouseDrag(li, filePath, fileName) {
+  li.addEventListener("mousedown", e => {
+    if (e.button !== 0) return;
+    if (e.target.tagName === "INPUT") return; // don't interfere with rename input
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let started = false;
+    let ghost = null;
+
+    function clearHighlights() {
+      document.querySelectorAll(".tree-drop-target").forEach(el => el.classList.remove("tree-drop-target"));
+    }
+
+    function getDropZone(x, y) {
+      const editorEl = document.getElementById("editor");
+      const er = editorEl?.getBoundingClientRect();
+      if (er && x >= er.left && x <= er.right && y >= er.top && y <= er.bottom) {
+        return { destDir: null, dir: null, overEditor: true };
+      }
+      const el = document.elementFromPoint(x, y);
+      const dir = el?.closest(".tree-dir");
+      if (dir) {
+        const destDir = dir.querySelector(":scope > ul")?.dataset.path
+                     ?? dir.querySelector("ul")?.dataset.path ?? null;
+        return { destDir, dir, overEditor: false };
+      }
+      const sidebar = document.getElementById("sidebar");
+      const sr = sidebar?.getBoundingClientRect();
+      if (sr && x >= sr.left && x <= sr.right && y >= sr.top && y <= sr.bottom) {
+        return { destDir: currentVaultPath, dir: null, overEditor: false };
+      }
+      return { destDir: null, dir: null, overEditor: false };
+    }
+
+    function onMove(e) {
+      if (!started) {
+        if (Math.abs(e.clientX - startX) < 5 && Math.abs(e.clientY - startY) < 5) return;
+        started = true;
+        ghost = document.createElement("div");
+        ghost.className = "drag-ghost";
+        ghost.innerHTML = getFileIcon(fileName);
+        ghost.appendChild(document.createTextNode(" " + fileName));
+        document.body.appendChild(ghost);
+        document.body.style.userSelect = "none";
+        document.body.style.cursor = "grabbing";
+        document.body.classList.add("dragging-file");
+      }
+
+      ghost.style.left = (e.clientX + 14) + "px";
+      ghost.style.top  = (e.clientY - 10) + "px";
+
+      clearHighlights();
+      const { dir } = getDropZone(e.clientX, e.clientY);
+      if (dir) dir.classList.add("tree-drop-target");
+    }
+
+    async function onUp(e) {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+
+      if (!started) return;
+
+      dragDidOccur = true;
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+      document.body.classList.remove("dragging-file");
+      ghost?.remove();
+      clearHighlights();
+
+      const { destDir, dir, overEditor } = getDropZone(e.clientX, e.clientY);
+
+      if (overEditor) {
+        const editor = document.getElementById("editor");
+        editor.focus();
+        const pos = editor.selectionStart;
+        const stem = fileName.replace(/\.md$/i, "");
+        const link = `[[${stem}]]`;
+        const val = editor.value;
+        editor.value = val.slice(0, pos) + link + val.slice(pos);
+        editor.selectionStart = editor.selectionEnd = pos + link.length;
+        onEditorInput();
+        return;
+      }
+
+      if (!destDir) return;
+
+      const srcParent = filePath.split("/").slice(0, -1).join("/");
+      if (srcParent === destDir) { showStatus("File is already in this folder"); return; }
+
+      try {
+        const newPath = await invoke("move_file", { srcPath: filePath, destDir });
+        tabs.forEach(t => {
+          if (t.path === filePath) {
+            t.path = newPath;
+            if (t.id === activeTabId) currentFilePath = newPath;
+          }
+        });
+        renderTabBar();
+        await refreshFileTree();
+        showStatus(`Moved to ${destDir.split("/").pop()}/`);
+      } catch (err) {
+        showStatus(`Move failed: ${err}`, true);
+      }
+    }
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
+// ===== TOGGLE PREVIEW =====
+
+function togglePreview() {
+  const editorPane = document.getElementById("editor-pane");
+  if (previewVisible) {
+    const w = editorPane.getBoundingClientRect().width;
+    if (w > 0) savedEditorFlexBasis = w;
+    editorPane.style.flex = "";
+  } else {
+    if (savedEditorFlexBasis) {
+      editorPane.style.flex = `0 0 ${savedEditorFlexBasis}px`;
+    }
+  }
+  previewVisible = !previewVisible;
+  const pane = document.getElementById("preview-pane");
+  const btn = document.getElementById("preview-toggle-btn");
+  const editorHandle = document.getElementById("editor-resize");
+  pane.style.display = previewVisible ? "" : "none";
+  editorHandle.style.display = previewVisible ? "" : "none";
+  btn.classList.toggle("active", previewVisible);
+  btn.title = previewVisible ? "Hide preview (⌘E)" : "Show preview (⌘E)";
+  btn.setAttribute("aria-label", previewVisible ? "Hide preview" : "Show preview");
+  saveUiState();
+}
+
+// ===== RESIZE HANDLES =====
+
 function startDrag(handle, startX, onDrag, onEnd) {
+  const iframe = document.getElementById("preview");
   handle.classList.add("dragging");
   document.body.style.cursor = "col-resize";
   document.body.style.userSelect = "none";
+  if (iframe) iframe.style.pointerEvents = "none";
 
   function onMove(e) { onDrag(e.clientX - startX); }
   function onUp() {
     handle.classList.remove("dragging");
     document.body.style.cursor = "";
     document.body.style.userSelect = "";
+    if (iframe) iframe.style.pointerEvents = "";
     document.removeEventListener("mousemove", onMove);
     document.removeEventListener("mouseup", onUp);
     if (onEnd) onEnd();
@@ -221,13 +474,30 @@ function startDrag(handle, startX, onDrag, onEnd) {
 function initResizableHandles() {
   if (currentPlatform === "ios") return;
   const sidebar = document.getElementById("sidebar");
-  const handle = document.getElementById("sidebar-resize");
-  handle.addEventListener("mousedown", e => {
+  const editorPane = document.getElementById("editor-pane");
+  const app = document.getElementById("app");
+
+  const sidebarHandle = document.getElementById("sidebar-resize");
+  sidebarHandle.addEventListener("mousedown", e => {
     e.preventDefault();
     const startWidth = sidebar.getBoundingClientRect().width;
-    startDrag(handle, e.clientX, dx => {
+    startDrag(sidebarHandle, e.clientX, dx => {
       const newWidth = Math.max(160, Math.min(480, startWidth + dx));
       sidebar.style.flex = `0 0 ${newWidth}px`;
+    }, saveUiState);
+  });
+
+  const editorHandle = document.getElementById("editor-resize");
+  editorHandle.addEventListener("mousedown", e => {
+    e.preventDefault();
+    const startWidth = editorPane.getBoundingClientRect().width;
+    startDrag(editorHandle, e.clientX, dx => {
+      const appWidth = app.getBoundingClientRect().width;
+      const sidebarWidth = sidebar.getBoundingClientRect().width;
+      const maxWidth = appWidth - sidebarWidth - 200 - 10;
+      const newWidth = Math.max(200, Math.min(maxWidth, startWidth + dx));
+      editorPane.style.flex = `0 0 ${newWidth}px`;
+      savedEditorFlexBasis = newWidth;
     }, saveUiState);
   });
 }
@@ -288,27 +558,51 @@ function renderFileTree(nodes, container = null) {
       li.className = "tree-dir collapsed";
       const label = document.createElement("div");
       label.className = "tree-label";
-      label.innerHTML = `<span class="tree-icon">▸</span><span>${node.name}</span>`;
+      // Icons via innerHTML (trusted constants), name via textContent (safe)
+      label.innerHTML = `<span class="tree-chevron">${ICON_CHEVRON}</span><span class="tree-folder-icon">${ICON_FOLDER_CLOSED}${ICON_FOLDER_OPEN}</span>`;
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "tree-item-name";
+      nameSpan.textContent = node.name;
+      label.appendChild(nameSpan);
       const nested = document.createElement("ul");
       nested.dataset.path = node.path;
       label.addEventListener("click", async e => {
         e.stopPropagation();
         const isCollapsed = li.classList.contains("collapsed");
         li.classList.toggle("collapsed");
-        label.querySelector(".tree-icon").textContent = isCollapsed ? "▾" : "▸";
+        // No manual icon swap needed — CSS handles chevron rotation and folder open/close
         if (isCollapsed && !nested.dataset.loaded) {
           const children = await invoke("list_dir", { dirPath: node.path });
           renderFileTree(children, nested);
           nested.dataset.loaded = "true";
         }
       });
+      nameSpan.addEventListener("dblclick", e => {
+        e.stopPropagation();
+        startInlineRename(nameSpan, node.path);
+      });
       li.appendChild(label);
       li.appendChild(nested);
     } else {
       li.className = "file-item";
       li.dataset.path = node.path;
-      li.textContent = node.name;
-      li.addEventListener("click", () => loadFile(node.path));
+      const iconEl = document.createElement("span");
+      iconEl.className = "tree-file-icon";
+      iconEl.innerHTML = getFileIcon(node.name);
+      const nameEl = document.createElement("span");
+      nameEl.className = "tree-item-name";
+      nameEl.textContent = node.name;
+      li.appendChild(iconEl);
+      li.appendChild(nameEl);
+      li.addEventListener("click", () => {
+        if (dragDidOccur) { dragDidOccur = false; return; }
+        loadFile(node.path);
+      });
+      nameEl.addEventListener("dblclick", e => {
+        e.stopPropagation();
+        startInlineRename(nameEl, node.path);
+      });
+      addFileMouseDrag(li, node.path, node.name);
     }
     container.appendChild(li);
   });
@@ -319,6 +613,8 @@ function renderFileTree(nodes, container = null) {
     });
   }
 }
+
+// ===== TABS =====
 
 function getActiveTab() {
   return tabs.find(t => t.id === activeTabId) || null;
@@ -353,15 +649,11 @@ function renderTabBar() {
 async function switchToTab(tabId) {
   if (tabId === activeTabId) return;
 
-  // Flush active tab state to memory and save if dirty
+  // Flush active tab to memory before switching
   if (activeTabId !== null) {
     const cur = getActiveTab();
     if (cur) {
-      clearTimeout(autoSaveTimer);
-      if (editingBlockId) {
-        const el = document.querySelector(`[data-id="${editingBlockId}"]`);
-        if (el) { const ta = el.querySelector("textarea"); if (ta) el.dataset.markdown = ta.value; }
-      }
+      clearTimeout(autoSaveDebounceTimer);
       cur.content = getEditorContent();
       cur.isDirty = isDirty;
       if (cur.isDirty) {
@@ -373,14 +665,13 @@ async function switchToTab(tabId) {
     }
   }
 
-  editingBlockId = null;
   activeTabId = tabId;
   const tab = tabs.find(t => t.id === tabId);
   currentFilePath = tab.path;
   isDirty = tab.isDirty;
 
-  const blocks = parseBlocks(tab.content);
-  await renderAllBlocks(blocks);
+  document.getElementById("editor").value = tab.content;
+  await updatePreview();
 
   await revealFileInTree(tab.path);
   document.querySelectorAll(".file-item").forEach(item => {
@@ -394,22 +685,23 @@ async function switchToTab(tabId) {
   saveUiState();
 }
 
-async function closeTab(tabId) {
+async function closeTab(tabId, skipSave = false) {
   const tab = tabs.find(t => t.id === tabId);
   if (!tab) return;
 
-  if (tabId === activeTabId && isDirty) {
-    await saveCurrentFile();
-  } else if (tab.isDirty) {
-    try { await invoke("write_file", { filePath: tab.path, content: tab.content }); }
-    catch (e) { console.error("Failed to save on close:", e); }
+  if (!skipSave) {
+    if (tabId === activeTabId && isDirty) {
+      await saveCurrentFile();
+    } else if (tab.isDirty) {
+      try { await invoke("write_file", { filePath: tab.path, content: tab.content }); }
+      catch (e) { console.error("Failed to save on close:", e); }
+    }
   }
 
   const idx = tabs.indexOf(tab);
   tabs.splice(idx, 1);
 
   if (tabId === activeTabId) {
-    editingBlockId = null;
     activeTabId = null;
     if (tabs.length > 0) {
       await switchToTab(tabs[Math.min(idx, tabs.length - 1)].id);
@@ -417,8 +709,8 @@ async function closeTab(tabId) {
       currentFilePath = null;
       isDirty = false;
       document.getElementById("note-tags").innerHTML = "";
-      document.getElementById("blocks-editor").innerHTML =
-        '<p class="no-file-msg">Select a file to start editing...</p>';
+      document.getElementById("editor").value = "";
+      document.getElementById("preview").srcdoc = "<p>No file open</p>";
       buildOutline();
       buildLinksPanel();
       renderTabBar();
@@ -430,15 +722,13 @@ async function closeTab(tabId) {
 }
 
 function closeFile() {
-  // Close all tabs (used when changing vault)
   tabs = [];
   activeTabId = null;
   currentFilePath = null;
   isDirty = false;
-  editingBlockId = null;
   document.getElementById("note-tags").innerHTML = "";
-  document.getElementById("blocks-editor").innerHTML =
-    '<p class="no-file-msg">Select a file to start editing...</p>';
+  document.getElementById("editor").value = "";
+  document.getElementById("preview").srcdoc = "<p>No file open</p>";
   buildOutline();
   buildLinksPanel();
   renderTabBar();
@@ -447,7 +737,6 @@ function closeFile() {
 
 async function loadFile(path) {
   try {
-    // If already open in a tab, just switch to it
     const existing = tabs.find(t => t.path === path);
     if (existing) {
       await switchToTab(existing.id);
@@ -456,15 +745,11 @@ async function loadFile(path) {
 
     const content = await invoke("read_file", { filePath: path });
 
-    // Flush current tab to memory before adding new one
+    // Flush current tab to memory before opening new one
     if (activeTabId !== null) {
       const cur = getActiveTab();
       if (cur) {
-        clearTimeout(autoSaveTimer);
-        if (editingBlockId) {
-          const el = document.querySelector(`[data-id="${editingBlockId}"]`);
-          if (el) { const ta = el.querySelector("textarea"); if (ta) el.dataset.markdown = ta.value; }
-        }
+        clearTimeout(autoSaveDebounceTimer);
         cur.content = getEditorContent();
         cur.isDirty = isDirty;
       }
@@ -474,13 +759,12 @@ async function loadFile(path) {
     const tab = { id: tabId, path, isDirty: false, content };
     tabs.push(tab);
 
-    editingBlockId = null;
     activeTabId = tabId;
     currentFilePath = path;
     isDirty = false;
 
-    const blocks = parseBlocks(content);
-    await renderAllBlocks(blocks);
+    document.getElementById("editor").value = content;
+    await updatePreview();
 
     await revealFileInTree(path);
     document.querySelectorAll(".file-item").forEach(item => {
@@ -539,182 +823,31 @@ async function promptNewFile() {
   input.focus();
 }
 
-// ===== BLOCK PARSING =====
-
-function parseBlocks(markdown) {
-  if (!markdown || !markdown.trim()) return [];
-  const lines = markdown.split("\n");
-  const result = [];
-  let i = 0;
-  let current = [];
-  let inFence = false;
-
-  // Preserve YAML front matter as a single block
-  if (lines[0] && lines[0].trim() === "---") {
-    let j = 1;
-    while (j < lines.length && lines[j].trim() !== "---") j++;
-    if (j < lines.length) {
-      result.push(lines.slice(0, j + 1).join("\n"));
-      i = j + 1;
-      while (i < lines.length && lines[i].trim() === "") i++;
-    }
-  }
-
-  for (; i < lines.length; i++) {
-    const line = lines[i];
-    const trimmed = line.trim();
-    if (trimmed.match(/^(`{3,}|~{3,})/)) {
-      inFence = !inFence;
-      current.push(line);
-    } else if (!inFence && trimmed === "") {
-      if (current.length > 0) {
-        result.push(current.join("\n"));
-        current = [];
-      }
-    } else {
-      current.push(line);
-    }
-  }
-  if (current.length > 0) result.push(current.join("\n"));
-  return result;
-}
+// ===== EDITOR =====
 
 function getEditorContent() {
-  const blocks = document.querySelectorAll("#blocks-editor .block");
-  return Array.from(blocks)
-    .map(b => b.dataset.markdown || "")
-    .filter(m => m.trim() !== "")
-    .join("\n\n");
+  return document.getElementById("editor").value;
 }
 
-// ===== BLOCK RENDERING =====
+function onEditorInput() {
+  if (!currentFilePath) return;
+  isDirty = true;
+  const cur = getActiveTab();
+  if (cur && !cur.isDirty) { cur.isDirty = true; renderTabBar(); }
 
-// Extract all reference-style footnote definitions from a markdown string.
-// Returns a string of "[^id]: ..." lines (including indented continuations)
-// that can be appended to any block so comrak can resolve cross-block references.
-function extractFootnoteDefs(markdown) {
-  const lines = markdown.split("\n");
-  const defs = [];
-  let i = 0;
-  while (i < lines.length) {
-    if (/^\[\^[^\]]+\]:/.test(lines[i])) {
-      defs.push(lines[i]);
-      i++;
-      while (i < lines.length && /^[ \t]/.test(lines[i]) && lines[i].trim() !== "") {
-        defs.push(lines[i]);
-        i++;
-      }
-    } else {
-      i++;
-    }
-  }
-  return defs.join("\n");
+  clearTimeout(previewDebounceTimer);
+  previewDebounceTimer = setTimeout(() => {
+    updatePreview();
+    if (activeSidebarTab === "outline") buildOutline();
+    if (activeSidebarTab === "links") buildLinksPanel();
+  }, 300);
+
+  clearTimeout(autoSaveDebounceTimer);
+  autoSaveDebounceTimer = setTimeout(saveCurrentFile, 800);
 }
-
-async function renderAllBlocks(markdownBlocks) {
-  const container = document.getElementById("blocks-editor");
-  container.innerHTML = "";
-  if (!markdownBlocks || markdownBlocks.length === 0) {
-    container.appendChild(createBlockElement(""));
-    return;
-  }
-  const footnoteDefs = extractFootnoteDefs(markdownBlocks.join("\n\n"));
-  const els = markdownBlocks.map(md => {
-    const el = createBlockElement(md);
-    container.appendChild(el);
-    return el;
-  });
-  await Promise.all(els.map(el => renderBlockEl(el, footnoteDefs)));
-  await consolidateFootnotes();
-  await processCitations();
-}
-
-function createBlockElement(markdown) {
-  const div = document.createElement("div");
-  div.className = "block";
-  div.dataset.markdown = markdown;
-  div.dataset.id = `blk-${++blockIdCounter}`;
-  div.addEventListener("click", e => {
-    if (!e.target.closest("a, sup") && !div.classList.contains("editing")) {
-      activateBlock(div);
-    }
-  });
-  return div;
-}
-
-async function renderBlockEl(blockEl, footnoteDefs = "") {
-  const markdown = blockEl.dataset.markdown || "";
-  blockEl.classList.remove("rendered", "editing", "block-frontmatter");
-  blockEl.innerHTML = "";
-
-  if (!markdown.trim()) {
-    blockEl.classList.add("rendered");
-    return;
-  }
-
-  // Front matter block: render as preformatted text
-  if (markdown.trim().startsWith("---")) {
-    const lines = markdown.trim().split("\n");
-    const closeIdx = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
-    if (closeIdx > 0) {
-      blockEl.classList.add("rendered", "block-frontmatter");
-      const pre = document.createElement("pre");
-      pre.textContent = markdown;
-      blockEl.appendChild(pre);
-      return;
-    }
-  }
-
-  // Append footnote definitions from the rest of the document so comrak can
-  // resolve [^id] references that live in a different block.
-  const markdownToRender = footnoteDefs
-    ? markdown + "\n\n" + footnoteDefs
-    : markdown;
-
-  try {
-    const html = await invoke("render_block", {
-      markdown: markdownToRender,
-      filePath: currentFilePath || null,
-    });
-    blockEl.innerHTML = html;
-    blockEl.classList.add("rendered");
-
-    // Wire up all links to internal navigation
-    blockEl.querySelectorAll("a").forEach(a => {
-      a.addEventListener("click", e => {
-        e.preventDefault();
-        e.stopPropagation();
-        handleLinkClick(a.getAttribute("href") || "");
-      });
-    });
-  } catch (err) {
-    blockEl.textContent = markdown;
-    blockEl.classList.add("rendered");
-  }
-}
-
-function handleLinkClick(href) {
-  if (!href) return;
-  if (href.startsWith("#")) {
-    document.getElementById(href.slice(1))?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    return;
-  }
-  if (href.startsWith("http://") || href.startsWith("https://")) {
-    invoke("plugin:opener|open_url", { url: href }).catch(() => {});
-  } else {
-    const stem = href.replace(/^\.\//, "").replace(/\.md$/, "");
-    const path = findNoteByName(stem);
-    if (path) loadFile(path);
-    else showStatus(`Note not found: ${stem}`);
-  }
-}
-
-// ===== BLOCK ACTIVATION / EDITING =====
 
 function isCursorInCode(value, pos) {
-  // Fenced code block: first line of the block starts with ``` or ~~~
   if (/^(`{3,}|~{3,})/.test(value)) return true;
-  // Inline code: toggle at each backtick before the cursor; odd count = inside code span
   let inCode = false;
   for (let i = 0; i < pos; i++) {
     if (value[i] === "`") inCode = !inCode;
@@ -722,242 +855,120 @@ function isCursorInCode(value, pos) {
   return inCode;
 }
 
-async function activateBlock(blockEl) {
-  if (blockEl.dataset.id === editingBlockId) return;
+function onEditorKeydown(e) {
+  const editor = document.getElementById("editor");
+  const isMeta = e.metaKey || e.ctrlKey;
 
-  // Save whatever was previously being edited
-  if (editingBlockId) {
-    const cur = document.querySelector(`[data-id="${editingBlockId}"]`);
-    if (cur) await saveBlock(cur, false);
-  }
+  // Zotero Better BibTeX CAYW: \@ triggers the citation picker
+  if (e.key === "@" && !isMeta && !e.altKey) {
+    const pos = editor.selectionStart;
+    if (pos >= 1 && editor.value[pos - 1] === "\\" && !isCursorInCode(editor.value, pos - 1)) {
+      e.preventDefault();
+      const insertPos = pos - 1;
+      editor.value = editor.value.slice(0, insertPos) + editor.value.slice(pos);
+      editor.selectionStart = editor.selectionEnd = insertPos;
+      editor.dispatchEvent(new Event("input"));
 
-  editingBlockId = blockEl.dataset.id;
-  const markdown = blockEl.dataset.markdown || "";
-
-  blockEl.classList.remove("rendered", "block-frontmatter");
-  blockEl.classList.add("editing");
-  blockEl.innerHTML = "";
-
-  const ta = document.createElement("textarea");
-  ta.className = "block-textarea";
-  ta.value = markdown;
-  ta.spellcheck = currentSpellCheck;
-  ta.setAttribute("autocorrect", "off");
-  ta.setAttribute("autocapitalize", "none");
-
-  function autoResize() {
-    ta.style.height = "auto";
-    ta.style.height = ta.scrollHeight + "px";
-  }
-
-  ta.addEventListener("input", () => {
-    autoResize();
-    blockEl.dataset.markdown = ta.value;
-    if (!isDirty) { isDirty = true; renderTabBar(); }
-    clearTimeout(autoSaveTimer);
-    autoSaveTimer = setTimeout(saveCurrentFile, 800);
-    if (activeSidebarTab === "outline") buildOutline();
-    if (activeSidebarTab === "links") buildLinksPanel();
-  });
-
-  let zoteroPending = false;
-
-  ta.addEventListener("blur", async () => {
-    if (zoteroPending) return; // keep block alive while Zotero picker is open
-    if (editingBlockId === blockEl.dataset.id) {
-      await saveBlock(blockEl, true);
-    }
-  });
-
-  ta.addEventListener("keydown", async e => {
-    // Zotero Better BibTeX CAYW: \@ triggers the citation picker
-    if (e.key === "@" && !e.metaKey && !e.ctrlKey && !e.altKey) {
-      const pos = ta.selectionStart;
-      if (pos >= 1 && ta.value[pos - 1] === "\\" && !isCursorInCode(ta.value, pos - 1)) {
-        e.preventDefault();
-        const insertPos = pos - 1;
-        // Remove the backslash trigger
-        ta.value = ta.value.slice(0, insertPos) + ta.value.slice(pos);
-        ta.selectionStart = ta.selectionEnd = insertPos;
-        blockEl.dataset.markdown = ta.value;
-
-        zoteroPending = true;
+      (async () => {
         showStatus("Opening Zotero citation picker…");
         try {
           const raw = (await invoke("fetch_zotero_cayw")).trim();
           if (!raw) { showStatus("No citation selected"); return; }
-
-          // Ensure the string is wrapped in [...]; CAYW usually includes them
-          // but guard against bare "@key" returns just in case.
           const citation = raw.startsWith("[") ? raw : `[${raw}]`;
-
-          const cur = ta.value;
-          ta.value = cur.slice(0, insertPos) + citation + cur.slice(insertPos);
-          ta.selectionStart = ta.selectionEnd = insertPos + citation.length;
-          blockEl.dataset.markdown = ta.value;
-          ta.dispatchEvent(new Event("input"));
+          const cur = editor.value;
+          editor.value = cur.slice(0, insertPos) + citation + cur.slice(insertPos);
+          editor.selectionStart = editor.selectionEnd = insertPos + citation.length;
+          editor.dispatchEvent(new Event("input"));
           showStatus("Citation inserted");
         } catch {
           showStatus("Zotero not available — is Zotero running with Better BibTeX?", true);
-        } finally {
-          zoteroPending = false;
-          ta.focus();
         }
-        return;
-      }
+      })();
+      return;
     }
-    // Double Enter at end of block → create new block below
-    if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
-      const pos = ta.selectionStart;
-      if (pos > 0 && pos === ta.value.length && ta.value[pos - 1] === "\n") {
-        e.preventDefault();
-        ta.value = ta.value.slice(0, pos - 1);
-        ta.dispatchEvent(new Event("input"));
-        blockEl.dataset.markdown = ta.value;
-        await saveBlock(blockEl, true);
-        const newEl = createBlockElement("");
-        const next = blockEl.nextElementSibling;
-        if (next) {
-          document.getElementById("blocks-editor").insertBefore(newEl, next);
-        } else {
-          document.getElementById("blocks-editor").appendChild(newEl);
-        }
-        activateBlock(newEl);
-        return;
-      }
-    }
+  }
 
-    handleBlockKeydown(e, blockEl, ta);
-  });
-
-  blockEl.appendChild(ta);
-  blockEl.scrollIntoView({ block: "nearest" });
-
-  requestAnimationFrame(() => {
-    autoResize();
-    ta.focus();
-    ta.selectionStart = ta.selectionEnd = ta.value.length;
-  });
+  if (isMeta && e.key === "b") { e.preventDefault(); wrapSelection("**", "**"); return; }
+  if (isMeta && e.key === "i") { e.preventDefault(); wrapSelection("_", "_"); return; }
+  if (isMeta && e.key === "1") { e.preventDefault(); prefixLine("# "); return; }
+  if (isMeta && e.key === "2") { e.preventDefault(); prefixLine("## "); return; }
+  if (isMeta && e.key === "3") { e.preventDefault(); prefixLine("### "); return; }
 }
 
-async function saveBlock(blockEl, triggerFileSave) {
-  const ta = blockEl.querySelector("textarea");
-  if (!ta) return;
-  editingBlockId = null;
-
-  const newMarkdown = ta.value;
-  const container = blockEl.parentElement;
-  const nextSibling = blockEl.nextSibling;
-
-  blockEl.classList.remove("editing");
-  blockEl.innerHTML = "";
-
-  const subBlocks = parseBlocks(newMarkdown);
-
-  // Compute footnote definitions from the full document for cross-block resolution.
-  // Do this after updating dataset.markdown so the current block's content is included.
-  if (!newMarkdown.trim()) {
-    const allBlocks = container?.querySelectorAll(".block");
-    if (allBlocks && allBlocks.length > 1) {
-      blockEl.remove();
-    } else {
-      blockEl.dataset.markdown = "";
-      blockEl.classList.add("rendered");
-    }
-  } else if (subBlocks.length > 1) {
-    // Blank lines within editing split the block
-    blockEl.remove();
-    const newEls = subBlocks.map(md => createBlockElement(md));
-    for (const el of [...newEls].reverse()) {
-      container.insertBefore(el, nextSibling);
-    }
-    const footnoteDefs = extractFootnoteDefs(getEditorContent());
-    await Promise.all(newEls.map(el => renderBlockEl(el, footnoteDefs)));
-  } else {
-    blockEl.dataset.markdown = newMarkdown;
-    const footnoteDefs = extractFootnoteDefs(getEditorContent());
-    await renderBlockEl(blockEl, footnoteDefs);
-  }
-
-  await consolidateFootnotes();
-
-  if (triggerFileSave) {
-    await processCitations();
-    saveCurrentFile();
-    if (activeSidebarTab === "outline") buildOutline();
-    if (activeSidebarTab === "links") buildLinksPanel();
-  }
-}
-
-function handleBlockKeydown(e, blockEl, ta) {
-  const isMeta = e.metaKey || e.ctrlKey;
-
-  if (isMeta && e.key === "b") { e.preventDefault(); wrapInTextarea(ta, "**", "**"); return; }
-  if (isMeta && e.key === "i") { e.preventDefault(); wrapInTextarea(ta, "_", "_"); return; }
-  if (isMeta && e.key === "1") { e.preventDefault(); prefixInTextarea(ta, "# "); return; }
-  if (isMeta && e.key === "2") { e.preventDefault(); prefixInTextarea(ta, "## "); return; }
-  if (isMeta && e.key === "3") { e.preventDefault(); prefixInTextarea(ta, "### "); return; }
-  if (isMeta && e.key === "s") { e.preventDefault(); saveCurrentFile(); return; }
-
-  if (e.key === "Escape") { ta.blur(); return; }
-
-  // Backspace on completely empty textarea: remove block, focus previous
-  if (e.key === "Backspace" && ta.value === "") {
-    e.preventDefault();
-    const prev = blockEl.previousElementSibling;
-    editingBlockId = null;
-    blockEl.classList.remove("editing");
-    blockEl.innerHTML = "";
-    const allBlocks = document.querySelectorAll(".block");
-    if (allBlocks.length > 1) blockEl.remove();
-    if (prev) activateBlock(prev);
-    saveCurrentFile();
-    return;
-  }
-
-  // Arrow navigation across block boundaries
-  if (e.key === "ArrowUp" && ta.selectionStart === 0 && ta.selectionEnd === 0) {
-    const prev = blockEl.previousElementSibling;
-    if (prev) { e.preventDefault(); activateBlock(prev); }
-    return;
-  }
-  if (e.key === "ArrowDown" && ta.selectionStart === ta.value.length && ta.selectionEnd === ta.value.length) {
-    const next = blockEl.nextElementSibling;
-    if (next) {
-      e.preventDefault();
-      activateBlock(next);
-    } else if (currentFilePath) {
-      e.preventDefault();
-      const newEl = createBlockElement("");
-      document.getElementById("blocks-editor").appendChild(newEl);
-      activateBlock(newEl);
-    }
-  }
-}
-
-function wrapInTextarea(ta, before, after) {
-  const start = ta.selectionStart;
-  const end = ta.selectionEnd;
-  const selected = ta.value.substring(start, end);
+function wrapSelection(before, after) {
+  const editor = document.getElementById("editor");
+  const start = editor.selectionStart;
+  const end = editor.selectionEnd;
+  const selected = editor.value.substring(start, end);
   if (!selected) {
-    ta.value = ta.value.substring(0, start) + before + after + ta.value.substring(end);
-    ta.selectionStart = ta.selectionEnd = start + before.length;
+    editor.value = editor.value.substring(0, start) + before + after + editor.value.substring(end);
+    editor.selectionStart = editor.selectionEnd = start + before.length;
   } else {
-    ta.value = ta.value.substring(0, start) + before + selected + after + ta.value.substring(end);
-    ta.selectionStart = start;
-    ta.selectionEnd = start + before.length + selected.length;
+    editor.value = editor.value.substring(0, start) + before + selected + after + editor.value.substring(end);
+    editor.selectionStart = start;
+    editor.selectionEnd = start + before.length + selected.length;
   }
-  ta.dispatchEvent(new Event("input"));
+  editor.dispatchEvent(new Event("input"));
 }
 
-function prefixInTextarea(ta, prefix) {
-  const start = ta.selectionStart;
-  const lineStart = ta.value.lastIndexOf("\n", start - 1) + 1;
-  const lineEnd = ta.value.indexOf("\n", lineStart);
-  const currentLine = ta.value.substring(lineStart, lineEnd === -1 ? ta.value.length : lineEnd);
+function prefixLine(prefix) {
+  const editor = document.getElementById("editor");
+  const start = editor.selectionStart;
+  const lineStart = editor.value.lastIndexOf("\n", start - 1) + 1;
+  const lineEnd = editor.value.indexOf("\n", lineStart);
+  const currentLine = editor.value.substring(lineStart, lineEnd === -1 ? editor.value.length : lineEnd);
   const trimmed = currentLine.replace(/^#+\s/, "");
-  ta.value = ta.value.substring(0, lineStart) + prefix + trimmed + ta.value.substring(lineStart + currentLine.length);
-  ta.dispatchEvent(new Event("input"));
+  editor.value = editor.value.substring(0, lineStart) + prefix + trimmed + editor.value.substring(lineStart + currentLine.length);
+  editor.dispatchEvent(new Event("input"));
+}
+
+// ===== PREVIEW =====
+
+function updatePreviewStats(html) {
+  const tmp = document.createElement("div");
+  tmp.innerHTML = html;
+  const text = tmp.innerText || tmp.textContent || "";
+  const lines = text.split(/\n/).filter(l => l.trim().length > 0).length;
+  const words = text.trim() === "" ? 0 : text.trim().split(/\s+/).length;
+  const chars = text.replace(/\s/g, "").length;
+  const el = document.getElementById("preview-stats");
+  if (el) el.textContent = `${lines} lines, ${words} words, ${chars} characters`;
+}
+
+async function updatePreview() {
+  if (!currentFilePath) {
+    document.getElementById("preview").srcdoc = "<p>No file open</p>";
+    const el = document.getElementById("preview-stats");
+    if (el) el.textContent = "";
+    return;
+  }
+  try {
+    const content = document.getElementById("editor").value;
+    const html = await invoke("render_markdown", {
+      markdown: content,
+      userCss: currentUserCss,
+      filePath: currentFilePath,
+    });
+
+    if (citeBibData && citeBibData.length > 0) {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, "text/html");
+      const style = doc.createElement("style");
+      style.textContent = CITATION_CSS;
+      doc.head.appendChild(style);
+      await processCitations(doc.body);
+      document.getElementById("preview").srcdoc = "<!DOCTYPE html>" + doc.documentElement.outerHTML;
+      updatePreviewStats(doc.body.innerHTML);
+    } else {
+      document.getElementById("preview").srcdoc = html;
+      updatePreviewStats(html);
+    }
+  } catch (error) {
+    const errorHtml = `<div style="padding:20px;color:red"><strong>Error rendering preview:</strong><br>${error.message || error}</div>`;
+    document.getElementById("preview").srcdoc = errorHtml;
+    const el = document.getElementById("preview-stats");
+    if (el) el.textContent = "";
+  }
 }
 
 // ===== FILE SAVE =====
@@ -1078,12 +1089,20 @@ function stripMarkdown(text) {
     .trim();
 }
 
+function headerSlug(text) {
+  return Array.from(text.toLowerCase())
+    .map(c => (/[a-z0-9]/.test(c) ? c : c === " " ? "-" : ""))
+    .join("")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 function buildOutline() {
   const list = document.getElementById("outline-list");
   list.innerHTML = "";
 
-  const blockEls = document.querySelectorAll("#blocks-editor .block");
-  if (!currentFilePath || blockEls.length === 0) {
+  const content = document.getElementById("editor").value;
+  if (!content || !currentFilePath) {
     const li = document.createElement("li");
     li.className = "outline-empty";
     li.textContent = currentFilePath ? "No headings found" : "No file open";
@@ -1091,14 +1110,11 @@ function buildOutline() {
     return;
   }
 
+  const lines = content.split("\n");
   const headers = [];
-  blockEls.forEach(blockEl => {
-    const markdown = blockEl.dataset.markdown || "";
-    const firstLine = markdown.split("\n")[0];
-    const match = firstLine.match(/^(#{1,6})\s+(.+)/);
-    if (match) {
-      headers.push({ level: match[1].length, text: match[2].trim(), blockId: blockEl.dataset.id });
-    }
+  lines.forEach((line, lineIndex) => {
+    const match = line.match(/^(#{1,6})\s+(.+)/);
+    if (match) headers.push({ level: match[1].length, text: match[2].trim(), lineIndex });
   });
 
   if (headers.length === 0) {
@@ -1109,84 +1125,159 @@ function buildOutline() {
     return;
   }
 
-  headers.forEach(({ level, text, blockId }) => {
+  headers.forEach(({ level, text, lineIndex }) => {
     const display = stripMarkdown(text);
     const li = document.createElement("li");
     li.className = `outline-item h${level}`;
     li.textContent = display;
     li.title = display;
     li.addEventListener("click", () => {
-      const blockEl = document.querySelector(`[data-id="${blockId}"]`);
-      if (blockEl) {
-        blockEl.scrollIntoView({ behavior: "smooth", block: "start" });
-        activateBlock(blockEl);
-      }
+      scrollEditorToLine(lineIndex);
+      setTimeout(() => scrollPreviewToHeader(display), 500);
     });
     list.appendChild(li);
   });
 }
 
-// ===== FOOTNOTE CONSOLIDATION =====
+function getEditorHeadingPositions() {
+  const editor = document.getElementById("editor");
+  const lines = editor.value.split("\n");
 
-async function consolidateFootnotes() {
-  const container = document.getElementById("blocks-editor");
-
-  // Remove any previously consolidated section
-  document.getElementById("footnotes-section")?.remove();
-
-  // Blocks that have sup refs but no section.footnotes have been previously
-  // consolidated and lost their rendered definitions. Re-render them now so
-  // their section.footnotes is present for the sweep below.
-  const footnoteDefs = extractFootnoteDefs(getEditorContent());
-  const stale = [...container.querySelectorAll(".block.rendered")].filter(
-    b => b.querySelector("sup.footnote-ref a") && !b.querySelector("section.footnotes")
-  );
-  if (stale.length > 0) {
-    await Promise.all(stale.map(b => renderBlockEl(b, footnoteDefs)));
+  // Collect headings with their char offsets and slugs
+  const headings = [];
+  let charOffset = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^(#{1,6})\s+(.+)/);
+    if (m) {
+      headings.push({ slug: headerSlug(stripMarkdown(m[2].trim())), charOffset });
+    }
+    charOffset += lines[i].length + 1;
   }
+  if (headings.length === 0) return [];
 
-  let globalN = 0;
-  const collectedDefs = [];
-
-  // Walk every rendered block in DOM order
-  container.querySelectorAll(".block.rendered").forEach(block => {
-    const section = block.querySelector("section.footnotes");
-    if (!section) return;
-
-    block.querySelectorAll("sup.footnote-ref a").forEach(refA => {
-      globalN++;
-      const oldFnId  = (refA.getAttribute("href") || "").slice(1);
-      const oldRefId =  refA.getAttribute("id")   || "";
-
-      refA.setAttribute("href", `#fn${globalN}`);
-      refA.setAttribute("id",   `fnref${globalN}`);
-      refA.textContent = `[${globalN}]`;
-
-      const def = section.querySelector(`li[id="${oldFnId}"]`);
-      if (def) {
-        def.setAttribute("id", `fn${globalN}`);
-        const backLink = def.querySelector(`a[href="#${oldRefId}"]`);
-        if (backLink) backLink.setAttribute("href", `#fnref${globalN}`);
-        collectedDefs.push(def.cloneNode(true));
-      }
-    });
-
-    section.remove();
+  // Single mirror div pass — place all markers at once for efficiency
+  const style = getComputedStyle(editor);
+  const mirror = document.createElement("div");
+  Object.assign(mirror.style, {
+    position: "absolute", visibility: "hidden", overflow: "hidden",
+    width: editor.clientWidth + "px",
+    fontFamily: style.fontFamily, fontSize: style.fontSize,
+    lineHeight: style.lineHeight,
+    paddingTop: style.paddingTop, paddingBottom: style.paddingBottom,
+    paddingLeft: style.paddingLeft, paddingRight: style.paddingRight,
+    whiteSpace: "pre-wrap", wordBreak: "break-word", boxSizing: "border-box",
   });
 
-  if (collectedDefs.length === 0) return;
+  const fullText = editor.value;
+  const markers = [];
+  let lastOffset = 0;
+  for (const h of headings) {
+    mirror.appendChild(document.createTextNode(fullText.substring(lastOffset, h.charOffset)));
+    const marker = document.createElement("span");
+    marker.textContent = "​";
+    mirror.appendChild(marker);
+    markers.push(marker);
+    lastOffset = h.charOffset;
+  }
+  mirror.appendChild(document.createTextNode(fullText.substring(lastOffset)));
+  document.body.appendChild(mirror);
 
-  const wrapper = document.createElement("div");
-  wrapper.id = "footnotes-section";
-  wrapper.className = "block rendered";
+  const result = headings.map((h, i) => ({ slug: h.slug, pixelTop: markers[i].offsetTop }));
+  document.body.removeChild(mirror);
+  return result;
+}
 
-  const sec = document.createElement("section");
-  sec.className = "footnotes";
-  const ol = document.createElement("ol");
-  collectedDefs.forEach(li => ol.appendChild(li));
-  sec.appendChild(ol);
-  wrapper.appendChild(sec);
-  container.appendChild(wrapper);
+function onEditorScroll() {
+  if (suppressEditorScroll || !previewVisible || !currentFilePath) return;
+  clearTimeout(editorScrollTimer);
+  editorScrollTimer = setTimeout(() => {
+    const editor = document.getElementById("editor");
+    const scrollTop = editor.scrollTop;
+    const positions = getEditorHeadingPositions();
+
+    let currentId = null, nextId = null, fraction = 0;
+
+    if (positions.length === 0) {
+      const max = Math.max(1, editor.scrollHeight - editor.clientHeight);
+      fraction = scrollTop / max;
+    } else {
+      let curIdx = -1;
+      for (let i = 0; i < positions.length; i++) {
+        if (positions[i].pixelTop <= scrollTop + 2) curIdx = i;
+      }
+      if (curIdx === -1) {
+        // Before first heading
+        const firstTop = positions[0].pixelTop;
+        nextId = positions[0].slug;
+        fraction = firstTop > 0 ? Math.min(1, scrollTop / firstTop) : 0;
+      } else {
+        currentId = positions[curIdx].slug;
+        const nxt = positions[curIdx + 1] || null;
+        if (nxt) {
+          nextId = nxt.slug;
+          const range = nxt.pixelTop - positions[curIdx].pixelTop;
+          fraction = range > 0 ? (scrollTop - positions[curIdx].pixelTop) / range : 0;
+        } else {
+          const tail = editor.scrollHeight - positions[curIdx].pixelTop;
+          fraction = tail > 0 ? (scrollTop - positions[curIdx].pixelTop) / tail : 0;
+        }
+      }
+      fraction = Math.max(0, Math.min(1, fraction));
+    }
+
+    suppressPreviewScroll = true;
+    document.getElementById("preview").contentWindow?.postMessage(
+      { type: "scroll-to-fraction", currentId, nextId, fraction }, "*"
+    );
+    setTimeout(() => { suppressPreviewScroll = false; }, 300);
+  }, 50);
+}
+
+function scrollEditorToLine(lineIndex) {
+  const editor = document.getElementById("editor");
+  const lines = editor.value.split("\n");
+
+  // Find the character offset of the target line's start
+  let charOffset = 0;
+  for (let i = 0; i < lineIndex; i++) {
+    charOffset += (lines[i]?.length ?? 0) + 1; // +1 for the newline
+  }
+
+  // Mirror div: same dimensions/font as the textarea so wrapped lines are measured correctly
+  const style = getComputedStyle(editor);
+  const mirror = document.createElement("div");
+  Object.assign(mirror.style, {
+    position: "absolute",
+    visibility: "hidden",
+    overflow: "hidden",
+    width: editor.clientWidth + "px",
+    fontFamily: style.fontFamily,
+    fontSize: style.fontSize,
+    lineHeight: style.lineHeight,
+    paddingTop: style.paddingTop,
+    paddingBottom: style.paddingBottom,
+    paddingLeft: style.paddingLeft,
+    paddingRight: style.paddingRight,
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    boxSizing: "border-box",
+  });
+
+  mirror.appendChild(document.createTextNode(editor.value.substring(0, charOffset)));
+  const marker = document.createElement("span");
+  marker.textContent = "​"; // zero-width space marks the target line
+  mirror.appendChild(marker);
+  document.body.appendChild(mirror);
+  const pixelTop = marker.offsetTop;
+  document.body.removeChild(mirror);
+
+  editor.scrollTop = pixelTop;
+}
+
+function scrollPreviewToHeader(headerText) {
+  const iframe = document.getElementById("preview");
+  const id = headerSlug(headerText);
+  iframe.contentWindow?.postMessage({ type: "scroll-to-heading", id }, "*");
 }
 
 // ===== LINKS PANEL =====
@@ -1195,15 +1286,15 @@ function buildLinksPanel() {
   const list = document.getElementById("links-list");
   list.innerHTML = "";
 
-  if (!currentFilePath) {
+  const content = getEditorContent();
+  if (!content || !currentFilePath) {
     const li = document.createElement("li");
     li.className = "links-empty";
-    li.textContent = "No file open";
+    li.textContent = currentFilePath ? "No links found" : "No file open";
     list.appendChild(li);
     return;
   }
 
-  const content = getEditorContent();
   const wikilinkRe = /\[\[([^\]|]+)(?:\|[^\]]*)?\]\]/g;
   const seen = new Set();
   const links = [];
@@ -1245,73 +1336,69 @@ function restoreUiState(settings) {
   if (settings.sidebarWidth) {
     document.getElementById("sidebar").style.flex = `0 0 ${settings.sidebarWidth}px`;
   }
+  if (settings.editorWidth) {
+    savedEditorFlexBasis = settings.editorWidth;
+  }
+  const savedPreview = settings.previewVisible;
+  if (savedPreview === false) {
+    previewVisible = false;
+    document.getElementById("preview-pane").style.display = "none";
+    document.getElementById("editor-resize").style.display = "none";
+    const btn = document.getElementById("preview-toggle-btn");
+    btn.classList.remove("active");
+    btn.title = "Show preview (⌘E)";
+    btn.setAttribute("aria-label", "Show preview");
+  } else if (savedEditorFlexBasis) {
+    document.getElementById("editor-pane").style.flex = `0 0 ${savedEditorFlexBasis}px`;
+  }
 }
 
 async function saveUiState() {
   if (!isInitialized || currentPlatform === "ios") return;
   try {
     const sidebarWidth = document.getElementById("sidebar").getBoundingClientRect().width;
+    const editorWidth = previewVisible
+      ? document.getElementById("editor-pane").getBoundingClientRect().width
+      : null;
     await invoke("save_ui_state", {
       sidebarWidth: sidebarWidth > 0 ? sidebarWidth : null,
-      editorWidth: null,
-      previewVisible: true,
+      editorWidth: editorWidth && editorWidth > 0 ? editorWidth : null,
+      previewVisible,
       lastOpenFile: currentFilePath,
       openFiles: tabs.map(t => t.path),
     });
   } catch (_) {}
 }
 
-function scopeUserCss(css) {
-  if (!css) return "";
-  // Prefix each rule's selector with the blocks container scope.
-  // Handles simple rules; skips @-rules (media, keyframes, etc.).
-  return css.replace(/([^{}]+)\{([^{}]*)\}/g, (match, selector, rules) => {
-    const trimmed = selector.trim();
-    if (!trimmed || trimmed.startsWith("@")) return match;
-    const scoped = trimmed
-      .split(",")
-      .map(s => {
-        const t = s.trim();
-        if (!t) return "";
-        if (t === "body") return "#blocks-editor .block.rendered";
-        return `#blocks-editor .block.rendered ${t}`;
-      })
-      .filter(Boolean)
-      .join(", ");
-    return `${scoped} { ${rules} }`;
-  });
-}
-
-function applyUserCss(css) {
-  let styleEl = document.getElementById("user-custom-css");
-  if (!styleEl) {
-    styleEl = document.createElement("style");
-    styleEl.id = "user-custom-css";
-    document.head.appendChild(styleEl);
-  }
-  styleEl.textContent = scopeUserCss(css);
-}
-
 // ===== CITATIONS =====
 
 const Cite = window.Cite;
 
+const CITATION_CSS = `
+.citation-ref { color: #888; font-size: 0.9em; cursor: default; }
+.citation-ref a { color: #6366f1; text-decoration: none; }
+.citation-ref a:hover { text-decoration: underline; }
+.citation-missing { color: #888; background: rgba(99,102,241,0.1); border-radius: 2px; padding: 0 2px; }
+#citation-bibliography { margin-top: 16px; border-top: 1px solid #e5e5e5; padding-top: 8px; }
+#citation-bibliography h2 { font-size: 1em; font-weight: 600; margin: 0 0 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+#citation-bibliography .csl-entry { margin-bottom: 8px; font-size: 0.9em; line-height: 1.5; padding-left: 1.5em; text-indent: -1.5em; }
+#citation-bibliography .csl-left-margin { float: left; padding-right: 0.5em; min-width: 2em; text-align: right; }
+#citation-bibliography .csl-right-inline { display: block; overflow: hidden; }
+`;
+
 async function loadCitations() {
   citeBibData = null;
   citeTemplateName = null;
-
   if (!currentBibPath) return;
-
   try {
     const raw = await invoke("read_file", { filePath: currentBibPath });
     const parsed = new Cite(raw);
-    citeBibData = parsed.get(); // CSL JSON array
+    citeBibData = parsed.get();
   } catch (e) {
     console.warn("Failed to load bibliography:", e);
     showStatus("Warning: could not load bibliography file");
     return;
   }
-
   if (currentCslPath) {
     try {
       const cslXml = await invoke("read_file", { filePath: currentCslPath });
@@ -1324,7 +1411,6 @@ async function loadCitations() {
   }
 }
 
-// Map pandoc locator abbreviations to CSL label names.
 const LOCATOR_TYPES = [
   [/^pp?\.\s*/, "page"],
   [/^chaps?\.\s*/i, "chapter"],
@@ -1344,87 +1430,63 @@ function parseLocator(str) {
   return { label: "page", locator: str.trim() };
 }
 
-// Parse a pandoc citation inner string (content between [ and ]) into a
-// citeproc citation object with full prefix/locator/label support.
-// e.g. "See: @key1, p. 45; @key2, p. 55"
-// →  { citationItems: [{ id, prefix, locator, label }, ...], properties: { noteIndex: 0 } }
 function parseCitationInner(inner) {
   const citationItems = [];
   for (const segment of inner.split(";")) {
     const s = segment.trim();
     const atIdx = s.indexOf("@");
     if (atIdx === -1) continue;
-
     const keyMatch = s.slice(atIdx).match(/^@([^\s,;\]]+)/);
     if (!keyMatch) continue;
-
     const key = keyMatch[1];
-    const prefix = s.slice(0, atIdx).trim();          // text before @key
-    const after  = s.slice(atIdx + 1 + key.length)   // text after @key
-                    .replace(/^,\s*/, "").trim();      // strip leading ", "
-
+    const prefix = s.slice(0, atIdx).trim();
+    const after = s.slice(atIdx + 1 + key.length).replace(/^,\s*/, "").trim();
     const item = { id: key };
-    if (prefix) item.prefix = prefix + " ";           // citeproc needs trailing space
-    if (after)  Object.assign(item, parseLocator(after));
+    if (prefix) item.prefix = prefix + " ";
+    if (after) Object.assign(item, parseLocator(after));
     citationItems.push(item);
   }
   return { citationItems, properties: { noteIndex: 0 } };
 }
 
-async function processCitations() {
-  document.getElementById("citation-bibliography")?.remove();
-
+async function processCitations(container) {
   if (!citeBibData || citeBibData.length === 0) return;
 
+  const doc = container.ownerDocument;
   const template = citeTemplateName || "apa";
-  const container = document.getElementById("blocks-editor");
-
-  // Build reference map: id → CSL object
   const refMap = {};
   citeBibData.forEach(ref => { refMap[ref.id] = ref; });
-
-  // Shared Cite instance over all references (needed for correct numeric ordering)
   const allCite = new Cite(citeBibData);
-
-  // Pandoc citation pattern: [...] containing at least one @key.
-  // Handles bare [@key], locators [@key, p. 66], and prefixes [See: @key, p. 66].
   const CITE_RE = /(\[[^\]]*@[^\]]+\])/;
 
-  // Collect text nodes that contain pandoc citation patterns, in DOM order
   const textNodes = [];
-  container.querySelectorAll(".block.rendered").forEach(block => {
-    if (block.id === "footnotes-section" || block.id === "citation-bibliography") return;
-    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
-    let node;
-    while ((node = walker.nextNode())) {
-      if (CITE_RE.test(node.textContent)) textNodes.push(node);
-    }
-  });
+  const walker = doc.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    if (CITE_RE.test(node.textContent)) textNodes.push(node);
+  }
 
   if (textNodes.length === 0) return;
 
-  // Track cited keys in appearance order (for bibliography ordering)
   const citedKeys = [];
 
-  // Replace citation patterns in each text node with formatted inline citations
   for (const textNode of textNodes) {
     const parts = textNode.textContent.split(CITE_RE);
     if (parts.length <= 1) continue;
 
-    const fragment = document.createDocumentFragment();
+    const fragment = doc.createDocumentFragment();
     for (const part of parts) {
       const m = part.match(/^\[([^\]]*@[^\]]*)\]$/);
       if (!m) {
-        fragment.appendChild(document.createTextNode(part));
+        fragment.appendChild(doc.createTextNode(part));
         continue;
       }
-
       const citObj = parseCitationInner(m[1]);
       const validItems = citObj.citationItems.filter(item => refMap[item.id]);
       const validKeys = validItems.map(item => item.id);
       validKeys.forEach(k => { if (!citedKeys.includes(k)) citedKeys.push(k); });
 
-      const span = document.createElement("span");
+      const span = doc.createElement("span");
       span.className = validKeys.length > 0 ? "citation-ref" : "citation-ref citation-missing";
 
       if (validKeys.length > 0) {
@@ -1443,7 +1505,6 @@ async function processCitations() {
     textNode.parentNode.replaceChild(fragment, textNode);
   }
 
-  // Append formatted bibliography for cited references
   if (citedKeys.length === 0) return;
 
   try {
@@ -1453,17 +1514,14 @@ async function processCitations() {
       entry: citedKeys,
       nosort: true,
     });
-
-    const wrapper = document.createElement("div");
+    const wrapper = doc.createElement("div");
     wrapper.id = "citation-bibliography";
-    wrapper.className = "block rendered";
     wrapper.innerHTML = `<h2>References</h2>${bibHtml}`;
     container.appendChild(wrapper);
   } catch (e) {
     console.warn("Bibliography formatting failed:", e);
   }
 }
-
 
 function citeSimpleInline(keys, refMap) {
   const parts = keys.map(k => {
@@ -1523,19 +1581,17 @@ async function saveSettings() {
 
     await invoke("save_settings", { vaultPath: newVaultPath, userCss: newCss, spellCheck: newSpellCheck });
     await invoke("save_citation_settings", { cslJsonPath: newBibPath, cslStylePath: newCslPath });
+
     currentUserCss = newCss;
     currentSpellCheck = newSpellCheck;
-    applyUserCss(newCss);
-    document.querySelectorAll(".block-textarea").forEach(ta => { ta.spellcheck = newSpellCheck; });
+    document.getElementById("editor").spellcheck = newSpellCheck;
 
-    // Reload citations if paths changed
     const bibChanged = newBibPath !== currentBibPath;
     const cslChanged = newCslPath !== currentCslPath;
     currentBibPath = newBibPath;
     currentCslPath = newCslPath;
     if (bibChanged || cslChanged) {
       await loadCitations();
-      await processCitations();
     }
 
     if (newVaultPath !== currentVaultPath) {
@@ -1546,6 +1602,7 @@ async function saveSettings() {
       await buildLinkIndex();
       showStatus(`Vault changed to: ${newVaultPath}`);
     } else {
+      if (currentFilePath) await updatePreview();
       showStatus("Settings saved");
     }
     closeSettingsDialog();
@@ -1615,10 +1672,12 @@ function switchTab(tabName) {
   if (currentPlatform !== "ios") return;
   document.getElementById("sidebar").classList.remove("active");
   document.getElementById("editor-pane").classList.remove("active");
+  document.getElementById("preview-pane").classList.remove("active");
   document.querySelectorAll(".tab-btn").forEach(btn => btn.classList.remove("active"));
   switch (tabName) {
     case "files": document.getElementById("sidebar").classList.add("active"); break;
     case "editor": document.getElementById("editor-pane").classList.add("active"); break;
+    case "preview": document.getElementById("preview-pane").classList.add("active"); break;
   }
   document.querySelector(`[data-tab="${tabName}"]`)?.classList.add("active");
 }

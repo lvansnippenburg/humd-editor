@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+#[cfg(not(target_os = "ios"))]
+use trash;
 use std::path::Path;
 use std::collections::HashMap;
 use tauri::Emitter;
@@ -327,6 +329,49 @@ fn create_new_file(vault_path: String, name: String) -> Result<String, String> {
     Ok(path_str)
 }
 
+// ===== FILE OPERATIONS =====
+
+#[tauri::command]
+fn rename_file(old_path: String, new_name: String) -> Result<String, String> {
+    if new_name.contains('/') || new_name.contains('\\') {
+        return Err("Name cannot contain path separators".to_string());
+    }
+    let old = Path::new(&old_path);
+    let parent = old.parent().ok_or("Invalid file path")?;
+    let new_path = parent.join(&new_name);
+    if new_path.exists() {
+        return Err(format!("'{}' already exists", new_name));
+    }
+    let new_str = new_path.to_str().ok_or("Invalid path encoding")?.to_string();
+    fs::rename(&old_path, &new_path).map_err(|e| format!("Rename failed: {}", e))?;
+    Ok(new_str)
+}
+
+#[tauri::command]
+fn move_file(src_path: String, dest_dir: String) -> Result<String, String> {
+    let src = Path::new(&src_path);
+    let file_name = src.file_name().ok_or("Invalid source path")?;
+    let dest = Path::new(&dest_dir).join(file_name);
+    if dest.exists() {
+        return Err(format!("'{}' already exists in the destination", file_name.to_string_lossy()));
+    }
+    let dest_str = dest.to_str().ok_or("Invalid destination path")?.to_string();
+    fs::rename(&src_path, &dest).map_err(|e| format!("Move failed: {}", e))?;
+    Ok(dest_str)
+}
+
+#[tauri::command]
+fn trash_file(file_path: String) -> Result<(), String> {
+    #[cfg(not(target_os = "ios"))]
+    {
+        trash::delete(&file_path).map_err(|e| format!("Failed to move to trash: {}", e))
+    }
+    #[cfg(target_os = "ios")]
+    {
+        fs::remove_file(&file_path).map_err(|e| format!("Failed to delete: {}", e))
+    }
+}
+
 // ===== PHASE 3: MARKDOWN RENDERING =====
 
 #[tauri::command]
@@ -382,10 +427,83 @@ document.addEventListener('click', function(e) {
     window.parent.postMessage({ type: 'wikilink', href: a.getAttribute('href') }, '*');
   }
 });
+
+// ---- scroll sync ----
+var _scrollSyncTimer = null;
+var _ignoringScroll = false;
+
+function _getScrollInfo() {
+  var headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'));
+  var scrollTop = window.scrollY;
+  var scrollHeight = document.documentElement.scrollHeight;
+  var clientHeight = document.documentElement.clientHeight;
+  var maxScroll = Math.max(1, scrollHeight - clientHeight);
+
+  if (headings.length === 0) {
+    return { currentId: null, nextId: null, fraction: scrollTop / maxScroll };
+  }
+
+  var curIdx = -1;
+  for (var i = 0; i < headings.length; i++) {
+    if (headings[i].offsetTop <= scrollTop + 2) curIdx = i;
+  }
+
+  if (curIdx === -1) {
+    var firstTop = headings[0].offsetTop;
+    return { currentId: null, nextId: headings[0].id, fraction: firstTop > 0 ? Math.min(1, scrollTop / firstTop) : 0 };
+  }
+
+  var cur = headings[curIdx];
+  var nxt = headings[curIdx + 1] || null;
+  var fraction;
+  if (nxt) {
+    var range = nxt.offsetTop - cur.offsetTop;
+    fraction = range > 0 ? (scrollTop - cur.offsetTop) / range : 0;
+  } else {
+    var tail = scrollHeight - cur.offsetTop;
+    fraction = tail > 0 ? (scrollTop - cur.offsetTop) / tail : 0;
+  }
+  return { currentId: cur.id, nextId: nxt ? nxt.id : null, fraction: Math.max(0, Math.min(1, fraction)) };
+}
+
+window.addEventListener('scroll', function() {
+  if (_ignoringScroll) return;
+  clearTimeout(_scrollSyncTimer);
+  _scrollSyncTimer = setTimeout(function() {
+    var info = _getScrollInfo();
+    window.parent.postMessage({ type: 'preview-scroll', currentId: info.currentId, nextId: info.nextId, fraction: info.fraction }, '*');
+  }, 50);
+}, { passive: true });
+
 window.addEventListener('message', function(e) {
-  if (e.data && e.data.type === 'scroll-to-heading') {
+  if (!e.data) return;
+
+  if (e.data.type === 'scroll-to-heading') {
     var el = document.getElementById(e.data.id);
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+
+  if (e.data.type === 'scroll-to-fraction') {
+    _ignoringScroll = true;
+    var headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'));
+    var scrollHeight = document.documentElement.scrollHeight;
+    var clientHeight = document.documentElement.clientHeight;
+    var maxScroll = Math.max(0, scrollHeight - clientHeight);
+    var cur = e.data.currentId ? document.getElementById(e.data.currentId) : null;
+    var nxt = e.data.nextId ? document.getElementById(e.data.nextId) : null;
+    var targetY;
+    if (!cur && !nxt) {
+      targetY = e.data.fraction * maxScroll;
+    } else if (cur && nxt) {
+      targetY = cur.offsetTop + e.data.fraction * (nxt.offsetTop - cur.offsetTop);
+    } else if (cur) {
+      targetY = cur.offsetTop + e.data.fraction * (scrollHeight - cur.offsetTop);
+    } else {
+      targetY = e.data.fraction * nxt.offsetTop;
+    }
+    window.scrollTo(0, Math.max(0, Math.min(maxScroll, targetY)));
+    setTimeout(function() { _ignoringScroll = false; }, 150);
   }
 });
 </script>
@@ -830,6 +948,9 @@ pub fn run() {
             write_file,
             fetch_zotero_cayw,
             create_new_file,
+            rename_file,
+            move_file,
+            trash_file,
             render_block,
             render_markdown,
             build_link_index,
