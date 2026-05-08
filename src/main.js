@@ -931,8 +931,9 @@ function updatePreviewStats(html) {
   const lines = text.split(/\n/).filter(l => l.trim().length > 0).length;
   const words = text.trim() === "" ? 0 : text.trim().split(/\s+/).length;
   const chars = text.replace(/\s/g, "").length;
+  const charsWithSpaces = text.trim().length;
   const el = document.getElementById("preview-stats");
-  if (el) el.textContent = `${lines} lines, ${words} words, ${chars} characters`;
+  if (el) el.textContent = `${lines} lines, ${words} words, ${charsWithSpaces} (${chars}) characters`;
 }
 
 async function updatePreview() {
