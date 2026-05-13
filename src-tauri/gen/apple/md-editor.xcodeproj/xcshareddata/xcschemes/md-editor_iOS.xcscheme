@@ -18,7 +18,7 @@
                BlueprintIdentifier = "529DF93A31558357172EFA50"
                BuildableName = "md-editor_iOS.app"
                BlueprintName = "md-editor_iOS"
-               ReferencedContainer = "container:md-editor.xcodeproj">
+               ReferencedContainer = "container:humd-editor.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -35,7 +35,7 @@
             BlueprintIdentifier = "529DF93A31558357172EFA50"
             BuildableName = "md-editor_iOS.app"
             BlueprintName = "md-editor_iOS"
-            ReferencedContainer = "container:md-editor.xcodeproj">
+            ReferencedContainer = "container:humd-editor.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
       <Testables>
@@ -72,7 +72,7 @@
             BlueprintIdentifier = "529DF93A31558357172EFA50"
             BuildableName = "md-editor_iOS.app"
             BlueprintName = "md-editor_iOS"
-            ReferencedContainer = "container:md-editor.xcodeproj">
+            ReferencedContainer = "container:humd-editor.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
       <CommandLineArguments>
@@ -103,7 +103,7 @@
             BlueprintIdentifier = "529DF93A31558357172EFA50"
             BuildableName = "md-editor_iOS.app"
             BlueprintName = "md-editor_iOS"
-            ReferencedContainer = "container:md-editor.xcodeproj">
+            ReferencedContainer = "container:humd-editor.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
       <CommandLineArguments>

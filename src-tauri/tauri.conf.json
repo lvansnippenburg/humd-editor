@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Humd",
+  "productName": "humd-editor",
   "version": "0.1.0",
   "identifier": "nl.vansnippenburg.humd",
   "build": {
@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Humd",
+        "title": "humd-editor",
         "width": 1200,
         "height": 800,
         "minWidth": 900,

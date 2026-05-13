@@ -1677,6 +1677,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "humd-editor"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "comrak",
+ "dirs 5.0.1",
+ "once_cell",
+ "regex",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-opener",
+ "tauri-plugin-window-state",
+ "trash",
+ "ureq",
+]
+
+[[package]]
 name = "hyper"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2243,27 +2264,6 @@ name = "matches"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2532096657941c2fea9c289d370a250971c689d4f143798ff67113ec042024a5"
-
-[[package]]
-name = "md-editor"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "comrak",
- "dirs 5.0.1",
- "once_cell",
- "regex",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-opener",
- "tauri-plugin-window-state",
- "trash",
- "ureq",
-]
 
 [[package]]
 name = "memchr"

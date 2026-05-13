@@ -1,11 +1,11 @@
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
+use tauri::Emitter;
 #[cfg(not(target_os = "ios"))]
 use trash;
-use std::path::Path;
-use std::collections::HashMap;
-use tauri::Emitter;
-use regex::Regex;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "serde")]
@@ -176,15 +176,14 @@ fn write_settings(path: &std::path::Path, settings: &Settings) -> Result<(), Str
     }
     let json = serde_json::to_string_pretty(settings)
         .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-    fs::write(path, json)
-        .map_err(|e| format!("Failed to write settings: {}", e))?;
+    fs::write(path, json).map_err(|e| format!("Failed to write settings: {}", e))?;
     Ok(())
 }
 
 fn get_settings_path(_app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     // Use a simple path in the home directory
     let home = dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
-    let config_dir = home.join(".md-editor");
+    let config_dir = home.join(".humd-editor");
     Ok(config_dir.join("settings.json"))
 }
 
@@ -269,12 +268,10 @@ fn list_dir_internal(dir_path: &str, is_root: bool) -> Result<Vec<FileNode>, Str
         .collect::<Vec<_>>();
 
     // Sort: directories first, then alphabetically
-    entries.sort_by(|a, b| {
-        match (a.is_dir, b.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.cmp(&b.name),
-        }
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.cmp(&b.name),
     });
 
     Ok(entries)
@@ -282,8 +279,7 @@ fn list_dir_internal(dir_path: &str, is_root: bool) -> Result<Vec<FileNode>, Str
 
 #[tauri::command]
 fn read_file(file_path: String) -> Result<String, String> {
-    fs::read_to_string(&file_path)
-        .map_err(|e| format!("Failed to read file: {}", e))
+    fs::read_to_string(&file_path).map_err(|e| format!("Failed to read file: {}", e))
 }
 
 #[tauri::command]
@@ -304,8 +300,7 @@ async fn fetch_zotero_cayw(window: tauri::WebviewWindow) -> Result<String, Strin
 
 #[tauri::command]
 fn write_file(file_path: String, content: String) -> Result<(), String> {
-    fs::write(&file_path, &content)
-        .map_err(|e| format!("Failed to write file: {}", e))
+    fs::write(&file_path, &content).map_err(|e| format!("Failed to write file: {}", e))
 }
 
 #[tauri::command]
@@ -323,8 +318,7 @@ fn create_new_file(vault_path: String, name: String) -> Result<String, String> {
         .to_string();
 
     // Create empty file
-    fs::write(&path_str, "")
-        .map_err(|e| format!("Failed to create file: {}", e))?;
+    fs::write(&path_str, "").map_err(|e| format!("Failed to create file: {}", e))?;
 
     Ok(path_str)
 }
@@ -342,7 +336,10 @@ fn rename_file(old_path: String, new_name: String) -> Result<String, String> {
     if new_path.exists() {
         return Err(format!("'{}' already exists", new_name));
     }
-    let new_str = new_path.to_str().ok_or("Invalid path encoding")?.to_string();
+    let new_str = new_path
+        .to_str()
+        .ok_or("Invalid path encoding")?
+        .to_string();
     fs::rename(&old_path, &new_path).map_err(|e| format!("Rename failed: {}", e))?;
     Ok(new_str)
 }
@@ -353,7 +350,10 @@ fn move_file(src_path: String, dest_dir: String) -> Result<String, String> {
     let file_name = src.file_name().ok_or("Invalid source path")?;
     let dest = Path::new(&dest_dir).join(file_name);
     if dest.exists() {
-        return Err(format!("'{}' already exists in the destination", file_name.to_string_lossy()));
+        return Err(format!(
+            "'{}' already exists in the destination",
+            file_name.to_string_lossy()
+        ));
     }
     let dest_str = dest.to_str().ok_or("Invalid destination path")?.to_string();
     fs::rename(&src_path, &dest).map_err(|e| format!("Move failed: {}", e))?;
@@ -396,7 +396,11 @@ fn render_block(markdown: String, file_path: Option<String>) -> Result<String, S
 }
 
 #[tauri::command]
-fn render_markdown(markdown: String, user_css: String, file_path: Option<String>) -> Result<String, String> {
+fn render_markdown(
+    markdown: String,
+    user_css: String,
+    file_path: Option<String>,
+) -> Result<String, String> {
     // Strip YAML front matter before processing
     let content = strip_front_matter(&markdown);
     let preprocessed = preprocess_footnotes(&content);
@@ -543,7 +547,7 @@ img {{ max-width: 100%; height: auto; }}
 }
 
 fn embed_local_images(html: &str, file_path: &str) -> String {
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
     use once_cell::sync::Lazy;
     use std::path::PathBuf;
 
@@ -556,39 +560,53 @@ fn embed_local_images(html: &str, file_path: &str) -> String {
         .parent()
         .unwrap_or_else(|| Path::new(""));
 
-    IMG_SRC_RE.replace_all(html, |caps: &regex::Captures| {
-        let prefix = &caps[1];
-        let src    = &caps[2];
-        let suffix = &caps[3];
+    IMG_SRC_RE
+        .replace_all(html, |caps: &regex::Captures| {
+            let prefix = &caps[1];
+            let src = &caps[2];
+            let suffix = &caps[3];
 
-        // Leave data URIs and external URLs untouched.
-        if src.starts_with("data:") || src.contains("://") {
-            return caps[0].to_string();
-        }
+            // Leave data URIs and external URLs untouched.
+            if src.starts_with("data:") || src.contains("://") {
+                return caps[0].to_string();
+            }
 
-        let abs_path: PathBuf = if src.starts_with('/') {
-            PathBuf::from(src)
-        } else {
-            file_dir.join(src)
-        };
+            let abs_path: PathBuf = if src.starts_with('/') {
+                PathBuf::from(src)
+            } else {
+                file_dir.join(src)
+            };
 
-        let data = match fs::read(&abs_path) {
-            Ok(d) => d,
-            Err(_) => return caps[0].to_string(),
-        };
+            let data = match fs::read(&abs_path) {
+                Ok(d) => d,
+                Err(_) => return caps[0].to_string(),
+            };
 
-        let mime = match abs_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str() {
-            "jpg" | "jpeg" => "image/jpeg",
-            "gif"          => "image/gif",
-            "svg" | "svgz" => "image/svg+xml",
-            "webp"         => "image/webp",
-            "bmp"          => "image/bmp",
-            "ico"          => "image/x-icon",
-            _              => "image/png",
-        };
+            let mime = match abs_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase()
+                .as_str()
+            {
+                "jpg" | "jpeg" => "image/jpeg",
+                "gif" => "image/gif",
+                "svg" | "svgz" => "image/svg+xml",
+                "webp" => "image/webp",
+                "bmp" => "image/bmp",
+                "ico" => "image/x-icon",
+                _ => "image/png",
+            };
 
-        format!("{}data:{};base64,{}{}", prefix, mime, STANDARD.encode(&data), suffix)
-    }).to_string()
+            format!(
+                "{}data:{};base64,{}{}",
+                prefix,
+                mime,
+                STANDARD.encode(&data),
+                suffix
+            )
+        })
+        .to_string()
 }
 
 // ===== PHASE 6: SETTINGS DIALOG =====
@@ -672,8 +690,7 @@ fn build_link_index(vault_path: String) -> Result<(), String> {
             .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
 
         // Extract wikilinks: [[note-name]] or [[note-name|display]]
-        let wikilink_re =
-            Regex::new(r"\[\[([^\]|]+)(?:\|[^\]]*)?\]\]").expect("Invalid regex");
+        let wikilink_re = Regex::new(r"\[\[([^\]|]+)(?:\|[^\]]*)?\]\]").expect("Invalid regex");
         let file_stem = get_file_stem(file_path).unwrap_or_default();
 
         for cap in wikilink_re.captures_iter(&content) {
@@ -705,11 +722,10 @@ fn build_link_index(vault_path: String) -> Result<(), String> {
     let index = LinkIndex { backlinks, tags };
     let index_path = std::path::PathBuf::from(&vault_path).join(".link-index.json");
 
-    let json = serde_json::to_string(&index)
-        .map_err(|e| format!("Failed to serialize index: {}", e))?;
+    let json =
+        serde_json::to_string(&index).map_err(|e| format!("Failed to serialize index: {}", e))?;
 
-    fs::write(&index_path, json)
-        .map_err(|e| format!("Failed to save index: {}", e))?;
+    fs::write(&index_path, json).map_err(|e| format!("Failed to save index: {}", e))?;
 
     Ok(())
 }
@@ -719,20 +735,15 @@ fn get_backlinks(vault_path: String, note_stem: String) -> Result<Vec<String>, S
     let index_path = std::path::PathBuf::from(&vault_path).join(".link-index.json");
 
     if index_path.exists() {
-        let content = fs::read_to_string(&index_path)
-            .map_err(|e| format!("Failed to read index: {}", e))?;
+        let content =
+            fs::read_to_string(&index_path).map_err(|e| format!("Failed to read index: {}", e))?;
 
-        let index: LinkIndex = serde_json::from_str(&content)
-            .unwrap_or(LinkIndex {
-                backlinks: HashMap::new(),
-                tags: HashMap::new(),
-            });
+        let index: LinkIndex = serde_json::from_str(&content).unwrap_or(LinkIndex {
+            backlinks: HashMap::new(),
+            tags: HashMap::new(),
+        });
 
-        Ok(index
-            .backlinks
-            .get(&note_stem)
-            .cloned()
-            .unwrap_or_default())
+        Ok(index.backlinks.get(&note_stem).cloned().unwrap_or_default())
     } else {
         Ok(Vec::new())
     }
@@ -743,14 +754,13 @@ fn get_tags_for_note(vault_path: String, note_path: String) -> Result<Vec<String
     let index_path = std::path::PathBuf::from(&vault_path).join(".link-index.json");
 
     if index_path.exists() {
-        let content = fs::read_to_string(&index_path)
-            .map_err(|e| format!("Failed to read index: {}", e))?;
+        let content =
+            fs::read_to_string(&index_path).map_err(|e| format!("Failed to read index: {}", e))?;
 
-        let index: LinkIndex = serde_json::from_str(&content)
-            .unwrap_or(LinkIndex {
-                backlinks: HashMap::new(),
-                tags: HashMap::new(),
-            });
+        let index: LinkIndex = serde_json::from_str(&content).unwrap_or(LinkIndex {
+            backlinks: HashMap::new(),
+            tags: HashMap::new(),
+        });
 
         Ok(index.tags.get(&note_path).cloned().unwrap_or_default())
     } else {
@@ -760,8 +770,7 @@ fn get_tags_for_note(vault_path: String, note_path: String) -> Result<Vec<String
 
 // Helper: collect all .md files recursively
 fn collect_md_files(path: &str, files: &mut Vec<String>) -> Result<(), String> {
-    let entries = fs::read_dir(path)
-        .map_err(|e| format!("Failed to read directory: {}", e))?;
+    let entries = fs::read_dir(path).map_err(|e| format!("Failed to read directory: {}", e))?;
 
     for entry in entries {
         let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;

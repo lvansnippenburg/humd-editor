@@ -1,6 +1,6 @@
-name: md-editor
+name: humd-editor
 options:
-  bundleIdPrefix: com.md-editor.app
+  bundleIdPrefix: com.humd-editor.app
   deploymentTarget:
     iOS: 14.0
 fileGroups: [../../src]
@@ -10,8 +10,8 @@ configs:
 settingGroups:
   app:
     base:
-      PRODUCT_NAME: md-editor
-      PRODUCT_BUNDLE_IDENTIFIER: com.md-editor.app
+      PRODUCT_NAME: humd-editor
+      PRODUCT_BUNDLE_IDENTIFIER: com.humd-editor.app
 targetTemplates:
   app:
     type: application

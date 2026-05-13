@@ -64,7 +64,7 @@
 		0FAC7FE671EF2283B7D952F7 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
-				2C0B73AEEC29AC891788FE62 /* md-editor */,
+				2C0B73AEEC29AC891788FE62 /* humd-editor */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -85,13 +85,13 @@
 			path = "md-editor_iOS";
 			sourceTree = "<group>";
 		};
-		2C0B73AEEC29AC891788FE62 /* md-editor */ = {
+		2C0B73AEEC29AC891788FE62 /* humd-editor */ = {
 			isa = PBXGroup;
 			children = (
 				14D7BD5FB5719B6A092024C5 /* main.mm */,
 				B269B2360A570781011A419D /* bindings */,
 			);
-			path = "md-editor";
+			path = "humd-editor";
 			sourceTree = "<group>";
 		};
 		4C3057F49F83530B684410F7 /* Products */ = {
@@ -184,7 +184,7 @@
 				TargetAttributes = {
 				};
 			};
-			buildConfigurationList = F691B42212AC1B1C6DC01C73 /* Build configuration list for PBXProject "md-editor" */;
+			buildConfigurationList = F691B42212AC1B1C6DC01C73 /* Build configuration list for PBXProject "humd-editor" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -275,8 +275,8 @@
 				);
 				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
 				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
-				PRODUCT_BUNDLE_IDENTIFIER = "com.md-editor.app";
-				PRODUCT_NAME = "md-editor";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.humd-editor.app";
+				PRODUCT_NAME = "humd-editor";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALID_ARCHS = arm64;
@@ -425,8 +425,8 @@
 				);
 				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
 				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
-				PRODUCT_BUNDLE_IDENTIFIER = "com.md-editor.app";
-				PRODUCT_NAME = "md-editor";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.humd-editor.app";
+				PRODUCT_NAME = "humd-editor";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALID_ARCHS = arm64;
@@ -436,7 +436,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		F691B42212AC1B1C6DC01C73 /* Build configuration list for PBXProject "md-editor" */ = {
+		F691B42212AC1B1C6DC01C73 /* Build configuration list for PBXProject "humd-editor" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				AE7730AC0F4FA34C6049CED6 /* debug */,

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**md-editor** is an advanced Markdown editor for macOS and iOS (iPhone/iPad). The application provides a three-pane interface on desktop (file browser, editor, preview) with live HTML rendering, keyboard shortcuts for common markdown formatting, and automatic file management.
+**humd-editor** is an advanced Markdown editor for macOS and iOS (iPhone/iPad). The application provides a three-pane interface on desktop (file browser, editor, preview) with live HTML rendering, keyboard shortcuts for common markdown formatting, and automatic file management.
 
 ### Platforms
 - macOS (desktop with three-pane layout)
@@ -138,7 +138,7 @@ npm run tauri plugin list # List available plugins
 - **Vault location**: Change vault folder (macOS: native picker or path input)
 - **Preview CSS**: Live editing with example placeholder CSS
 - **Changes**: Validate before saving; handle vault changes transparently
-- **Persistence**: Settings saved to file-based JSON storage (~/.md-editor/settings.json)
+- **Persistence**: Settings saved to file-based JSON storage (~/.humd-editor/settings.json)
 
 ### Responsive Design
 - **Desktop (macOS)**: Three-pane layout (sidebar, editor, preview)
