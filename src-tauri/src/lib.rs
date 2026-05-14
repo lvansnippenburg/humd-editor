@@ -39,6 +39,9 @@ pub struct Settings {
     #[serde(rename = "openFiles")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub open_files: Option<Vec<String>>,
+    #[serde(rename = "usePandoc")]
+    #[serde(default)]
+    pub use_pandoc: bool,
 }
 
 fn default_spell_check() -> bool {
@@ -58,6 +61,7 @@ impl Default for Settings {
             preview_visible: None,
             last_open_file: None,
             open_files: None,
+            use_pandoc: false,
         }
     }
 }
@@ -100,6 +104,7 @@ fn save_settings(
     vault_path: Option<String>,
     user_css: String,
     spell_check: Option<bool>,
+    use_pandoc: Option<bool>,
 ) -> Result<(), String> {
     let settings_path = get_settings_path(&app)?;
 
@@ -115,6 +120,7 @@ fn save_settings(
     settings.vault_path = vault_path;
     settings.user_css = user_css;
     settings.spell_check = spell_check.unwrap_or(true);
+    settings.use_pandoc = use_pandoc.unwrap_or(false);
 
     write_settings(&settings_path, &settings)
 }
@@ -375,24 +381,139 @@ fn trash_file(file_path: String) -> Result<(), String> {
 // ===== PHASE 3: MARKDOWN RENDERING =====
 
 #[tauri::command]
-fn render_block(markdown: String, file_path: Option<String>) -> Result<String, String> {
-    let preprocessed = preprocess_footnotes(&markdown);
-
-    let mut options = comrak::ComrakOptions::default();
+fn make_comrak_options() -> comrak::Options<'static> {
+    let mut options = comrak::Options::default();
     options.extension.footnotes = true;
     options.extension.strikethrough = true;
     options.extension.table = true;
+    options.extension.autolink = true;
+    options.extension.tasklist = true;
+    options.extension.description_lists = true;
+    // shortcodes (emoji like :smile:) — field added in comrak 0.30+; skip for now
+    // superscript handled in preprocess_inline_html to avoid greedy cross-line matching
     options.extension.wikilinks_title_after_pipe = true;
     options.extension.header_ids = Some(String::new());
     options.render.unsafe_ = true;
+    options
+}
 
-    let mut html = comrak::markdown_to_html(&preprocessed, &options);
-
-    if let Some(ref path) = file_path {
-        html = embed_local_images(&html, path);
+// comrak 0.29 lacks native highlight/subscript extensions; handle via preprocessing.
+fn preprocess_inline_html(s: &str) -> String {
+    // 1. ==text== → <mark>text</mark>  (must not match inside code spans/blocks)
+    // 2. ~text~ → <sub>text</sub>  (single tilde; ~~ is strikethrough)
+    // Strategy: scan line by line, skip fenced code blocks and inline code spans.
+    let mut out = String::with_capacity(s.len());
+    let mut in_fence = false;
+    for line in s.split('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if in_fence {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        out.push_str(&apply_inline_spans(line));
+        out.push('\n');
     }
+    // Remove trailing newline added by the loop
+    if out.ends_with('\n') && !s.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
 
-    Ok(html)
+fn apply_inline_spans(line: &str) -> String {
+    // Parse character by character, respecting inline code spans.
+    let chars: Vec<char> = line.chars().collect();
+    let mut result = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < chars.len() {
+        // Skip inline code spans — pass through verbatim.
+        if chars[i] == '`' {
+            let start = i;
+            i += 1;
+            while i < chars.len() && chars[i] != '`' {
+                i += 1;
+            }
+            if i < chars.len() { i += 1; } // closing backtick
+            result.extend(chars[start..i].iter());
+            continue;
+        }
+        // ==highlight==
+        if chars[i] == '=' && i + 1 < chars.len() && chars[i + 1] == '=' {
+            if let Some(end) = find_closing(&chars, i + 2, "==") {
+                result.push_str("<mark>");
+                result.extend(chars[i + 2..end].iter());
+                result.push_str("</mark>");
+                i = end + 2;
+                continue;
+            }
+        }
+        // ~subscript~ (not ~~strikethrough~~)
+        if chars[i] == '~' {
+            let is_double = i + 1 < chars.len() && chars[i + 1] == '~';
+            if !is_double {
+                if let Some(end) = find_closing_char(&chars, i + 1, '~', false) {
+                    result.push_str("<sub>");
+                    result.extend(chars[i + 1..end].iter());
+                    result.push_str("</sub>");
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+        // ^superscript^ — skip [^ (footnote ref) and ^[ (inline footnote)
+        if chars[i] == '^' {
+            let prev_is_bracket = i > 0 && chars[i - 1] == '[';
+            let next_is_bracket = i + 1 < chars.len() && chars[i + 1] == '[';
+            if !prev_is_bracket && !next_is_bracket {
+                if let Some(end) = find_closing_char(&chars, i + 1, '^', true) {
+                    result.push_str("<sup>");
+                    result.extend(chars[i + 1..end].iter());
+                    result.push_str("</sup>");
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+    result
+}
+
+fn find_closing(chars: &[char], start: usize, pat: &str) -> Option<usize> {
+    let pat_chars: Vec<char> = pat.chars().collect();
+    let plen = pat_chars.len();
+    let mut i = start;
+    while i + plen <= chars.len() {
+        if chars[i..i + plen] == pat_chars[..] {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn find_closing_char(chars: &[char], start: usize, ch: char, allow_double: bool) -> Option<usize> {
+    let mut i = start;
+    while i < chars.len() {
+        if chars[i] == ch {
+            let next_is_same = i + 1 < chars.len() && chars[i + 1] == ch;
+            if next_is_same && !allow_double {
+                i += 2; // skip ~~, it's strikethrough
+                continue;
+            }
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }
 
 #[tauri::command]
@@ -401,75 +522,115 @@ fn render_markdown(
     user_css: String,
     file_path: Option<String>,
 ) -> Result<String, String> {
-    // Strip YAML front matter before processing
+    use comrak::plugins::syntect::SyntectAdapterBuilder;
+
     let content = strip_front_matter(&markdown);
+    let content = preprocess_inline_html(&content);
     let preprocessed = preprocess_footnotes(&content);
+    let options = make_comrak_options();
 
-    let mut options = comrak::ComrakOptions::default();
-    options.extension.footnotes = true;
-    options.extension.strikethrough = true;
-    options.extension.table = true;
-    options.extension.wikilinks_title_after_pipe = true;
-    options.extension.header_ids = Some(String::new());
-    options.render.unsafe_ = true;
+    let adapter = SyntectAdapterBuilder::new().theme("InspiredGitHub").build();
+    let mut plugins = comrak::Plugins::default();
+    plugins.render.codefence_syntax_highlighter = Some(&adapter);
 
-    let html = comrak::markdown_to_html(&preprocessed, &options);
+    let html = comrak::markdown_to_html_with_plugins(&preprocessed, &options, &plugins);
 
-    // Embed local images as base64 data URIs so they load in the sandboxed iframe.
     let html = if let Some(ref path) = file_path {
         embed_local_images(&html, path)
     } else {
         html
     };
 
+    build_preview_html(html, user_css)
+}
+
+#[tauri::command]
+fn render_markdown_pandoc(
+    markdown: String,
+    user_css: String,
+    file_path: Option<String>,
+) -> Result<String, String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let content = strip_front_matter(&markdown);
+
+    let mut child = Command::new("pandoc")
+        .args([
+            "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables",
+            "--to=html5",
+            "--standalone=false",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to launch pandoc: {}", e))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(content.as_bytes())
+            .map_err(|e| format!("Failed to write to pandoc stdin: {}", e))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("Failed to wait for pandoc: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Pandoc error: {}", stderr));
+    }
+
+    let mut html = String::from_utf8_lossy(&output.stdout).into_owned();
+
+    if let Some(ref path) = file_path {
+        html = embed_local_images(&html, path);
+    }
+
+    // Reuse the same click-intercept + scroll-sync script and page template
+    // by delegating to a shared helper.
+    build_preview_html(html, user_css)
+}
+
+fn build_preview_html(body_html: String, user_css: String) -> Result<String, String> {
     let click_intercept = r#"
 <script>
 document.addEventListener('click', function(e) {
   var a = e.target.closest('a');
-  if (a && a.href) {
-    e.preventDefault();
-    window.parent.postMessage({ type: 'wikilink', href: a.getAttribute('href') }, '*');
+  if (!a) return;
+  var href = a.getAttribute('href') || '';
+  if (!href) return;
+  e.preventDefault();
+  if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href)) {
+    window.parent.postMessage({ type: 'open-url', href: href }, '*');
+  } else if (href.charAt(0) === '#') {
+    var target = document.getElementById(href.slice(1));
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } else {
+    window.parent.postMessage({ type: 'wikilink', href: href }, '*');
   }
 });
-
-// ---- scroll sync ----
 var _scrollSyncTimer = null;
 var _ignoringScroll = false;
-
 function _getScrollInfo() {
   var headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'));
   var scrollTop = window.scrollY;
   var scrollHeight = document.documentElement.scrollHeight;
   var clientHeight = document.documentElement.clientHeight;
   var maxScroll = Math.max(1, scrollHeight - clientHeight);
-
-  if (headings.length === 0) {
-    return { currentId: null, nextId: null, fraction: scrollTop / maxScroll };
-  }
-
+  if (headings.length === 0) return { currentId: null, nextId: null, fraction: scrollTop / maxScroll };
   var curIdx = -1;
-  for (var i = 0; i < headings.length; i++) {
-    if (headings[i].offsetTop <= scrollTop + 2) curIdx = i;
-  }
-
+  for (var i = 0; i < headings.length; i++) { if (headings[i].offsetTop <= scrollTop + 2) curIdx = i; }
   if (curIdx === -1) {
     var firstTop = headings[0].offsetTop;
     return { currentId: null, nextId: headings[0].id, fraction: firstTop > 0 ? Math.min(1, scrollTop / firstTop) : 0 };
   }
-
-  var cur = headings[curIdx];
-  var nxt = headings[curIdx + 1] || null;
-  var fraction;
-  if (nxt) {
-    var range = nxt.offsetTop - cur.offsetTop;
-    fraction = range > 0 ? (scrollTop - cur.offsetTop) / range : 0;
-  } else {
-    var tail = scrollHeight - cur.offsetTop;
-    fraction = tail > 0 ? (scrollTop - cur.offsetTop) / tail : 0;
-  }
+  var cur = headings[curIdx]; var nxt = headings[curIdx + 1] || null; var fraction;
+  if (nxt) { var range = nxt.offsetTop - cur.offsetTop; fraction = range > 0 ? (scrollTop - cur.offsetTop) / range : 0; }
+  else { var tail = scrollHeight - cur.offsetTop; fraction = tail > 0 ? (scrollTop - cur.offsetTop) / tail : 0; }
   return { currentId: cur.id, nextId: nxt ? nxt.id : null, fraction: Math.max(0, Math.min(1, fraction)) };
 }
-
 window.addEventListener('scroll', function() {
   if (_ignoringScroll) return;
   clearTimeout(_scrollSyncTimer);
@@ -478,34 +639,21 @@ window.addEventListener('scroll', function() {
     window.parent.postMessage({ type: 'preview-scroll', currentId: info.currentId, nextId: info.nextId, fraction: info.fraction }, '*');
   }, 50);
 }, { passive: true });
-
 window.addEventListener('message', function(e) {
   if (!e.data) return;
-
-  if (e.data.type === 'scroll-to-heading') {
-    var el = document.getElementById(e.data.id);
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    return;
-  }
-
+  if (e.data.type === 'scroll-to-heading') { var el = document.getElementById(e.data.id); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
   if (e.data.type === 'scroll-to-fraction') {
     _ignoringScroll = true;
-    var headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'));
     var scrollHeight = document.documentElement.scrollHeight;
     var clientHeight = document.documentElement.clientHeight;
     var maxScroll = Math.max(0, scrollHeight - clientHeight);
     var cur = e.data.currentId ? document.getElementById(e.data.currentId) : null;
     var nxt = e.data.nextId ? document.getElementById(e.data.nextId) : null;
     var targetY;
-    if (!cur && !nxt) {
-      targetY = e.data.fraction * maxScroll;
-    } else if (cur && nxt) {
-      targetY = cur.offsetTop + e.data.fraction * (nxt.offsetTop - cur.offsetTop);
-    } else if (cur) {
-      targetY = cur.offsetTop + e.data.fraction * (scrollHeight - cur.offsetTop);
-    } else {
-      targetY = e.data.fraction * nxt.offsetTop;
-    }
+    if (!cur && !nxt) { targetY = e.data.fraction * maxScroll; }
+    else if (cur && nxt) { targetY = cur.offsetTop + e.data.fraction * (nxt.offsetTop - cur.offsetTop); }
+    else if (cur) { targetY = cur.offsetTop + e.data.fraction * (scrollHeight - cur.offsetTop); }
+    else { targetY = e.data.fraction * nxt.offsetTop; }
     window.scrollTo(0, Math.max(0, Math.min(maxScroll, targetY)));
     setTimeout(function() { _ignoringScroll = false; }, 150);
   }
@@ -513,7 +661,7 @@ window.addEventListener('message', function(e) {
 </script>
 "#;
 
-    let full_html = format!(
+    Ok(format!(
         r#"<!DOCTYPE html>
 <html>
 <head>
@@ -528,9 +676,35 @@ body {{
   color: #333;
 }}
 img {{ max-width: 100%; height: auto; }}
+/* Syntax highlighting */
+pre {{ border-radius: 5px; overflow-x: auto; padding: 12px 16px; font-size: 0.9em; }}
+pre code {{ background: none; padding: 0; font-size: inherit; }}
+code {{ background: #f0f0f0; padding: 2px 5px; border-radius: 3px; font-size: 0.9em; }}
+/* Highlight */
+mark {{ background-color: #fff176; color: inherit; padding: 1px 2px; border-radius: 2px; }}
+/* Task lists */
+.task-list-item {{ list-style-type: none; margin-left: -20px; }}
+.task-list-item input[type="checkbox"] {{ margin-right: 6px; vertical-align: middle; }}
+/* Definition lists */
+dt {{ font-weight: 600; margin-top: 10px; }}
+dd {{ margin-left: 24px; color: #555; }}
+/* Tables */
+table {{ border-collapse: collapse; width: 100%; margin: 1em 0; }}
+th, td {{ border: 1px solid #ddd; padding: 6px 12px; text-align: left; }}
+th {{ background: #f5f5f5; font-weight: 600; }}
+tr:nth-child(even) {{ background: #fafafa; }}
 @media (prefers-color-scheme: dark) {{
   body {{ background-color: #1e1e1e; color: #e0e0e0; }}
   a {{ color: #6da3f5; }}
+  code {{ background: #2d2d2d; }}
+  mark {{ background-color: #7a6a00; color: #fff176; }}
+  dd {{ color: #aaa; }}
+  th {{ background: #2a2a2a; }}
+  tr:nth-child(even) {{ background: #242424; }}
+  th, td {{ border-color: #444; }}
+  /* Reset inline syntax-highlight colors for dark mode */
+  pre span {{ color: #abb2bf !important; background: none !important; }}
+  pre {{ background-color: #282c34 !important; color: #abb2bf; }}
 }}
 {}
 </style>
@@ -540,10 +714,8 @@ img {{ max-width: 100%; height: auto; }}
 {}
 </body>
 </html>"#,
-        user_css, click_intercept, html
-    );
-
-    Ok(full_html)
+        user_css, click_intercept, body_html
+    ))
 }
 
 fn embed_local_images(html: &str, file_path: &str) -> String {
@@ -960,8 +1132,8 @@ pub fn run() {
             rename_file,
             move_file,
             trash_file,
-            render_block,
             render_markdown,
+            render_markdown_pandoc,
             build_link_index,
             get_backlinks,
             get_tags_for_note,

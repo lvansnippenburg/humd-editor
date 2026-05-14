@@ -1,7 +1,5 @@
-# Tauri + Vanilla
+# humd-editor
 
-This template should help get you started developing with Tauri in vanilla HTML, CSS and Javascript.
+Before using, copying, or modifying this code: **read the LICENSE.md file.**
 
-## Recommended IDE Setup
-
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+The Markdown editor for the humanities. Includes inline footnotes and integration with Zotero (with a little help of BetterBibTex). It is not perfect, but it's the best possible solution if you want to use a plain text format for your writings.

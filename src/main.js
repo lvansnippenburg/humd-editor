@@ -15,6 +15,7 @@ let currentVaultPath = null;
 let currentFilePath = null;
 let currentUserCss = "";
 let currentSpellCheck = true;
+let currentUsePandoc = false;
 let currentBibPath = null;
 let currentCslPath = null;
 let previewVisible = true;
@@ -28,7 +29,10 @@ let editorScrollTimer = null;
 let suppressEditorScroll = false;   // true while preview→editor sync is in progress
 let suppressPreviewScroll = false;  // true while editor→preview sync is in progress
 let dragDidOccur = false;    // suppresses click after a completed mouse-drag
-let tabs = [];               // [{ id, path, isDirty, content }]
+let tabs = [];               // [{ id, path, isDirty, content, undoStack, redoStack }]
+let undoStack = [];          // active tab's undo snapshots [{value, start, end}]
+let redoStack = [];          // active tab's redo snapshots
+let undoDebounceTimer = null;
 let activeTabId = null;
 let tabCounter = 0;
 let fileTreeCache = [];
@@ -120,6 +124,7 @@ async function initialize() {
     const settings = await invoke("get_settings");
     currentUserCss = settings.userCss || settings.user_css || "";
     currentSpellCheck = settings.spellCheck ?? settings.spell_check ?? true;
+    currentUsePandoc = settings.usePandoc ?? false;
     currentBibPath = settings.cslJsonPath || settings.csl_json_path || null;
     currentCslPath = settings.cslStylePath || settings.csl_style_path || null;
     document.getElementById("editor").spellcheck = currentSpellCheck;
@@ -272,6 +277,11 @@ function setupEventListeners() {
 
   // Messages from preview iframe
   window.addEventListener("message", async msg => {
+    if (msg.data.type === "open-url") {
+      await window.__TAURI__.opener.openUrl(msg.data.href);
+      return;
+    }
+
     if (msg.data.type === "wikilink") {
       const stem = (msg.data.href || "").replace(/^\.\//, "").replace(/\.md$/, "");
       const path = findNoteByName(stem);
@@ -390,10 +400,7 @@ function addFileMouseDrag(li, filePath, fileName) {
         const pos = editor.selectionStart;
         const stem = fileName.replace(/\.md$/i, "");
         const link = `[[${stem}]]`;
-        const val = editor.value;
-        editor.value = val.slice(0, pos) + link + val.slice(pos);
-        editor.selectionStart = editor.selectionEnd = pos + link.length;
-        onEditorInput();
+        editorReplace(editor, pos, pos, link);
         return;
       }
 
@@ -654,8 +661,11 @@ async function switchToTab(tabId) {
     const cur = getActiveTab();
     if (cur) {
       clearTimeout(autoSaveDebounceTimer);
+      clearTimeout(undoDebounceTimer);
       cur.content = getEditorContent();
       cur.isDirty = isDirty;
+      cur.undoStack = undoStack.slice();
+      cur.redoStack = redoStack.slice();
       if (cur.isDirty) {
         try {
           await invoke("write_file", { filePath: cur.path, content: cur.content });
@@ -669,6 +679,8 @@ async function switchToTab(tabId) {
   const tab = tabs.find(t => t.id === tabId);
   currentFilePath = tab.path;
   isDirty = tab.isDirty;
+  undoStack = tab.undoStack ? tab.undoStack.slice() : [];
+  redoStack = tab.redoStack ? tab.redoStack.slice() : [];
 
   document.getElementById("editor").value = tab.content;
   await updatePreview();
@@ -750,18 +762,24 @@ async function loadFile(path) {
       const cur = getActiveTab();
       if (cur) {
         clearTimeout(autoSaveDebounceTimer);
+        clearTimeout(undoDebounceTimer);
         cur.content = getEditorContent();
         cur.isDirty = isDirty;
+        cur.undoStack = undoStack.slice();
+        cur.redoStack = redoStack.slice();
       }
     }
 
     const tabId = `tab-${++tabCounter}`;
-    const tab = { id: tabId, path, isDirty: false, content };
+    const initialSnap = { value: content, start: 0, end: 0 };
+    const tab = { id: tabId, path, isDirty: false, content, undoStack: [initialSnap], redoStack: [] };
     tabs.push(tab);
 
     activeTabId = tabId;
     currentFilePath = path;
     isDirty = false;
+    undoStack = [initialSnap];
+    redoStack = [];
 
     document.getElementById("editor").value = content;
     await updatePreview();
@@ -835,6 +853,9 @@ function onEditorInput() {
   const cur = getActiveTab();
   if (cur && !cur.isDirty) { cur.isDirty = true; renderTabBar(); }
 
+  clearTimeout(undoDebounceTimer);
+  undoDebounceTimer = setTimeout(snapshotForUndo, 500);
+
   clearTimeout(previewDebounceTimer);
   previewDebounceTimer = setTimeout(() => {
     updatePreview();
@@ -865,9 +886,7 @@ function onEditorKeydown(e) {
     if (pos >= 1 && editor.value[pos - 1] === "\\" && !isCursorInCode(editor.value, pos - 1)) {
       e.preventDefault();
       const insertPos = pos - 1;
-      editor.value = editor.value.slice(0, insertPos) + editor.value.slice(pos);
-      editor.selectionStart = editor.selectionEnd = insertPos;
-      editor.dispatchEvent(new Event("input"));
+      editorReplace(editor, insertPos, pos, "");
 
       (async () => {
         showStatus("Opening Zotero citation picker…");
@@ -875,10 +894,7 @@ function onEditorKeydown(e) {
           const raw = (await invoke("fetch_zotero_cayw")).trim();
           if (!raw) { showStatus("No citation selected"); return; }
           const citation = raw.startsWith("[") ? raw : `[${raw}]`;
-          const cur = editor.value;
-          editor.value = cur.slice(0, insertPos) + citation + cur.slice(insertPos);
-          editor.selectionStart = editor.selectionEnd = insertPos + citation.length;
-          editor.dispatchEvent(new Event("input"));
+          editorReplace(editor, insertPos, insertPos, citation);
           showStatus("Citation inserted");
         } catch {
           showStatus("Zotero not available — is Zotero running with Better BibTeX?", true);
@@ -888,11 +904,67 @@ function onEditorKeydown(e) {
     }
   }
 
-  if (isMeta && e.key === "b") { e.preventDefault(); wrapSelection("**", "**"); return; }
-  if (isMeta && e.key === "i") { e.preventDefault(); wrapSelection("_", "_"); return; }
-  if (isMeta && e.key === "1") { e.preventDefault(); prefixLine("# "); return; }
-  if (isMeta && e.key === "2") { e.preventDefault(); prefixLine("## "); return; }
-  if (isMeta && e.key === "3") { e.preventDefault(); prefixLine("### "); return; }
+  if (isMeta && !e.shiftKey && e.key === "z") { e.preventDefault(); performUndo(); return; }
+  if (isMeta && (e.key === "y" || (e.shiftKey && e.key === "z"))) { e.preventDefault(); performRedo(); return; }
+
+  if (isMeta && e.key === "b") { e.preventDefault(); snapshotForUndo(); wrapSelection("**", "**"); return; }
+  if (isMeta && e.key === "i") { e.preventDefault(); snapshotForUndo(); wrapSelection("_", "_"); return; }
+  if (isMeta && e.key === "1") { e.preventDefault(); snapshotForUndo(); prefixLine("# "); return; }
+  if (isMeta && e.key === "2") { e.preventDefault(); snapshotForUndo(); prefixLine("## "); return; }
+  if (isMeta && e.key === "3") { e.preventDefault(); snapshotForUndo(); prefixLine("### "); return; }
+}
+
+// Replace editor text in [start, end) while preserving the undo stack.
+function editorReplace(editor, start, end, text) {
+  editor.focus();
+  editor.setSelectionRange(start, end);
+  document.execCommand("insertText", false, text);
+}
+
+// ===== UNDO / REDO =====
+
+function snapshotForUndo() {
+  const editor = document.getElementById("editor");
+  if (!editor || !currentFilePath) return;
+  const snap = { value: editor.value, start: editor.selectionStart, end: editor.selectionEnd };
+  if (undoStack.length > 0 && undoStack[undoStack.length - 1].value === snap.value) return;
+  undoStack.push(snap);
+  redoStack = [];
+  if (undoStack.length > 200) undoStack.shift();
+}
+
+function performUndo() {
+  const editor = document.getElementById("editor");
+  if (!editor) return;
+  const cur = editor.value;
+  // Discard stale top entries that match the current state
+  while (undoStack.length > 0 && undoStack[undoStack.length - 1].value === cur) undoStack.pop();
+  if (undoStack.length === 0) return;
+  redoStack.push({ value: cur, start: editor.selectionStart, end: editor.selectionEnd });
+  applyUndoSnapshot(editor, undoStack.pop());
+}
+
+function performRedo() {
+  const editor = document.getElementById("editor");
+  if (!editor || redoStack.length === 0) return;
+  undoStack.push({ value: editor.value, start: editor.selectionStart, end: editor.selectionEnd });
+  applyUndoSnapshot(editor, redoStack.pop());
+}
+
+function applyUndoSnapshot(editor, snap) {
+  editor.value = snap.value;
+  editor.setSelectionRange(snap.start, snap.end);
+  isDirty = true;
+  const tab = getActiveTab();
+  if (tab) { tab.content = snap.value; if (!tab.isDirty) { tab.isDirty = true; renderTabBar(); } }
+  clearTimeout(previewDebounceTimer);
+  previewDebounceTimer = setTimeout(() => {
+    updatePreview();
+    if (activeSidebarTab === "outline") buildOutline();
+    if (activeSidebarTab === "links") buildLinksPanel();
+  }, 100);
+  clearTimeout(autoSaveDebounceTimer);
+  autoSaveDebounceTimer = setTimeout(saveCurrentFile, 800);
 }
 
 function wrapSelection(before, after) {
@@ -901,14 +973,12 @@ function wrapSelection(before, after) {
   const end = editor.selectionEnd;
   const selected = editor.value.substring(start, end);
   if (!selected) {
-    editor.value = editor.value.substring(0, start) + before + after + editor.value.substring(end);
-    editor.selectionStart = editor.selectionEnd = start + before.length;
+    editorReplace(editor, start, end, before + after);
+    editor.setSelectionRange(start + before.length, start + before.length);
   } else {
-    editor.value = editor.value.substring(0, start) + before + selected + after + editor.value.substring(end);
-    editor.selectionStart = start;
-    editor.selectionEnd = start + before.length + selected.length;
+    editorReplace(editor, start, end, before + selected + after);
+    editor.setSelectionRange(start, start + before.length + selected.length);
   }
-  editor.dispatchEvent(new Event("input"));
 }
 
 function prefixLine(prefix) {
@@ -918,8 +988,7 @@ function prefixLine(prefix) {
   const lineEnd = editor.value.indexOf("\n", lineStart);
   const currentLine = editor.value.substring(lineStart, lineEnd === -1 ? editor.value.length : lineEnd);
   const trimmed = currentLine.replace(/^#+\s/, "");
-  editor.value = editor.value.substring(0, lineStart) + prefix + trimmed + editor.value.substring(lineStart + currentLine.length);
-  editor.dispatchEvent(new Event("input"));
+  editorReplace(editor, lineStart, lineStart + currentLine.length, prefix + trimmed);
 }
 
 // ===== PREVIEW =====
@@ -945,7 +1014,8 @@ async function updatePreview() {
   }
   try {
     const content = document.getElementById("editor").value;
-    const html = await invoke("render_markdown", {
+    const renderCmd = currentUsePandoc ? "render_markdown_pandoc" : "render_markdown";
+    const html = await invoke(renderCmd, {
       markdown: content,
       userCss: currentUserCss,
       filePath: currentFilePath,
@@ -1538,19 +1608,21 @@ function citeSimpleInline(keys, refMap) {
 
 // ===== SETTINGS =====
 
-let settingsBeforeEdit = { vaultPath: null, userCss: "", spellCheck: true, bibPath: null, cslPath: null };
+let settingsBeforeEdit = { vaultPath: null, userCss: "", spellCheck: true, usePandoc: false, bibPath: null, cslPath: null };
 
 function openSettingsDialog() {
   settingsBeforeEdit = {
     vaultPath: currentVaultPath,
     userCss: currentUserCss,
     spellCheck: currentSpellCheck,
+    usePandoc: currentUsePandoc,
     bibPath: currentBibPath,
     cslPath: currentCslPath,
   };
   document.getElementById("vault-path-display").textContent = currentVaultPath;
   document.getElementById("css-editor").value = currentUserCss;
   document.getElementById("spell-check-toggle").checked = currentSpellCheck;
+  document.getElementById("use-pandoc-toggle").checked = currentUsePandoc;
   document.getElementById("bib-path-display").textContent = currentBibPath || "None selected";
   document.getElementById("csl-path-display").textContent = currentCslPath || "None selected (defaults to APA)";
   document.getElementById("settings-dialog").showModal();
@@ -1564,6 +1636,7 @@ async function saveSettings() {
   try {
     const newCss = document.getElementById("css-editor").value;
     const newSpellCheck = document.getElementById("spell-check-toggle").checked;
+    const newUsePandoc = document.getElementById("use-pandoc-toggle").checked;
     let newVaultPath = currentVaultPath;
     const displayedPath = document.getElementById("vault-path-display").textContent;
     if (displayedPath !== currentVaultPath) newVaultPath = displayedPath;
@@ -1580,11 +1653,12 @@ async function saveSettings() {
       return;
     }
 
-    await invoke("save_settings", { vaultPath: newVaultPath, userCss: newCss, spellCheck: newSpellCheck });
+    await invoke("save_settings", { vaultPath: newVaultPath, userCss: newCss, spellCheck: newSpellCheck, usePandoc: newUsePandoc });
     await invoke("save_citation_settings", { cslJsonPath: newBibPath, cslStylePath: newCslPath });
 
     currentUserCss = newCss;
     currentSpellCheck = newSpellCheck;
+    currentUsePandoc = newUsePandoc;
     document.getElementById("editor").spellcheck = newSpellCheck;
 
     const bibChanged = newBibPath !== currentBibPath;
@@ -1617,6 +1691,7 @@ function cancelSettings() {
   document.getElementById("vault-path-display").textContent = settingsBeforeEdit.vaultPath;
   document.getElementById("css-editor").value = settingsBeforeEdit.userCss;
   document.getElementById("spell-check-toggle").checked = settingsBeforeEdit.spellCheck;
+  document.getElementById("use-pandoc-toggle").checked = settingsBeforeEdit.usePandoc;
   document.getElementById("bib-path-display").textContent = settingsBeforeEdit.bibPath || "None selected";
   document.getElementById("csl-path-display").textContent = settingsBeforeEdit.cslPath || "None selected (defaults to APA)";
   closeSettingsDialog();

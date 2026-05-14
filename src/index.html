@@ -163,6 +163,18 @@ a { color: #3498db; text-decoration: none; }
 a:hover { text-decoration: underline; }"></textarea>
     </div>
 
+    <div class="settings-section">
+      <h3>Preview <span class="settings-experimental-badge">Experimental</span></h3>
+      <label class="settings-toggle">
+        <input type="checkbox" id="use-pandoc-toggle" />
+        <span>Use Pandoc for rendering</span>
+      </label>
+      <p class="settings-hint">
+        Renders the preview using the system Pandoc installation instead of the built-in renderer.
+        Pandoc produces more accurate output for complex documents but requires Pandoc to be installed.
+      </p>
+    </div>
+
     <footer>
       <button id="save-settings-btn" class="primary" title="Save and apply changes">
         Save Settings
