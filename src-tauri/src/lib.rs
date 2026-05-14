@@ -42,6 +42,9 @@ pub struct Settings {
     #[serde(rename = "usePandoc")]
     #[serde(default)]
     pub use_pandoc: bool,
+    #[serde(rename = "useAutoSave")]
+    #[serde(default)]
+    pub use_auto_save: bool,
 }
 
 fn default_spell_check() -> bool {
@@ -62,6 +65,7 @@ impl Default for Settings {
             last_open_file: None,
             open_files: None,
             use_pandoc: false,
+            use_auto_save: false,
         }
     }
 }
@@ -105,6 +109,7 @@ fn save_settings(
     user_css: String,
     spell_check: Option<bool>,
     use_pandoc: Option<bool>,
+    use_auto_save: Option<bool>,
 ) -> Result<(), String> {
     let settings_path = get_settings_path(&app)?;
 
@@ -121,6 +126,7 @@ fn save_settings(
     settings.user_css = user_css;
     settings.spell_check = spell_check.unwrap_or(true);
     settings.use_pandoc = use_pandoc.unwrap_or(false);
+    settings.use_auto_save = use_auto_save.unwrap_or(false);
 
     write_settings(&settings_path, &settings)
 }

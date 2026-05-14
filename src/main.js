@@ -16,6 +16,7 @@ let currentFilePath = null;
 let currentUserCss = "";
 let currentSpellCheck = true;
 let currentUsePandoc = false;
+let currentAutoSave = false;
 let currentBibPath = null;
 let currentCslPath = null;
 let previewVisible = true;
@@ -125,6 +126,7 @@ async function initialize() {
     currentUserCss = settings.userCss || settings.user_css || "";
     currentSpellCheck = settings.spellCheck ?? settings.spell_check ?? true;
     currentUsePandoc = settings.usePandoc ?? false;
+    currentAutoSave = settings.useAutoSave ?? false;
     currentBibPath = settings.cslJsonPath || settings.csl_json_path || null;
     currentCslPath = settings.cslStylePath || settings.csl_style_path || null;
     document.getElementById("editor").spellcheck = currentSpellCheck;
@@ -245,6 +247,9 @@ function setupEventListeners() {
   document.getElementById("close-settings").addEventListener("click", cancelSettings);
   document.getElementById("cancel-settings-btn").addEventListener("click", cancelSettings);
   document.getElementById("save-settings-btn").addEventListener("click", saveSettings);
+  document.getElementById("auto-save-toggle").addEventListener("change", e => {
+    document.getElementById("auto-save-warning").style.display = e.target.checked ? "" : "none";
+  });
   document.getElementById("pick-vault-btn")?.addEventListener("click", pickVaultFolder);
   document.getElementById("pick-bib-btn")?.addEventListener("click", () => pickFileForSetting(
     "bib-path-display",
@@ -863,8 +868,10 @@ function onEditorInput() {
     if (activeSidebarTab === "links") buildLinksPanel();
   }, 300);
 
-  clearTimeout(autoSaveDebounceTimer);
-  autoSaveDebounceTimer = setTimeout(saveCurrentFile, 800);
+  if (currentAutoSave) {
+    clearTimeout(autoSaveDebounceTimer);
+    autoSaveDebounceTimer = setTimeout(saveCurrentFile, 800);
+  }
 }
 
 function isCursorInCode(value, pos) {
@@ -963,8 +970,10 @@ function applyUndoSnapshot(editor, snap) {
     if (activeSidebarTab === "outline") buildOutline();
     if (activeSidebarTab === "links") buildLinksPanel();
   }, 100);
-  clearTimeout(autoSaveDebounceTimer);
-  autoSaveDebounceTimer = setTimeout(saveCurrentFile, 800);
+  if (currentAutoSave) {
+    clearTimeout(autoSaveDebounceTimer);
+    autoSaveDebounceTimer = setTimeout(saveCurrentFile, 800);
+  }
 }
 
 function wrapSelection(before, after) {
@@ -1608,7 +1617,7 @@ function citeSimpleInline(keys, refMap) {
 
 // ===== SETTINGS =====
 
-let settingsBeforeEdit = { vaultPath: null, userCss: "", spellCheck: true, usePandoc: false, bibPath: null, cslPath: null };
+let settingsBeforeEdit = { vaultPath: null, userCss: "", spellCheck: true, usePandoc: false, autoSave: false, bibPath: null, cslPath: null };
 
 function openSettingsDialog() {
   settingsBeforeEdit = {
@@ -1616,6 +1625,7 @@ function openSettingsDialog() {
     userCss: currentUserCss,
     spellCheck: currentSpellCheck,
     usePandoc: currentUsePandoc,
+    autoSave: currentAutoSave,
     bibPath: currentBibPath,
     cslPath: currentCslPath,
   };
@@ -1623,6 +1633,9 @@ function openSettingsDialog() {
   document.getElementById("css-editor").value = currentUserCss;
   document.getElementById("spell-check-toggle").checked = currentSpellCheck;
   document.getElementById("use-pandoc-toggle").checked = currentUsePandoc;
+  const autoSaveToggle = document.getElementById("auto-save-toggle");
+  autoSaveToggle.checked = currentAutoSave;
+  document.getElementById("auto-save-warning").style.display = currentAutoSave ? "" : "none";
   document.getElementById("bib-path-display").textContent = currentBibPath || "None selected";
   document.getElementById("csl-path-display").textContent = currentCslPath || "None selected (defaults to APA)";
   document.getElementById("settings-dialog").showModal();
@@ -1637,6 +1650,7 @@ async function saveSettings() {
     const newCss = document.getElementById("css-editor").value;
     const newSpellCheck = document.getElementById("spell-check-toggle").checked;
     const newUsePandoc = document.getElementById("use-pandoc-toggle").checked;
+    const newAutoSave = document.getElementById("auto-save-toggle").checked;
     let newVaultPath = currentVaultPath;
     const displayedPath = document.getElementById("vault-path-display").textContent;
     if (displayedPath !== currentVaultPath) newVaultPath = displayedPath;
@@ -1653,12 +1667,13 @@ async function saveSettings() {
       return;
     }
 
-    await invoke("save_settings", { vaultPath: newVaultPath, userCss: newCss, spellCheck: newSpellCheck, usePandoc: newUsePandoc });
+    await invoke("save_settings", { vaultPath: newVaultPath, userCss: newCss, spellCheck: newSpellCheck, usePandoc: newUsePandoc, useAutoSave: newAutoSave });
     await invoke("save_citation_settings", { cslJsonPath: newBibPath, cslStylePath: newCslPath });
 
     currentUserCss = newCss;
     currentSpellCheck = newSpellCheck;
     currentUsePandoc = newUsePandoc;
+    currentAutoSave = newAutoSave;
     document.getElementById("editor").spellcheck = newSpellCheck;
 
     const bibChanged = newBibPath !== currentBibPath;
@@ -1692,6 +1707,8 @@ function cancelSettings() {
   document.getElementById("css-editor").value = settingsBeforeEdit.userCss;
   document.getElementById("spell-check-toggle").checked = settingsBeforeEdit.spellCheck;
   document.getElementById("use-pandoc-toggle").checked = settingsBeforeEdit.usePandoc;
+  document.getElementById("auto-save-toggle").checked = settingsBeforeEdit.autoSave;
+  document.getElementById("auto-save-warning").style.display = settingsBeforeEdit.autoSave ? "" : "none";
   document.getElementById("bib-path-display").textContent = settingsBeforeEdit.bibPath || "None selected";
   document.getElementById("csl-path-display").textContent = settingsBeforeEdit.cslPath || "None selected (defaults to APA)";
   closeSettingsDialog();
