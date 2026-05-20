@@ -8,7 +8,9 @@
   <link
     href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:ital,wght@0,400;0,500;1,400&display=swap"
     rel="stylesheet">
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="/css/styles.css" />
+  <link rel="icon" type="image/x-icon" href="/assets/favicon.ico">
+  <link rel="icon" type="image/png" sizes="32x32" href="/assets/icon-32x32.png">
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>humd-editor</title>
 </head>
@@ -112,7 +114,7 @@
       <button id="close-settings" class="icon-btn" aria-label="Close settings" title="Close">✕</button>
     </header>
 
-    <div class="settings-section macos-only">
+    <div class="settings-section">
       <h3>Vault Location</h3>
       <div class="vault-path-container">
         <code id="vault-path-display">None selected</code>
@@ -197,7 +199,7 @@ a:hover { text-decoration: underline; }"></textarea>
     <span id="status-message"></span>
   </div>
 
-  <!-- Tab Bar (iOS only) -->
+  <!-- Tab Bar (mobile only) -->
   <nav id="tab-bar">
     <button class="tab-btn" data-tab="files">Files</button>
     <button class="tab-btn" data-tab="editor">Edit</button>
@@ -206,8 +208,8 @@ a:hover { text-decoration: underline; }"></textarea>
   </nav>
 
   <script src="/assets/citation.min.js"></script>
-  <script>window.Cite = require('citation-js');</script>
-  <script type="module" src="/main.js"></script>
+  <script>window.Cite = typeof require !== 'undefined' ? require('citation-js') : window.Cite;</script>
+  <script src="/js/app.js"></script>
 </body>
 
 </html>
