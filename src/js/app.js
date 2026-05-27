@@ -251,8 +251,8 @@ window.addEventListener('message', function(e) {
 });
 <\/script>`;
 
-  const hlCss = `<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github.min.css" media="(prefers-color-scheme: light)">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">`;
+  const hlCss = `<link rel="stylesheet" href="/assets/hljs-github.min.css" media="(prefers-color-scheme: light)">
+<link rel="stylesheet" href="/assets/hljs-github-dark.min.css" media="(prefers-color-scheme: dark)">`;
 
   return `<!DOCTYPE html>
 <html>
@@ -293,7 +293,7 @@ ${userCss}
 <body>
 ${bodyHtml}
 ${clickIntercept}
-<script src="https://cdn.jsdelivr.net/npm/highlight.js@11/lib/highlight.min.js"><\/script>
+<script src="/js/highlight.min.js"><\/script>
 <script>if (typeof hljs !== 'undefined') { hljs.highlightAll(); }<\/script>
 </body>
 </html>`;
@@ -305,13 +305,13 @@ function configureMarked() {
   const renderer = new marked.Renderer();
 
   // Give headings slug IDs for scroll sync
-  renderer.heading = function(text, level, raw) {
+  renderer.heading = function (text, level, raw) {
     const slug = raw.toLowerCase().replace(/[^\w\s-]/g, "").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
     return `<h${level} id="${slug}">${text}</h${level}>\n`;
   };
 
   // Checkbox tasks
-  renderer.listitem = function(text, task, checked) {
+  renderer.listitem = function (text, task, checked) {
     if (task) {
       return `<li class="task-list-item"><input type="checkbox" disabled${checked ? " checked" : ""}> ${text}</li>\n`;
     }
@@ -341,7 +341,7 @@ async function renderMarkdownClientSide(content, userCss, filePath) {
     bodyHtml = marked.parse(md);
   } else {
     // Fallback: wrap raw markdown in <pre> if marked.js not yet loaded
-    bodyHtml = `<pre>${md.replace(/&/g,"&amp;").replace(/</g,"&lt;")}</pre>`;
+    bodyHtml = `<pre>${md.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</pre>`;
   }
 
   return buildPreviewHtml(bodyHtml, userCss);
@@ -405,8 +405,7 @@ async function startInlineRename(nameEl, oldPath) {
 
 async function initialize() {
   try {
-    // Load marked.js from CDN
-    await loadScript("https://cdn.jsdelivr.net/npm/marked@12/marked.min.js");
+    await loadScript("/js/marked.min.js");
     configureMarked();
 
     const settings = await apiFetch("/api/settings");
@@ -1339,7 +1338,7 @@ async function initializeFileWatcher() {
   if (!currentVaultPath) return;
   try {
     vaultHashCache = (await apiFetch(`/api/vault-hash?path=${encodeURIComponent(currentVaultPath)}`)).hash;
-  } catch (_) {}
+  } catch (_) { }
 
   setInterval(async () => {
     try {
@@ -1350,7 +1349,7 @@ async function initializeFileWatcher() {
         await refreshFileTree();
         await buildLinkIndex();
       }
-    } catch (_) {}
+    } catch (_) { }
   }, 3000);
 }
 
@@ -1619,7 +1618,7 @@ async function saveUiState() {
       lastOpenFile: currentFilePath,
       openFiles: tabs.map(t => t.path),
     });
-  } catch (_) {}
+  } catch (_) { }
 }
 
 // ===== CITATIONS =====
