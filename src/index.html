@@ -1,210 +1,401 @@
 <!doctype html>
 <html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <link rel="stylesheet" href="/css/styles.css" />
+        <link rel="icon" type="image/x-icon" href="/assets/favicon.ico" />
+        <link rel="icon" type="image/png" sizes="32x32" href="/assets/icon-32x32.png" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>humd-editor</title>
+    </head>
 
-<head>
-  <meta charset="UTF-8" />
-  <link rel="stylesheet" href="/css/styles.css" />
-  <link rel="icon" type="image/x-icon" href="/assets/favicon.ico">
-  <link rel="icon" type="image/png" sizes="32x32" href="/assets/icon-32x32.png">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>humd-editor</title>
-</head>
+    <body>
+        <div id="app">
+            <!-- Sidebar / File Browser -->
+            <aside id="sidebar">
+                <div id="sidebar-header">
+                    <div id="sidebar-tabs">
+                        <button class="sidebar-tab active" data-tab="files" title="Files">
+                            <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 15 15"
+                                fill="none"
+                                xmlns="http://www.w3.org/2000/svg"
+                            >
+                                <path
+                                    d="M3 2.5C3 2.22386 3.22386 2 3.5 2H9.08579C9.21839 2 9.34557 2.05268 9.43934 2.14645L11.8536 4.56066C11.9473 4.65443 12 4.78161 12 4.91421V12.5C12 12.7761 11.7761 13 11.5 13H3.5C3.22386 13 3 12.7761 3 12.5V2.5ZM3.5 3H8.5V5.5C8.5 5.77614 8.72386 6 9 6H11.5V12H3.5V3Z"
+                                    fill="currentColor"
+                                    fill-rule="evenodd"
+                                    clip-rule="evenodd"
+                                />
+                            </svg>
+                        </button>
+                        <button class="sidebar-tab" data-tab="search" title="Search">
+                            <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 15 15"
+                                fill="none"
+                                xmlns="http://www.w3.org/2000/svg"
+                            >
+                                <path
+                                    d="M10 6.5C10 8.433 8.433 10 6.5 10C4.567 10 3 8.433 3 6.5C3 4.567 4.567 3 6.5 3C8.433 3 10 4.567 10 6.5ZM9.30884 10.0159C8.53901 10.6318 7.56251 11 6.5 11C4.01472 11 2 8.98528 2 6.5C2 4.01472 4.01472 2 6.5 2C8.98528 2 11 4.01472 11 6.5C11 7.56251 10.6318 8.53901 10.0159 9.30884L12.8536 12.1464C13.0488 12.3417 13.0488 12.6583 12.8536 12.8536C12.6583 13.0488 12.3417 13.0488 12.1464 12.8536L9.30884 10.0159Z"
+                                    fill="currentColor"
+                                    fill-rule="evenodd"
+                                    clip-rule="evenodd"
+                                />
+                            </svg>
+                        </button>
+                        <button class="sidebar-tab" data-tab="tags" title="Tags">
+                            <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 15 15"
+                                fill="none"
+                                xmlns="http://www.w3.org/2000/svg"
+                            >
+                                <path
+                                    d="M2 2.5C2 2.22386 2.22386 2 2.5 2H7.08579C7.21839 2 7.34557 2.05268 7.43934 2.14645L12.6464 7.35355C12.8417 7.54882 12.8417 7.8654 12.6464 8.06066L8.06066 12.6464C7.8654 12.8417 7.54882 12.8417 7.35355 12.6464L2.14645 7.43934C2.05268 7.34557 2 7.21839 2 7.08579V2.5ZM3 3V6.87868L7.70711 11.5858L11.5858 7.70711L6.87868 3H3ZM4.5 5.5C5.05228 5.5 5.5 5.05228 5.5 4.5C5.5 3.94772 5.05228 3.5 4.5 3.5C3.94772 3.5 3.5 3.94772 3.5 4.5C3.5 5.05228 3.94772 5.5 4.5 5.5Z"
+                                    fill="currentColor"
+                                    fill-rule="evenodd"
+                                    clip-rule="evenodd"
+                                />
+                            </svg>
+                        </button>
+                        <button class="sidebar-tab" data-tab="outline" title="Outline">
+                            <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 15 15"
+                                fill="none"
+                                xmlns="http://www.w3.org/2000/svg"
+                            >
+                                <path
+                                    d="M2 4H13V5H2V4ZM2 7.5H10V8.5H2V7.5ZM2 11H13V12H2V11Z"
+                                    fill="currentColor"
+                                    fill-rule="evenodd"
+                                    clip-rule="evenodd"
+                                />
+                            </svg>
+                        </button>
+                        <button class="sidebar-tab" data-tab="links" title="Links">
+                            <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 15 15"
+                                fill="none"
+                                xmlns="http://www.w3.org/2000/svg"
+                            >
+                                <path
+                                    d="M5.5 5.5C4.11929 5.5 3 6.61929 3 8C3 9.38071 4.11929 10.5 5.5 10.5H6.5V9.5H5.5C4.67157 9.5 4 8.82843 4 8C4 7.17157 4.67157 6.5 5.5 6.5H6.5V5.5H5.5ZM8.5 5.5V6.5H9.5C10.3284 6.5 11 7.17157 11 8C11 8.82843 10.3284 9.5 9.5 9.5H8.5V10.5H9.5C10.8807 10.5 12 9.38071 12 8C12 6.61929 10.8807 5.5 9.5 5.5H8.5ZM5.5 7.5V8.5H9.5V7.5H5.5Z"
+                                    fill="currentColor"
+                                    fill-rule="evenodd"
+                                    clip-rule="evenodd"
+                                />
+                            </svg>
+                        </button>
+                    </div>
+                    <button
+                        id="new-file-btn"
+                        class="icon-btn"
+                        aria-label="Create new file"
+                        title="New file"
+                    >
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 15 15"
+                            fill="none"
+                            xmlns="http://www.w3.org/2000/svg"
+                        >
+                            <path
+                                d="M8 2.75C8 2.47386 7.77614 2.25 7.5 2.25C7.22386 2.25 7 2.47386 7 2.75V7H2.75C2.47386 7 2.25 7.22386 2.25 7.5C2.25 7.77614 2.47386 8 2.75 8H7V12.25C7 12.5261 7.22386 12.75 7.5 12.75C7.77614 12.75 8 12.5261 8 12.25V8H12.25C12.5261 8 12.75 7.77614 12.75 7.5C12.75 7.22386 12.5261 7 12.25 7H8V2.75Z"
+                                fill="currentColor"
+                            />
+                        </svg>
+                    </button>
+                </div>
+                <div id="file-tree-container">
+                    <ul id="file-tree"></ul>
+                </div>
+                <div id="outline-container">
+                    <ul id="outline-list"></ul>
+                </div>
+                <div id="links-container">
+                    <ul id="links-list"></ul>
+                </div>
+                <div id="tags-container">
+                    <ul id="tags-list"></ul>
+                </div>
+                <div id="search-container">
+                    <input
+                        type="search"
+                        id="search-input"
+                        placeholder="Search notes…"
+                        autocomplete="off"
+                        spellcheck="false"
+                    />
+                    <ul id="search-results"></ul>
+                </div>
+                <div id="sidebar-footer">
+                    <button
+                        id="change-vault-btn"
+                        class="icon-btn"
+                        aria-label="Change vault folder"
+                        title="Change vault folder"
+                    >
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 15 15"
+                            fill="none"
+                            xmlns="http://www.w3.org/2000/svg"
+                        >
+                            <path
+                                d="M1 1C0.447715 1 0 1.44772 0 2V13C0 13.5523 0.447715 14 1 14H14C14.5523 14 15 13.5523 15 13V5C15 4.44772 14.5523 4 14 4H7.41421L5.70711 2.29289C5.52234 2.10812 5.27086 2 5 2H1ZM1 3H5L6.70711 4.70711C6.89188 4.89188 7.14336 5 7.41421 5H14V13H1V3Z"
+                                fill="currentColor"
+                            />
+                        </svg>
+                    </button>
+                    <button
+                        id="settings-btn"
+                        class="icon-btn"
+                        aria-label="Open settings"
+                        title="Settings"
+                    >
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 15 15"
+                            fill="none"
+                            xmlns="http://www.w3.org/2000/svg"
+                        >
+                            <path
+                                d="M7.07095 0.899951C6.67391 0.899951 6.32977 1.16078 6.22742 1.54437L5.88257 2.82839C5.57339 2.90161 5.27341 3.00426 4.98636 3.13416L3.89027 2.44564C3.56498 2.24739 3.14894 2.31248 2.89672 2.60012L2.09672 3.56012C1.84450 3.84776 1.84450 4.26826 2.09672 4.55590L2.78524 5.32752C2.65534 5.61457 2.55269 5.91455 2.47947 6.22373L1.19545 6.56858C0.811859 6.67093 0.55103 7.01508 0.55103 7.41212V8.58788C0.55103 8.98492 0.811859 9.32907 1.19545 9.43142L2.47947 9.77627C2.55269 10.0854 2.65534 10.3854 2.78524 10.6725L2.09672 11.4441C1.84450 11.7317 1.84450 12.1522 2.09672 12.4399L2.89672 13.3999C3.14894 13.6875 3.56498 13.7526 3.89027 13.5544L4.98636 12.8658C5.27341 12.9957 5.57339 13.0984 5.88257 13.1716L6.22742 14.4556C6.32977 14.8392 6.67391 15.1001 7.07095 15.1001H8.24671C8.64375 15.1001 8.98789 14.8392 9.09024 14.4556L9.43509 13.1716C9.74427 13.0984 10.0443 12.9957 10.3313 12.8658L11.4274 13.5544C11.7527 13.7526 12.1687 13.6875 12.4209 13.3999L13.2209 12.4399C13.4732 12.1522 13.4732 11.7317 13.2209 11.4441L12.5324 10.6725C12.6623 10.3854 12.765 10.0854 12.8382 9.77627L14.1222 9.43142C14.5058 9.32907 14.7666 8.98492 14.7666 8.58788V7.41212C14.7666 7.01508 14.5058 6.67093 14.1222 6.56858L12.8382 6.22373C12.765 5.91455 12.6623 5.61457 12.5324 5.32752L13.2209 4.55590C13.4732 4.26826 13.4732 3.84776 13.2209 3.56012L12.4209 2.60012C12.1687 2.31248 11.7527 2.24739 11.4274 2.44564L10.3313 3.13416C10.0443 3.00426 9.74427 2.90161 9.43509 2.82839L9.09024 1.54437C8.98789 1.16078 8.64375 0.899951 8.24671 0.899951H7.07095ZM4.9967 7.5C4.9967 6.12129 6.12129 4.9967 7.5 4.9967C8.87871 4.9967 10.0033 6.12129 10.0033 7.5C10.0033 8.87871 8.87871 10.0033 7.5 10.0033C6.12129 10.0033 4.9967 8.87871 4.9967 7.5Z"
+                                fill="currentColor"
+                                fill-rule="evenodd"
+                                clip-rule="evenodd"
+                            />
+                        </svg>
+                    </button>
+                </div>
+            </aside>
 
-<body>
-  <div id="app">
-    <!-- Sidebar / File Browser -->
-    <aside id="sidebar">
-      <div id="sidebar-header">
-        <div id="sidebar-tabs">
-          <button class="sidebar-tab active" data-tab="files" title="Files">
-            <svg width="14" height="14" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path
-                d="M3 2.5C3 2.22386 3.22386 2 3.5 2H9.08579C9.21839 2 9.34557 2.05268 9.43934 2.14645L11.8536 4.56066C11.9473 4.65443 12 4.78161 12 4.91421V12.5C12 12.7761 11.7761 13 11.5 13H3.5C3.22386 13 3 12.7761 3 12.5V2.5ZM3.5 3H8.5V5.5C8.5 5.77614 8.72386 6 9 6H11.5V12H3.5V3Z"
-                fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" />
-            </svg>
-          </button>
-          <button class="sidebar-tab" data-tab="outline" title="Outline">
-            <svg width="14" height="14" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M2 4H13V5H2V4ZM2 7.5H10V8.5H2V7.5ZM2 11H13V12H2V11Z" fill="currentColor" fill-rule="evenodd"
-                clip-rule="evenodd" />
-            </svg>
-          </button>
-          <button class="sidebar-tab" data-tab="links" title="Links">
-            <svg width="14" height="14" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path
-                d="M5.5 5.5C4.11929 5.5 3 6.61929 3 8C3 9.38071 4.11929 10.5 5.5 10.5H6.5V9.5H5.5C4.67157 9.5 4 8.82843 4 8C4 7.17157 4.67157 6.5 5.5 6.5H6.5V5.5H5.5ZM8.5 5.5V6.5H9.5C10.3284 6.5 11 7.17157 11 8C11 8.82843 10.3284 9.5 9.5 9.5H8.5V10.5H9.5C10.8807 10.5 12 9.38071 12 8C12 6.61929 10.8807 5.5 9.5 5.5H8.5ZM5.5 7.5V8.5H9.5V7.5H5.5Z"
-                fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" />
-            </svg>
-          </button>
+            <div class="resize-handle" id="sidebar-resize"></div>
+
+            <!-- Editor Pane -->
+            <section id="editor-pane">
+                <div id="editor-toolbar">
+                    <button
+                        id="tab-scroll-left"
+                        class="icon-btn tab-scroll-btn"
+                        title="Scroll tabs left"
+                        aria-label="Scroll tabs left"
+                        hidden
+                    >
+                        <svg
+                            width="13"
+                            height="13"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            xmlns="http://www.w3.org/2000/svg"
+                        >
+                            <path
+                                d="M10 4L6 8l4 4"
+                                stroke="currentColor"
+                                stroke-width="1.5"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                            />
+                        </svg>
+                    </button>
+                    <div id="editor-tab-bar"></div>
+                    <button
+                        id="tab-scroll-right"
+                        class="icon-btn tab-scroll-btn"
+                        title="Scroll tabs right"
+                        aria-label="Scroll tabs right"
+                        hidden
+                    >
+                        <svg
+                            width="13"
+                            height="13"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            xmlns="http://www.w3.org/2000/svg"
+                        >
+                            <path
+                                d="M6 4l4 4-4 4"
+                                stroke="currentColor"
+                                stroke-width="1.5"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                            />
+                        </svg>
+                    </button>
+                    <button
+                        id="preview-toggle-btn"
+                        class="icon-btn active"
+                        title="Hide preview (⌘E)"
+                        aria-label="Toggle preview"
+                    >
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 15 15"
+                            fill="none"
+                            xmlns="http://www.w3.org/2000/svg"
+                        >
+                            <path
+                                d="M7.5 11C4.80285 11 2.52952 9.62184 1.09622 7.50001C2.52952 5.37816 4.80285 4 7.5 4C10.1971 4 12.4705 5.37816 13.9038 7.50001C12.4705 9.62183 10.1971 11 7.5 11ZM7.5 3C4.30786 3 1.65639 4.70638 0.0760002 7.23501C-0.0253338 7.39715 -0.0253334 7.60288 0.0760014 7.76501C1.65639 10.2936 4.30786 12 7.5 12C10.6921 12 13.3436 10.2936 14.924 7.76501C15.0253 7.60288 15.0253 7.39715 14.924 7.23501C13.3436 4.70638 10.6921 3 7.5 3ZM7.5 9.5C8.60457 9.5 9.5 8.60457 9.5 7.5C9.5 6.39543 8.60457 5.5 7.5 5.5C6.39543 5.5 5.5 6.39543 5.5 7.5C5.5 8.60457 6.39543 9.5 7.5 9.5Z"
+                                fill="currentColor"
+                                fill-rule="evenodd"
+                                clip-rule="evenodd"
+                            />
+                        </svg>
+                    </button>
+                </div>
+                <div id="note-tags"></div>
+                <textarea
+                    id="editor"
+                    spellcheck="true"
+                    placeholder="Select a file to start editing..."
+                ></textarea>
+            </section>
+
+            <div class="resize-handle" id="editor-resize"></div>
+
+            <!-- Preview Pane -->
+            <section id="preview-pane">
+                <div id="preview-header">
+                    <span>Preview</span>
+                    <span id="preview-stats"></span>
+                </div>
+                <iframe
+                    id="preview"
+                    title="Markdown preview"
+                    sandbox="allow-scripts allow-same-origin"
+                ></iframe>
+            </section>
         </div>
-        <button id="new-file-btn" class="icon-btn" aria-label="Create new file" title="New file">
-          <svg width="14" height="14" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path
-              d="M8 2.75C8 2.47386 7.77614 2.25 7.5 2.25C7.22386 2.25 7 2.47386 7 2.75V7H2.75C2.47386 7 2.25 7.22386 2.25 7.5C2.25 7.77614 2.47386 8 2.75 8H7V12.25C7 12.5261 7.22386 12.75 7.5 12.75C7.77614 12.75 8 12.5261 8 12.25V8H12.25C12.5261 8 12.75 7.77614 12.75 7.5C12.75 7.22386 12.5261 7 12.25 7H8V2.75Z"
-              fill="currentColor" />
-          </svg>
-        </button>
-      </div>
-      <div id="file-tree-container">
-        <ul id="file-tree"></ul>
-      </div>
-      <div id="outline-container">
-        <ul id="outline-list"></ul>
-      </div>
-      <div id="links-container">
-        <ul id="links-list"></ul>
-      </div>
-      <div id="sidebar-footer">
-        <button id="change-vault-btn" class="icon-btn" aria-label="Change vault folder" title="Change vault folder">
-          <svg width="14" height="14" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path
-              d="M1 1C0.447715 1 0 1.44772 0 2V13C0 13.5523 0.447715 14 1 14H14C14.5523 14 15 13.5523 15 13V5C15 4.44772 14.5523 4 14 4H7.41421L5.70711 2.29289C5.52234 2.10812 5.27086 2 5 2H1ZM1 3H5L6.70711 4.70711C6.89188 4.89188 7.14336 5 7.41421 5H14V13H1V3Z"
-              fill="currentColor" />
-          </svg>
-        </button>
-        <button id="settings-btn" class="icon-btn" aria-label="Open settings" title="Settings">
-          <svg width="14" height="14" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path
-              d="M7.07095 0.899951C6.67391 0.899951 6.32977 1.16078 6.22742 1.54437L5.88257 2.82839C5.57339 2.90161 5.27341 3.00426 4.98636 3.13416L3.89027 2.44564C3.56498 2.24739 3.14894 2.31248 2.89672 2.60012L2.09672 3.56012C1.84450 3.84776 1.84450 4.26826 2.09672 4.55590L2.78524 5.32752C2.65534 5.61457 2.55269 5.91455 2.47947 6.22373L1.19545 6.56858C0.811859 6.67093 0.55103 7.01508 0.55103 7.41212V8.58788C0.55103 8.98492 0.811859 9.32907 1.19545 9.43142L2.47947 9.77627C2.55269 10.0854 2.65534 10.3854 2.78524 10.6725L2.09672 11.4441C1.84450 11.7317 1.84450 12.1522 2.09672 12.4399L2.89672 13.3999C3.14894 13.6875 3.56498 13.7526 3.89027 13.5544L4.98636 12.8658C5.27341 12.9957 5.57339 13.0984 5.88257 13.1716L6.22742 14.4556C6.32977 14.8392 6.67391 15.1001 7.07095 15.1001H8.24671C8.64375 15.1001 8.98789 14.8392 9.09024 14.4556L9.43509 13.1716C9.74427 13.0984 10.0443 12.9957 10.3313 12.8658L11.4274 13.5544C11.7527 13.7526 12.1687 13.6875 12.4209 13.3999L13.2209 12.4399C13.4732 12.1522 13.4732 11.7317 13.2209 11.4441L12.5324 10.6725C12.6623 10.3854 12.765 10.0854 12.8382 9.77627L14.1222 9.43142C14.5058 9.32907 14.7666 8.98492 14.7666 8.58788V7.41212C14.7666 7.01508 14.5058 6.67093 14.1222 6.56858L12.8382 6.22373C12.765 5.91455 12.6623 5.61457 12.5324 5.32752L13.2209 4.55590C13.4732 4.26826 13.4732 3.84776 13.2209 3.56012L12.4209 2.60012C12.1687 2.31248 11.7527 2.24739 11.4274 2.44564L10.3313 3.13416C10.0443 3.00426 9.74427 2.90161 9.43509 2.82839L9.09024 1.54437C8.98789 1.16078 8.64375 0.899951 8.24671 0.899951H7.07095ZM4.9967 7.5C4.9967 6.12129 6.12129 4.9967 7.5 4.9967C8.87871 4.9967 10.0033 6.12129 10.0033 7.5C10.0033 8.87871 8.87871 10.0033 7.5 10.0033C6.12129 10.0033 4.9967 8.87871 4.9967 7.5Z"
-              fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" />
-          </svg>
-        </button>
-      </div>
-    </aside>
 
-    <div class="resize-handle" id="sidebar-resize"></div>
+        <!-- Settings Dialog -->
+        <dialog id="settings-dialog">
+            <header>
+                <h2>Settings</h2>
+                <button
+                    id="close-settings"
+                    class="icon-btn"
+                    aria-label="Close settings"
+                    title="Close"
+                >
+                    ✕
+                </button>
+            </header>
 
-    <!-- Editor Pane -->
-    <section id="editor-pane">
-      <div id="editor-toolbar">
-        <div id="editor-tab-bar"></div>
-        <button id="preview-toggle-btn" class="icon-btn active" title="Hide preview (⌘E)" aria-label="Toggle preview">
-          <svg width="14" height="14" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path
-              d="M7.5 11C4.80285 11 2.52952 9.62184 1.09622 7.50001C2.52952 5.37816 4.80285 4 7.5 4C10.1971 4 12.4705 5.37816 13.9038 7.50001C12.4705 9.62183 10.1971 11 7.5 11ZM7.5 3C4.30786 3 1.65639 4.70638 0.0760002 7.23501C-0.0253338 7.39715 -0.0253334 7.60288 0.0760014 7.76501C1.65639 10.2936 4.30786 12 7.5 12C10.6921 12 13.3436 10.2936 14.924 7.76501C15.0253 7.60288 15.0253 7.39715 14.924 7.23501C13.3436 4.70638 10.6921 3 7.5 3ZM7.5 9.5C8.60457 9.5 9.5 8.60457 9.5 7.5C9.5 6.39543 8.60457 5.5 7.5 5.5C6.39543 5.5 5.5 6.39543 5.5 7.5C5.5 8.60457 6.39543 9.5 7.5 9.5Z"
-              fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" />
-          </svg>
-        </button>
-      </div>
-      <div id="note-tags"></div>
-      <textarea id="editor" spellcheck="true" placeholder="Select a file to start editing..."></textarea>
-    </section>
+            <div class="settings-section">
+                <h3>Vault Location</h3>
+                <div class="vault-path-container">
+                    <code id="vault-path-display">None selected</code>
+                    <button id="pick-vault-btn" title="Choose a different folder">
+                        Choose Folder...
+                    </button>
+                </div>
+            </div>
 
-    <div class="resize-handle" id="editor-resize"></div>
+            <div class="settings-section">
+                <h3>Editor</h3>
+                <label class="settings-toggle">
+                    <input type="checkbox" id="spell-check-toggle" checked />
+                    <span>Enable spell check</span>
+                </label>
+                <label class="settings-toggle" style="margin-top: 8px">
+                    <input type="checkbox" id="auto-save-toggle" />
+                    <span>Auto-save</span>
+                </label>
+                <p id="auto-save-warning" class="settings-warning" style="display: none">
+                    Auto-save clears undo history after each save. Undo/redo will not work across
+                    save boundaries.
+                </p>
+            </div>
 
-    <!-- Preview Pane -->
-    <section id="preview-pane">
-      <div id="preview-header">
-        <span>Preview</span>
-        <span id="preview-stats"></span>
-      </div>
-      <iframe id="preview" title="Markdown preview" sandbox="allow-scripts allow-same-origin"></iframe>
-    </section>
-  </div>
+            <div class="settings-section">
+                <h3>Citations</h3>
+                <p class="settings-hint">
+                    Bibliography file (CSL JSON or BibTeX) and CSL style for formatting citations.
+                    Use <code>[@key]</code> in your text to cite a reference.
+                </p>
+                <label class="settings-label">Bibliography file</label>
+                <div class="file-path-container">
+                    <code id="bib-path-display" class="path-display">None selected</code>
+                    <button id="pick-bib-btn" title="Choose bibliography file">Choose File…</button>
+                    <button id="clear-bib-btn" class="icon-btn" title="Clear">✕</button>
+                </div>
+                <label class="settings-label" style="margin-top: 10px">CSL style file</label>
+                <div class="file-path-container">
+                    <code id="csl-path-display" class="path-display"
+                        >None selected (defaults to APA)</code
+                    >
+                    <button id="pick-csl-btn" title="Choose CSL style file">Choose File…</button>
+                    <button id="clear-csl-btn" class="icon-btn" title="Clear">✕</button>
+                </div>
+            </div>
 
-  <!-- Settings Dialog -->
-  <dialog id="settings-dialog">
-    <header>
-      <h2>Settings</h2>
-      <button id="close-settings" class="icon-btn" aria-label="Close settings" title="Close">✕</button>
-    </header>
-
-    <div class="settings-section">
-      <h3>Vault Location</h3>
-      <div class="vault-path-container">
-        <code id="vault-path-display">None selected</code>
-        <button id="pick-vault-btn" title="Choose a different folder">
-          Choose Folder...
-        </button>
-      </div>
-    </div>
-
-    <div class="settings-section">
-      <h3>Editor</h3>
-      <label class="settings-toggle">
-        <input type="checkbox" id="spell-check-toggle" checked />
-        <span>Enable spell check</span>
-      </label>
-      <label class="settings-toggle" style="margin-top:8px">
-        <input type="checkbox" id="auto-save-toggle" />
-        <span>Auto-save</span>
-      </label>
-      <p id="auto-save-warning" class="settings-warning" style="display:none">
-        Auto-save clears undo history after each save. Undo/redo will not work across save boundaries.
-      </p>
-    </div>
-
-    <div class="settings-section">
-      <h3>Citations</h3>
-      <p class="settings-hint">
-        Bibliography file (CSL JSON or BibTeX) and CSL style for formatting citations.
-        Use <code>[@key]</code> in your text to cite a reference.
-      </p>
-      <label class="settings-label">Bibliography file</label>
-      <div class="file-path-container">
-        <code id="bib-path-display" class="path-display">None selected</code>
-        <button id="pick-bib-btn" title="Choose bibliography file">Choose File…</button>
-        <button id="clear-bib-btn" class="icon-btn" title="Clear">✕</button>
-      </div>
-      <label class="settings-label" style="margin-top:10px">CSL style file</label>
-      <div class="file-path-container">
-        <code id="csl-path-display" class="path-display">None selected (defaults to APA)</code>
-        <button id="pick-csl-btn" title="Choose CSL style file">Choose File…</button>
-        <button id="clear-csl-btn" class="icon-btn" title="Clear">✕</button>
-      </div>
-    </div>
-
-    <div class="settings-section">
-      <h3>Preview Styling</h3>
-      <p class="settings-hint">
-        Custom CSS applied to the rendered content. Use standard CSS syntax.
-      </p>
-      <textarea id="css-editor" placeholder="/* Example: */
+            <div class="settings-section">
+                <h3>Preview Styling</h3>
+                <p class="settings-hint">
+                    Custom CSS applied to the rendered content. Use standard CSS syntax.
+                </p>
+                <textarea
+                    id="css-editor"
+                    placeholder="/* Example: */
 body { font-size: 16px; }
 h1 { color: #2c3e50; margin-top: 2em; }
 code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }
 a { color: #3498db; text-decoration: none; }
-a:hover { text-decoration: underline; }"></textarea>
-    </div>
+a:hover { text-decoration: underline; }"
+                ></textarea>
+            </div>
 
-    <div class="settings-section">
-      <h3>Preview <span class="settings-experimental-badge">Experimental</span></h3>
-      <label class="settings-toggle">
-        <input type="checkbox" id="use-pandoc-toggle" />
-        <span>Use Pandoc for rendering</span>
-      </label>
-      <p class="settings-hint">
-        Renders the preview using the system Pandoc installation instead of the built-in renderer.
-        Pandoc produces more accurate output for complex documents but requires Pandoc to be installed.
-      </p>
-    </div>
+            <div class="settings-section">
+                <h3>Preview <span class="settings-experimental-badge">Experimental</span></h3>
+                <label class="settings-toggle">
+                    <input type="checkbox" id="use-pandoc-toggle" />
+                    <span>Use Pandoc for rendering</span>
+                </label>
+                <p class="settings-hint">
+                    Renders the preview using the system Pandoc installation instead of the built-in
+                    renderer. Pandoc produces more accurate output for complex documents but
+                    requires Pandoc to be installed.
+                </p>
+            </div>
 
-    <footer>
-      <button id="save-settings-btn" class="primary" title="Save and apply changes">
-        Save Settings
-      </button>
-      <button id="cancel-settings-btn" title="Discard changes">
-        Cancel
-      </button>
-    </footer>
-  </dialog>
+            <footer>
+                <button id="save-settings-btn" class="primary" title="Save and apply changes">
+                    Save Settings
+                </button>
+                <button id="cancel-settings-btn" title="Discard changes">Cancel</button>
+            </footer>
+        </dialog>
 
-  <!-- Status Bar -->
-  <div id="status-bar">
-    <span id="status-message"></span>
-  </div>
+        <!-- Status Bar -->
+        <div id="status-bar">
+            <span id="status-message"></span>
+        </div>
 
-  <!-- Tab Bar (mobile only) -->
-  <nav id="tab-bar">
-    <button class="tab-btn" data-tab="files">Files</button>
-    <button class="tab-btn" data-tab="editor">Edit</button>
-    <button class="tab-btn" data-tab="preview">Preview</button>
-    <button class="tab-btn" id="settings-tab-btn">Settings</button>
-  </nav>
+        <!-- Tab Bar (mobile only) -->
+        <nav id="tab-bar">
+            <button class="tab-btn" data-tab="files">Files</button>
+            <button class="tab-btn" data-tab="editor">Edit</button>
+            <button class="tab-btn" data-tab="preview">Preview</button>
+            <button class="tab-btn" id="settings-tab-btn">Settings</button>
+        </nav>
 
-  <script src="/js/citation.min.js"></script>
-  <script>window.Cite = typeof require !== 'undefined' ? require('citation-js') : window.Cite;</script>
-  <script src="/js/app.js"></script>
-</body>
-
+        <script src="/js/citation.min.js"></script>
+        <script>
+            window.Cite = typeof require !== "undefined" ? require("citation-js") : window.Cite;
+        </script>
+        <script type="module" src="/js/app.js"></script>
+    </body>
 </html>

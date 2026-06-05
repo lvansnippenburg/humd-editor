@@ -7,6 +7,8 @@ URL="http://127.0.0.1:$PORT"
 
 cd "$(dirname "$0")"
 
+lsof -ti :"$PORT" | xargs kill
+
 echo "Starting humd-editor on $URL …"
 python3 server/server.py --port "$PORT" &
 SERVER_PID=$!
