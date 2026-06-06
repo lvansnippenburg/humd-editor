@@ -1,0 +1,1 @@
+- add a signing/notarization step to the build script?

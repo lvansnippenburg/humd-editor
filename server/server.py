@@ -2,6 +2,7 @@
 """humd-editor local server — pure Python standard library, no external deps."""
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -11,12 +12,18 @@ import subprocess
 import sys
 import threading
 import urllib.request
+import webbrowser
 from http.server import HTTPServer, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 SETTINGS_PATH = Path.home() / ".humd-editor" / "settings.json"
-SRC_DIR = Path(__file__).parent.parent / "src"
+# When frozen by PyInstaller the bundled `src/` lives next to the unpacked code
+# (sys._MEIPASS); otherwise it's the sibling folder in the source tree.
+if getattr(sys, "frozen", False):
+    SRC_DIR = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "src"
+else:
+    SRC_DIR = Path(__file__).parent.parent / "src"
 
 _lock = threading.Lock()
 
@@ -129,15 +136,19 @@ def collect_md_files(path: str) -> list:
 
 
 def get_vault_hash(vault_path: str) -> str:
-    files = sorted(collect_md_files(vault_path))
-    parts = []
-    for f in files:
+    """Compact digest of every note's path + mtime, for change detection.
+
+    Returns a short hex digest instead of the full path:mtime string so the
+    response (polled every few seconds) stays tiny regardless of vault size.
+    """
+    h = hashlib.sha1()
+    for f in sorted(collect_md_files(vault_path)):
         try:
             mtime = os.path.getmtime(f)
-            parts.append(f"{f}:{mtime:.3f}")
         except OSError:
-            pass
-    return ";".join(parts)
+            continue
+        h.update(f"{f}:{mtime:.3f};".encode("utf-8"))
+    return h.hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -213,10 +224,17 @@ def extract_inline_tags(content: str) -> list:
 
 _WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]*)?\]\]")
 
-# Per-file parse cache: fpath -> {mtime, stem, yaml_tags, inline_tags, wikilinks}.
-# Lets build_link_index skip re-reading unchanged files. Only mutated inside
-# build_link_index, which callers run under `_lock`.
+# Per-file parse cache: fpath -> {mtime, content, stem, yaml_tags, inline_tags,
+# wikilinks}. Shared by the link index and full-text search so each file is read
+# from disk at most once per change. Only mutated inside _refresh_file_cache,
+# whose callers run under `_lock`.
 _file_cache: dict = {}
+# Last index JSON written per vault, to skip redundant disk writes.
+_last_index_json: dict = {}
+# Serialises all _file_cache access. Distinct from `_lock` (which guards settings
+# and the index write) so a search and an index build can't corrupt the cache.
+# Callers hold this across both the refresh and the subsequent reads.
+_cache_lock = threading.Lock()
 
 
 def _parse_md_file(fpath: str) -> dict:
@@ -227,6 +245,7 @@ def _parse_md_file(fpath: str) -> dict:
         if target:
             targets.append(target)
     return {
+        "content": content,
         "stem": Path(fpath).stem,
         "yaml_tags": extract_yaml_tags(content),
         "inline_tags": extract_inline_tags(content),
@@ -234,11 +253,14 @@ def _parse_md_file(fpath: str) -> dict:
     }
 
 
-def build_link_index(vault_path: str) -> dict:
+def _refresh_file_cache(vault_path: str) -> list:
+    """Bring _file_cache up to date for the vault and return its .md file list.
+
+    Only files whose mtime changed are re-read; vanished files are pruned.
+    """
     files = collect_md_files(vault_path)
     file_set = set(files)
 
-    # Incremental read: only (re)parse files whose mtime changed since last build.
     for fpath in files:
         try:
             mtime = os.path.getmtime(fpath)
@@ -261,6 +283,17 @@ def build_link_index(vault_path: str) -> dict:
     for fpath in [f for f in _file_cache if f not in file_set and f.startswith(prefix)]:
         del _file_cache[fpath]
 
+    return files
+
+
+def build_link_index(vault_path: str) -> dict:
+    # Refresh and snapshot under the cache lock; aggregate over the snapshot
+    # afterwards (cache entries are replaced wholesale, never mutated in place,
+    # so held references stay valid once the lock is released).
+    with _cache_lock:
+        files = _refresh_file_cache(vault_path)
+        items = [(f, _file_cache[f]) for f in files if f in _file_cache]
+
     backlinks: dict = {}
     tags: dict = {}
     notes: dict = {}
@@ -278,10 +311,7 @@ def build_link_index(vault_path: str) -> dict:
             entry["files"].append(fpath)
         tagged_files.add(fpath)
 
-    for fpath in files:
-        data = _file_cache.get(fpath)
-        if data is None:
-            continue
+    for fpath, data in items:
         stem = data["stem"]
         # Map note name (lowercased stem) -> full path so wikilinks resolve
         # regardless of which folders the browser has expanded. First match
@@ -316,10 +346,15 @@ def build_link_index(vault_path: str) -> dict:
         "tag_index": tag_index,
         "untagged": untagged,
     }
-    index_path = Path(vault_path) / ".link-index.json"
-    tmp = index_path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(index_path)
+    # Skip the disk write when the index is identical to the last one we wrote
+    # (a save that didn't touch any links/tags still triggers a rebuild).
+    serialized = json.dumps(index, ensure_ascii=False)
+    if _last_index_json.get(vault_path) != serialized:
+        index_path = Path(vault_path) / ".link-index.json"
+        tmp = index_path.with_suffix(".tmp")
+        tmp.write_text(serialized, encoding="utf-8")
+        tmp.replace(index_path)
+        _last_index_json[vault_path] = serialized
     return index
 
 
@@ -346,12 +381,13 @@ def search_vault(vault_path: str, query: str, max_files: int = 200,
     q = query.strip().lower()
     if not q:
         return []
+    # Reuse the shared file cache (same content the link index reads), so a
+    # search only hits disk for files that changed since the last scan.
+    with _cache_lock:
+        files = _refresh_file_cache(vault_path)
+        items = sorted((f, _file_cache[f]["content"]) for f in files if f in _file_cache)
     results = []
-    for fpath in sorted(collect_md_files(vault_path)):
-        try:
-            content = Path(fpath).read_text(encoding="utf-8")
-        except OSError:
-            continue
+    for fpath, content in items:
         if q not in content.lower():
             continue
         matches = []
@@ -410,10 +446,36 @@ def rename_wikilink_targets(vault_path: str, old_stem: str, new_stem: str) -> in
 # Markdown / Pandoc rendering
 # ---------------------------------------------------------------------------
 
+# Common install locations to check beyond PATH. A .app launched from Finder
+# inherits a minimal PATH that omits Homebrew/MacPorts/~/.local, so we can't
+# rely on PATH alone to locate pandoc.
+_PANDOC_DIRS = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/opt/local/bin",
+    str(Path.home() / ".local" / "bin"),
+    "/usr/bin",
+]
+
+
+def _find_pandoc() -> str:
+    search = os.environ.get("PATH", "")
+    for d in _PANDOC_DIRS:
+        if d not in search.split(os.pathsep):
+            search += os.pathsep + d
+    found = shutil.which("pandoc", path=search)
+    if not found:
+        raise FileNotFoundError(
+            "pandoc not found. Install it (e.g. `brew install pandoc`) or turn "
+            "off Pandoc rendering in Settings."
+        )
+    return found
+
+
 def render_pandoc(markdown: str, file_path: str | None) -> str:
     """Render markdown via system pandoc, return HTML body fragment."""
     result = subprocess.run(
-        ["pandoc",
+        [_find_pandoc(),
          "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables",
          "--to=html5",
          "--standalone=false"],
@@ -740,14 +802,43 @@ class Handler(SimpleHTTPRequestHandler):
 # Main
 # ---------------------------------------------------------------------------
 
+def _server_already_running(port: int) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/settings", timeout=0.5):
+            return True
+    except Exception:
+        return False
+
+
+def _make_server(preferred_port: int):
+    """Bind the preferred port, or fall back to a free one if it's taken."""
+    try:
+        srv = ThreadingHTTPServer(("127.0.0.1", preferred_port), Handler)
+        return srv, preferred_port
+    except OSError:
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        return srv, srv.server_address[1]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8082)
-    args = parser.parse_args()
+    parser.add_argument("--open", action="store_true",
+                        help="open the editor in the browser once the server is up")
+    # parse_known_args so a macOS app-launch arg (e.g. -psn_…) doesn't crash us.
+    args, _ = parser.parse_known_args()
+
+    # The bundled .app has no run.sh wrapper, so open the browser itself.
+    open_browser = args.open or getattr(sys, "frozen", False)
+
+    # If a copy is already serving, just surface it instead of starting a second.
+    if open_browser and _server_already_running(args.port):
+        webbrowser.open(f"http://127.0.0.1:{args.port}")
+        return
 
     # Threaded: the Zotero CAYW proxy blocks while the picker is open, and a
     # single-threaded server would stall every other request meanwhile.
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    server, port = _make_server(args.port)
 
     def _shutdown(sig, frame):
         threading.Thread(target=server.shutdown, daemon=True).start()
@@ -755,7 +846,9 @@ def main():
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    print(f"humd-editor server running on http://127.0.0.1:{args.port}", flush=True)
+    print(f"humd-editor server running on http://127.0.0.1:{port}", flush=True)
+    if open_browser:
+        threading.Timer(0.3, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
     server.serve_forever()
 
 

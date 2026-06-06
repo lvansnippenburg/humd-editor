@@ -8,9 +8,9 @@ import {
   getFileIcon,
 } from "/js/icons.js";
 import {
-  buildPreviewHtml,
+  buildPreviewShell,
   configureMarked,
-  renderMarkdownClientSide,
+  renderMarkdownBody,
 } from "/js/markdown.js";
 
 // ===== STATE =====
@@ -30,6 +30,8 @@ let isDirty = false;
 let isInitialized = false;
 let activeSidebarTab = "files";
 let previewDebounceTimer = null;
+let previewShellReady = false; // is the persistent preview document mounted?
+let previewShellCss = null; // userCss the current shell was built with
 let autoSaveDebounceTimer = null;
 let editorScrollTimer = null;
 let suppressEditorScroll = false;
@@ -163,20 +165,26 @@ async function initialize() {
     setupEventListeners();
     restoreUiState(settings);
 
-    await refreshFileTree();
-    await buildLinkIndex();
-    initializeFileWatcher();
-    await loadCitations();
-
-    isInitialized = true;
-
     const lastOpenFile = settings.lastOpenFile;
     const openFiles = settings.openFiles || (lastOpenFile ? [lastOpenFile] : []);
 
+    // These startup steps are independent — run them concurrently instead of
+    // awaiting each in turn. The open files are prefetched in the same batch.
+    const [, , , results] = await Promise.all([
+      refreshFileTree(),
+      buildLinkIndex(),
+      loadCitations(),
+      openFiles.length > 0
+        ? Promise.allSettled(
+            openFiles.map((path) => apiFetch(`/api/read-file?path=${encodeURIComponent(path)}`)),
+          )
+        : Promise.resolve([]),
+    ]);
+    initializeFileWatcher();
+
+    isInitialized = true;
+
     if (openFiles.length > 0) {
-      const results = await Promise.allSettled(
-        openFiles.map((path) => apiFetch(`/api/read-file?path=${encodeURIComponent(path)}`)),
-      );
       results.forEach((result, i) => {
         if (result.status === "fulfilled") {
           const tabId = `tab-${++tabCounter}`;
@@ -308,7 +316,11 @@ function setupEventListeners() {
   window.addEventListener("message", async (msg) => {
     if (msg.data.type === "open-url") {
       const href = msg.data.href || "";
-      if (/^(https?:|mailto:)/i.test(href)) {
+      // In the packaged native window, links can't spawn a browser tab — hand
+      // them to the OS via the pywebview bridge. In a real browser, fall back.
+      if (window.pywebview?.api?.open_external) {
+        window.pywebview.api.open_external(href);
+      } else if (/^(https?:|mailto:)/i.test(href)) {
         window.open(href, "_blank", "noopener");
       } else {
         // App/custom protocols (zotero://, file://, obsidian://, …): trigger the
@@ -817,7 +829,7 @@ async function closeTab(tabId, skipSave = false) {
       isDirty = false;
       document.getElementById("note-tags").innerHTML = "";
       document.getElementById("editor").value = "";
-      document.getElementById("preview").srcdoc = "<p>No file open</p>";
+      resetPreview();
       buildOutline();
       buildLinksPanel();
       renderTabBar();
@@ -1368,43 +1380,92 @@ function updatePreviewStats(html) {
     el.textContent = `${lines} lines, ${words} words, ${charsWithSpaces} (${chars}) characters`;
 }
 
+// Reset to the empty state. Replacing srcdoc tears down the persistent shell,
+// so flag it for a rebuild on the next render.
+function resetPreview() {
+  previewShellReady = false;
+  document.getElementById("preview").srcdoc =
+    "<p style='font-family:sans-serif;color:#888;padding:20px'>No file open</p>";
+  const el = document.getElementById("preview-stats");
+  if (el) el.textContent = "";
+}
+
+// Mount the preview document once (styles + scripts + listeners). Subsequent
+// renders only swap the body, avoiding a full iframe reload per keystroke.
+function ensurePreviewShell(userCss) {
+  const iframe = document.getElementById("preview");
+  if (previewShellReady && previewShellCss === userCss && iframe.contentDocument?.getElementById("hp-body")) {
+    return Promise.resolve();
+  }
+  previewShellReady = false;
+  previewShellCss = userCss;
+  return new Promise((resolve) => {
+    iframe.addEventListener(
+      "load",
+      () => {
+        const doc = iframe.contentDocument;
+        if (doc && !doc.getElementById("citation-style")) {
+          const st = doc.createElement("style");
+          st.id = "citation-style";
+          st.textContent = CITATION_CSS;
+          doc.head.appendChild(st);
+        }
+        previewShellReady = true;
+        resolve();
+      },
+      { once: true },
+    );
+    iframe.srcdoc = buildPreviewShell(userCss);
+  });
+}
+
 async function updatePreview() {
+  const iframe = document.getElementById("preview");
   if (!currentFilePath) {
-    document.getElementById("preview").srcdoc = "<p>No file open</p>";
-    const el = document.getElementById("preview-stats");
-    if (el) el.textContent = "";
+    resetPreview();
     return;
   }
   try {
     const content = document.getElementById("editor").value;
-    let html;
-
+    let bodyHtml;
     if (currentUsePandoc) {
       const result = await apiPost("/api/pandoc", {
         markdown: content,
         file_path: currentFilePath,
       });
-      html = buildPreviewHtml(result.html, currentUserCss);
+      bodyHtml = result.html;
     } else {
-      html = await renderMarkdownClientSide(content, currentUserCss, currentFilePath);
+      bodyHtml = renderMarkdownBody(content);
     }
 
-    if (citeBibData && citeBibData.length > 0) {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(html, "text/html");
-      const style = doc.createElement("style");
-      style.textContent = CITATION_CSS;
-      doc.head.appendChild(style);
-      await processCitations(doc.body);
-      document.getElementById("preview").srcdoc = "<!DOCTYPE html>" + doc.documentElement.outerHTML;
-      updatePreviewStats(doc.body.innerHTML);
-    } else {
-      document.getElementById("preview").srcdoc = html;
-      updatePreviewStats(html);
+    await ensurePreviewShell(currentUserCss);
+    const doc = iframe.contentDocument;
+    const bodyEl = doc && doc.getElementById("hp-body");
+    if (!bodyEl) return; // shell not ready (e.g. mid-reload); next edit retries
+
+    bodyEl.innerHTML = bodyHtml;
+
+    // Highlight only the freshly inserted code blocks (no full-document rescan).
+    const hl = iframe.contentWindow.hljs;
+    if (hl) {
+      bodyEl.querySelectorAll("pre code").forEach((b) => {
+        try {
+          hl.highlightElement(b);
+        } catch {}
+      });
     }
+
+    // Resolve [@cite] keys only when a bibliography is loaded and the text
+    // actually contains a citation — skip the whole pipeline otherwise.
+    if (citeBibData && citeBibData.length > 0 && /\[[^\]]*@/.test(content)) {
+      await processCitations(bodyEl);
+    }
+
+    updatePreviewStats(bodyEl.innerHTML);
   } catch (error) {
-    document.getElementById("preview").srcdoc =
-      `<div style="padding:20px;color:red"><strong>Error rendering preview:</strong><br>${error.message || error}</div>`;
+    previewShellReady = false;
+    iframe.srcdoc =
+      `<div style="padding:20px;color:red;font-family:sans-serif"><strong>Error rendering preview:</strong><br>${error.message || error}</div>`;
     const el = document.getElementById("preview-stats");
     if (el) el.textContent = "";
   }
@@ -1518,6 +1579,9 @@ async function initializeFileWatcher() {
   } catch (_) {}
 
   setInterval(async () => {
+    // Skip the disk scan while the window is hidden — nothing's changing on
+    // screen, and we re-sync as soon as it's focused again (below).
+    if (document.hidden) return;
     try {
       const result = await apiFetch(`/api/vault-hash?path=${encodeURIComponent(currentVaultPath)}`);
       if (result.hash !== vaultHashCache) {
@@ -1529,6 +1593,20 @@ async function initializeFileWatcher() {
       }
     } catch (_) {}
   }, 3000);
+
+  // Re-sync immediately when the window regains focus after being hidden.
+  document.addEventListener("visibilitychange", async () => {
+    if (document.hidden || !currentVaultPath) return;
+    try {
+      const result = await apiFetch(`/api/vault-hash?path=${encodeURIComponent(currentVaultPath)}`);
+      if (result.hash !== vaultHashCache) {
+        vaultHashCache = result.hash;
+        await refreshFileTree();
+        await buildLinkIndex();
+        await reloadCleanTabsFromDisk();
+      }
+    } catch (_) {}
+  });
 }
 
 // ===== SIDEBAR TABS =====
@@ -1563,7 +1641,9 @@ async function runSearch() {
   const query = document.getElementById("search-input").value.trim();
   const results = document.getElementById("search-results");
   results.innerHTML = "";
-  if (!query || !currentVaultPath) return;
+  // Require a couple of characters before scanning the vault — single-letter
+  // queries match almost everything and aren't worth the full pass.
+  if (query.length < 2 || !currentVaultPath) return;
 
   let hits;
   try {

@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Native-window launcher for humd-editor.
+
+Starts the local HTTP server in a background thread and shows the editor in a
+real desktop window (macOS WKWebView via pywebview) instead of a browser tab.
+This is the entry point used by the packaged .app; the server itself stays a
+stdlib-only HTTP server (see server.py) — pywebview is only needed here.
+
+Window position/size are saved on quit and restored on next launch, but only
+when the display layout is unchanged (so the window can't come back off-screen
+after you unplug a monitor).
+"""
+
+import subprocess
+import threading
+
+import webview
+
+import server
+
+DEFAULT_W, DEFAULT_H = 1280, 860
+
+
+class Api:
+    """Bridge exposed to the page as window.pywebview.api.
+
+    External links can't open a new browser tab from inside a webview, so the
+    frontend hands them here and we let the OS route them (http, mailto, and
+    app schemes like zotero:// all go through `open`).
+    """
+
+    def open_external(self, url):
+        try:
+            subprocess.run(["open", url], check=False)
+        except Exception:
+            pass
+        return True
+
+
+def _screen_signature() -> str:
+    """A stable fingerprint of the current display layout (sorted resolutions)."""
+    try:
+        return ";".join(sorted(f"{int(s.width)}x{int(s.height)}" for s in webview.screens))
+    except Exception:
+        return ""
+
+
+def _load_window_geometry(signature: str):
+    """Saved (x, y, width, height) if the display layout still matches, else None."""
+    try:
+        win = server.load_settings().get("window")
+    except Exception:
+        win = None
+    if not win or win.get("screens") != signature or not signature:
+        return None
+    try:
+        return int(win["x"]), int(win["y"]), int(win["width"]), int(win["height"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _save_window_geometry(state: dict, signature: str) -> None:
+    if state.get("width") is None or state.get("x") is None:
+        return
+    try:
+        # Same lock the server uses for settings writes (same process), so this
+        # can't race with the frontend persisting its UI state.
+        with server._lock:
+            s = server.load_settings()
+            s["window"] = {
+                "x": int(state["x"]),
+                "y": int(state["y"]),
+                "width": int(state["width"]),
+                "height": int(state["height"]),
+                "screens": signature,
+            }
+            server.save_settings(s)
+    except Exception:
+        pass
+
+
+def main():
+    port = 8082
+    if not server._server_already_running(port):
+        srv, port = server._make_server(port)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    signature = _screen_signature()
+    saved = _load_window_geometry(signature)
+    state = {"x": None, "y": None, "width": None, "height": None}
+
+    kwargs = dict(width=DEFAULT_W, height=DEFAULT_H, min_size=(840, 600), js_api=Api())
+    if saved:
+        x, y, w, h = saved
+        kwargs.update(x=x, y=y, width=w, height=h)
+        state.update(x=x, y=y, width=w, height=h)
+    else:
+        state.update(width=DEFAULT_W, height=DEFAULT_H)
+
+    window = webview.create_window("Humd Editor", f"http://127.0.0.1:{port}", **kwargs)
+
+    # Track geometry continuously: seed from the real values once shown (this
+    # captures a centered default's actual position), then follow move/resize.
+    # We persist on `closed`, which fires for every close path (red button,
+    # Cmd+Q, programmatic) — unlike `closing`. The window is gone by then, so we
+    # save the tracked values rather than reading the dead window's attributes.
+    def on_shown():
+        try:
+            state.update(x=int(window.x), y=int(window.y),
+                         width=int(window.width), height=int(window.height))
+        except Exception:
+            pass
+
+    def on_moved(x, y):
+        state["x"], state["y"] = int(x), int(y)
+
+    def on_resized(w, h):
+        state["width"], state["height"] = int(w), int(h)
+
+    def on_closed():
+        _save_window_geometry(state, signature)
+
+    window.events.shown += on_shown
+    window.events.moved += on_moved
+    window.events.resized += on_resized
+    window.events.closed += on_closed
+
+    # Blocks on the GUI loop (main thread, required on macOS); returns when the
+    # window is closed, at which point the daemon server thread exits with us.
+    webview.start()
+
+
+if __name__ == "__main__":
+    main()

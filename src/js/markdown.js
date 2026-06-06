@@ -136,7 +136,7 @@ function preprocessWikilinks(md) {
   });
 }
 
-export function buildPreviewHtml(bodyHtml, userCss) {
+export function buildPreviewShell(userCss) {
   const clickIntercept = `<script>
 document.addEventListener('click', function(e) {
   var a = e.target.closest('a');
@@ -252,12 +252,23 @@ ${userCss}
 </style>
 </head>
 <body>
-${bodyHtml}
+<div id="hp-body"></div>
 ${clickIntercept}
 <script src="/js/highlight.min.js"><\/script>
-<script>if (typeof hljs !== 'undefined') { hljs.highlightAll(); }<\/script>
 </body>
 </html>`;
+}
+
+// Render markdown to a body-HTML fragment (no document shell). The shell is
+// built once by buildPreviewShell; only this fragment changes per edit.
+export function renderMarkdownBody(content) {
+  let md = stripFrontMatter(content);
+  md = preprocessInlineFootnotes(md);
+  md = preprocessInlineSpans(md);
+  md = preprocessWikilinks(md);
+  if (typeof marked !== "undefined") return marked.parse(md);
+  // Fallback: show raw markdown if marked.js hasn't loaded yet.
+  return `<pre>${md.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</pre>`;
 }
 
 export function configureMarked() {
@@ -290,25 +301,4 @@ export function configureMarked() {
     breaks: false,
     pedantic: false,
   });
-}
-
-export async function renderMarkdownClientSide(content, userCss, filePath) {
-  // Strip YAML front matter
-  let md = stripFrontMatter(content);
-  // Pre-process: inline footnotes ^[text] → [^N] refs
-  md = preprocessInlineFootnotes(md);
-  // Pre-process: ==highlight==, ~subscript~, ^superscript^
-  md = preprocessInlineSpans(md);
-  // Pre-process: [[wikilinks]] → standard markdown links
-  md = preprocessWikilinks(md);
-
-  let bodyHtml;
-  if (typeof marked !== "undefined") {
-    bodyHtml = marked.parse(md);
-  } else {
-    // Fallback: wrap raw markdown in <pre> if marked.js not yet loaded
-    bodyHtml = `<pre>${md.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</pre>`;
-  }
-
-  return buildPreviewHtml(bodyHtml, userCss);
 }

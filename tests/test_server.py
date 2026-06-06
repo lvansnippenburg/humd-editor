@@ -6,6 +6,7 @@ Run with:  python3 -m unittest discover -s tests
 
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -57,6 +58,7 @@ class YamlTagTests(unittest.TestCase):
 class VaultTests(unittest.TestCase):
     def setUp(self):
         server._file_cache.clear()
+        server._last_index_json.clear()
         self.tmp = tempfile.TemporaryDirectory()
         self.vault = self.tmp.name
         (Path(self.vault) / "sub").mkdir()
@@ -110,6 +112,32 @@ class VaultTests(unittest.TestCase):
 
     def test_rename_noop_same_name(self):
         self.assertEqual(server.rename_wikilink_targets(self.vault, "b", "b"), 0)
+
+    def test_index_write_skipped_when_unchanged(self):
+        server.build_link_index(self.vault)
+        index_file = Path(self.vault) / ".link-index.json"
+        mtime1 = index_file.stat().st_mtime_ns
+        time.sleep(0.01)
+        server.build_link_index(self.vault)  # nothing changed
+        self.assertEqual(index_file.stat().st_mtime_ns, mtime1)
+        # A real change does rewrite the file.
+        self._write("a.md", "About #history and #newtag.")
+        server.build_link_index(self.vault)
+        self.assertNotEqual(index_file.stat().st_mtime_ns, mtime1)
+
+    def test_vault_hash_is_digest_and_changes(self):
+        h1 = server.get_vault_hash(self.vault)
+        self.assertRegex(h1, r"^[0-9a-f]{40}$")  # compact sha1 hex, not a path list
+        time.sleep(0.01)
+        self._write("a.md", "changed content")
+        self.assertNotEqual(server.get_vault_hash(self.vault), h1)
+
+    def test_search_reuses_cache_content(self):
+        # After a search populates the cache, the entry carries the file text.
+        server.search_vault(self.vault, "history")
+        entry = next(v for k, v in server._file_cache.items() if k.endswith("a.md"))
+        self.assertIn("content", entry)
+        self.assertIn("history", entry["content"])
 
 
 class PathConfinementTests(unittest.TestCase):
