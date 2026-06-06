@@ -747,6 +747,12 @@ body.dragging-file .tree-dir > .tree-label:hover {
     align-self: center;
 }
 
+#proofread-btn {
+    flex-shrink: 0;
+    align-self: center;
+    margin: 6px 0;
+}
+
 .tab-scroll-btn {
     align-self: center;
     margin: 0 2px;
@@ -1111,6 +1117,84 @@ dialog h2 {
 
 #css-editor:focus {
     border-color: var(--accent);
+}
+
+.settings-input {
+    width: 100%;
+    padding: 7px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12.5px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    box-sizing: border-box;
+    outline: none;
+    transition: border-color var(--t-fast);
+}
+
+.settings-input:focus {
+    border-color: var(--accent);
+}
+
+/* ===== PROOFREAD DIALOG ===== */
+#proofread-dialog {
+    max-width: 720px;
+}
+
+#proofread-dialog > p {
+    padding: 12px 20px 0;
+    margin: 0;
+}
+
+#proofread-body {
+    padding: 12px 20px 0;
+}
+
+.proofread-status {
+    padding: 28px 20px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    text-align: center;
+}
+
+#proofread-revised {
+    width: 100%;
+    height: 200px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    resize: vertical;
+    outline: none;
+    box-sizing: border-box;
+}
+
+#proofread-revised:focus {
+    border-color: var(--accent);
+}
+
+.proofread-changes {
+    margin-top: 4px;
+    padding: 8px 12px;
+    max-height: 180px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    font-size: 12.5px;
+    color: var(--text-primary);
+}
+
+.proofread-changes ul {
+    margin: 0;
+    padding-left: 1.2em;
+}
+
+.proofread-changes li {
+    margin: 0.2em 0;
 }
 
 dialog footer {

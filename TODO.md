@@ -1,4 +1,4 @@
-  - add a signing/notarization step to the build script?
-  - Show a balloon when there is a comment
-  - Codeberg/Git integration to create some sort of correction mechanism
-  -
+- Show a balloon when there is a comment
+- Codeberg/Git integration to create some sort of correction mechanism
+- Word export
+- support for citations without pandoc

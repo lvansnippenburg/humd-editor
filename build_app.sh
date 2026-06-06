@@ -67,6 +67,11 @@ if pkill -f "$APP_NAME.app/Contents/MacOS/$APP_NAME" 2>/dev/null; then
     echo "Stopped a running instance of $APP_NAME."
 fi
 
+# Stamp a unique build id into the bundle so each build has a distinct version
+# fingerprint (lets a relaunched app detect and replace a stale running one,
+# even when only backend code changed).
+date +%Y%m%d-%H%M%S > src/build_id.txt
+
 "$PY" -m PyInstaller \
     --name "$APP_NAME" \
     --windowed \
@@ -113,5 +118,14 @@ else
     echo "not distributable). See the header of this script to enable signing."
 fi
 
+# --- Clean up: keep only the runnable .app ---------------------------------
+# PyInstaller also leaves the intermediate build/ tree, the raw collected
+# payload (dist/<name>/), and a generated .spec — none needed to run the .app,
+# which is fully self-contained. Remove them so dist/ holds just the app.
+echo "Cleaning build artifacts…"
+rm -rf build "$APP_NAME.spec"
+find dist -mindepth 1 -maxdepth 1 ! -name "$APP_NAME.app" -exec rm -rf {} +
+
 echo
+echo "Done. dist/ now contains only: $APP_NAME.app"
 echo "Run it with:  open \"$APP\""

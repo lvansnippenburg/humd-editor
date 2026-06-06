@@ -80,9 +80,10 @@ def _save_window_geometry(state: dict, signature: str) -> None:
 
 
 def main():
-    port = 8082
-    if not server._server_already_running(port):
-        srv, port = server._make_server(port)
+    # Reuse an identical running instance, but take over a stale one (different
+    # code version) instead of attaching to its old server.
+    srv, port = server.ensure_our_server(8082)
+    if srv is not None:
         threading.Thread(target=srv.serve_forever, daemon=True).start()
 
     signature = _screen_signature()

@@ -232,9 +232,14 @@ th, td { border: 1px solid #ddd; padding: 6px 12px; text-align: left; }
 th { background: #f5f5f5; font-weight: 600; }
 tr:nth-child(even) { background: #fafafa; }
 a.footnote-ref { font-size: 0.8em; vertical-align: super; }
+sup.footnote-ref { font-size: 0.75em; }
+sup.footnote-ref a { text-decoration: none; }
+a.footnote-back { text-decoration: none; margin-left: 4px; }
 a.tag-link { color: #5a6e8c; background: #eef1f6; padding: 0 5px; border-radius: 8px; font-size: 0.85em; text-decoration: none; white-space: nowrap; }
 a.tag-link:hover { background: #dde3ee; }
 section.footnotes { margin-top: 2em; border-top: 1px solid #ddd; padding-top: 1em; font-size: 0.9em; }
+section.footnotes ol { padding-left: 1.5em; }
+section.footnotes li { margin: 0.25em 0; }
 @media (prefers-color-scheme: dark) {
   body { background-color: #1e1e1e; color: #e0e0e0; }
   a { color: #6da3f5; }
@@ -259,6 +264,73 @@ ${clickIntercept}
 </html>`;
 }
 
+function fnSlug(id) {
+  return id.replace(/[^\w-]/g, "_");
+}
+
+function renderInline(md) {
+  if (typeof marked === "undefined") return md;
+  return marked.parseInline ? marked.parseInline(md) : marked.parse(md);
+}
+
+// marked has no footnote support, so we handle [^id] references and their
+// [^id]: definitions ourselves. Definitions are pulled out of the body, each
+// reference becomes a numbered superscript link, and a footnotes section is
+// returned to append after the rendered body. Run this AFTER the inline/wikilink
+// preprocessors so footnote text gets the same treatment and the injected HTML
+// (hrefs like #fn-…) isn't itself reprocessed.
+function extractFootnotes(md) {
+  const lines = md.split("\n");
+  const defs = {};
+  const kept = [];
+  const defRe = /^\[\^([^\]]+)\]:\s?(.*)$/;
+  for (let i = 0; i < lines.length; ) {
+    const m = lines[i].match(defRe);
+    if (m) {
+      let content = m[2];
+      i++;
+      // Absorb indented continuation lines (4 spaces or a tab).
+      while (i < lines.length && /^(?:\t| {4})/.test(lines[i])) {
+        content += "\n" + lines[i].replace(/^(?:\t| {4})/, "");
+        i++;
+      }
+      defs[m[1]] = content.trim();
+    } else {
+      kept.push(lines[i]);
+      i++;
+    }
+  }
+
+  const order = [];
+  const numById = {};
+  const refSeen = {};
+  let body = kept.join("\n").replace(/\[\^([^\]]+)\]/g, (full, id) => {
+    if (!(id in defs)) return full; // no definition → not a footnote
+    if (!(id in numById)) {
+      order.push(id);
+      numById[id] = order.length;
+    }
+    const sid = fnSlug(id);
+    // Only the first reference carries the back-link anchor id (ids are unique).
+    const idAttr = refSeen[id] ? "" : ` id="fnref-${sid}"`;
+    refSeen[id] = true;
+    return `<sup class="footnote-ref"${idAttr}><a href="#fn-${sid}">${numById[id]}</a></sup>`;
+  });
+
+  if (order.length === 0) return { body, footnotesHtml: "" };
+
+  const items = order
+    .map((id) => {
+      const sid = fnSlug(id);
+      return (
+        `<li id="fn-${sid}">${renderInline(defs[id])} ` +
+        `<a href="#fnref-${sid}" class="footnote-back" aria-label="Back to reference">↩</a></li>`
+      );
+    })
+    .join("");
+  return { body, footnotesHtml: `<section class="footnotes"><ol>${items}</ol></section>` };
+}
+
 // Render markdown to a body-HTML fragment (no document shell). The shell is
 // built once by buildPreviewShell; only this fragment changes per edit.
 export function renderMarkdownBody(content) {
@@ -266,9 +338,10 @@ export function renderMarkdownBody(content) {
   md = preprocessInlineFootnotes(md);
   md = preprocessInlineSpans(md);
   md = preprocessWikilinks(md);
-  if (typeof marked !== "undefined") return marked.parse(md);
+  const { body, footnotesHtml } = extractFootnotes(md);
+  if (typeof marked !== "undefined") return marked.parse(body) + footnotesHtml;
   // Fallback: show raw markdown if marked.js hasn't loaded yet.
-  return `<pre>${md.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</pre>`;
+  return `<pre>${body.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</pre>`;
 }
 
 export function configureMarked() {

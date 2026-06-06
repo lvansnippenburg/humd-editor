@@ -11,6 +11,8 @@ import signal
 import subprocess
 import sys
 import threading
+import time
+import urllib.error
 import urllib.request
 import webbrowser
 from http.server import HTTPServer, SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -25,6 +27,32 @@ if getattr(sys, "frozen", False):
 else:
     SRC_DIR = Path(__file__).parent.parent / "src"
 
+
+def _compute_version() -> str:
+    """A fingerprint of the code this process serves: backend source + every
+    served asset + the build stamp. Two instances with different code produce
+    different fingerprints, which lets a launching app detect a stale server and
+    take over instead of blindly attaching to old code."""
+    h = hashlib.sha1()
+    try:
+        h.update(Path(__file__).read_bytes())  # backend (dev mode)
+    except Exception:
+        pass
+    try:
+        for f in sorted(SRC_DIR.rglob("*")):
+            if f.is_file() and f.suffix in (".html", ".js", ".css", ".txt"):
+                try:
+                    h.update(f.name.encode("utf-8"))
+                    h.update(f.read_bytes())
+                except OSError:
+                    pass
+    except Exception:
+        pass
+    return h.hexdigest()[:12]
+
+
+SERVER_VERSION = _compute_version()
+
 _lock = threading.Lock()
 
 # Hosts we accept requests for. Anything else (a rebound DNS name pointing at
@@ -35,6 +63,7 @@ ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 # ---------------------------------------------------------------------------
 # Path confinement
 # ---------------------------------------------------------------------------
+
 
 def vault_root() -> Path | None:
     """Resolved path of the configured vault, or None if none is set yet."""
@@ -69,6 +98,7 @@ def safe_path(p: str, *, must_exist: bool = False) -> Path:
 # Settings helpers
 # ---------------------------------------------------------------------------
 
+
 def load_settings() -> dict:
     if SETTINGS_PATH.exists():
         try:
@@ -89,6 +119,7 @@ def save_settings(data: dict) -> None:
 # File tree helpers
 # ---------------------------------------------------------------------------
 
+
 def list_dir_internal(dir_path: str, is_root: bool) -> list:
     p = Path(dir_path)
     if not p.is_dir():
@@ -103,12 +134,14 @@ def list_dir_internal(dir_path: str, is_root: bool) -> list:
             is_dir = child.is_dir()
             if is_root and not is_dir and not name.endswith(".md"):
                 continue
-            entries.append({
-                "name": name,
-                "path": str(child),
-                "is_dir": is_dir,
-                "children": [] if is_dir else None,
-            })
+            entries.append(
+                {
+                    "name": name,
+                    "path": str(child),
+                    "is_dir": is_dir,
+                    "children": [] if is_dir else None,
+                }
+            )
     except PermissionError:
         pass
 
@@ -119,6 +152,7 @@ def list_dir_internal(dir_path: str, is_root: bool) -> list:
 # ---------------------------------------------------------------------------
 # Vault hash (for change detection)
 # ---------------------------------------------------------------------------
+
 
 def collect_md_files(path: str) -> list:
     result = []
@@ -154,6 +188,7 @@ def get_vault_hash(vault_path: str) -> str:
 # ---------------------------------------------------------------------------
 # Link index
 # ---------------------------------------------------------------------------
+
 
 def _clean_tag(t: str) -> str:
     return t.strip().strip("\"'").lstrip("#").strip()
@@ -192,7 +227,7 @@ def extract_yaml_tags(content: str) -> list:
             return [_clean_tag(t) for t in remainder.split(",") if _clean_tag(t)]
         # Block sequence: collect following "- tag" lines.
         out = []
-        for bl in fm[i + 1:]:
+        for bl in fm[i + 1 :]:
             m = re.match(r"^\s*-\s*(.+?)\s*$", bl)
             if not m:
                 break
@@ -372,8 +407,10 @@ def get_link_index(vault_path: str) -> dict:
 # Full-text search
 # ---------------------------------------------------------------------------
 
-def search_vault(vault_path: str, query: str, max_files: int = 200,
-                 max_per_file: int = 5) -> list:
+
+def search_vault(
+    vault_path: str, query: str, max_files: int = 200, max_per_file: int = 5
+) -> list:
     """Case-insensitive substring search over note contents.
 
     Returns [{path, name, matches: [{line, text}]}] sorted by note name.
@@ -385,7 +422,9 @@ def search_vault(vault_path: str, query: str, max_files: int = 200,
     # search only hits disk for files that changed since the last scan.
     with _cache_lock:
         files = _refresh_file_cache(vault_path)
-        items = sorted((f, _file_cache[f]["content"]) for f in files if f in _file_cache)
+        items = sorted(
+            (f, _file_cache[f]["content"]) for f in files if f in _file_cache
+        )
     results = []
     for fpath, content in items:
         if q not in content.lower():
@@ -399,7 +438,9 @@ def search_vault(vault_path: str, query: str, max_files: int = 200,
             if len(snippet) > 160:
                 idx = low.find(q)
                 start = max(0, idx - 40)
-                snippet = ("…" if start > 0 else "") + line[start:start + 160].strip() + "…"
+                snippet = (
+                    ("…" if start > 0 else "") + line[start : start + 160].strip() + "…"
+                )
             matches.append({"line": n, "text": snippet})
             if len(matches) >= max_per_file:
                 break
@@ -412,6 +453,7 @@ def search_vault(vault_path: str, query: str, max_files: int = 200,
 # ---------------------------------------------------------------------------
 # Wikilink maintenance
 # ---------------------------------------------------------------------------
+
 
 def rename_wikilink_targets(vault_path: str, old_stem: str, new_stem: str) -> int:
     """Rewrite [[old_stem]] / [[old_stem|alias]] references across the vault.
@@ -432,7 +474,9 @@ def rename_wikilink_targets(vault_path: str, old_stem: str, new_stem: str) -> in
             content = Path(fpath).read_text(encoding="utf-8")
         except OSError:
             continue
-        new_content, n = pattern.subn(lambda m: m.group(1) + new_stem + m.group(2), content)
+        new_content, n = pattern.subn(
+            lambda m: m.group(1) + new_stem + m.group(2), content
+        )
         if n:
             try:
                 Path(fpath).write_text(new_content, encoding="utf-8")
@@ -475,10 +519,12 @@ def _find_pandoc() -> str:
 def render_pandoc(markdown: str, file_path: str | None) -> str:
     """Render markdown via system pandoc, return HTML body fragment."""
     result = subprocess.run(
-        [_find_pandoc(),
-         "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables",
-         "--to=html5",
-         "--standalone=false"],
+        [
+            _find_pandoc(),
+            "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables",
+            "--to=html5",
+            "--standalone=false",
+        ],
         input=markdown.encode(),
         capture_output=True,
     )
@@ -488,8 +534,70 @@ def render_pandoc(markdown: str, file_path: str | None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# AI proofreading (Google Gemini)
+# ---------------------------------------------------------------------------
+
+PROOFREAD_SYSTEM = (
+    "You are the editor of an academic historical magazine. Correct grammar, "
+    "punctuation, and clarity. Preserve the author's voice, long sentences when "
+    "they work, and any deliberate archaic or period-appropriate terminology. "
+    "Use British spelling. Return the revised text first, then a short bulleted "
+    "list of substantive changes with brief reasons."
+)
+DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+
+
+def proofread_text(text: str) -> str:
+    """Send `text` to Google Gemini for proofreading and return the response.
+
+    The API key (and optional model override) come from settings. Uses the REST
+    API directly so the server stays dependency-free.
+    """
+    settings = load_settings()
+    api_key = settings.get("geminiApiKey")
+    if not api_key:
+        raise RuntimeError(
+            "No Gemini API key set. Add one under Settings → Proofreading."
+        )
+    model = settings.get("geminiModel") or DEFAULT_GEMINI_MODEL
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model}:generateContent"
+    )
+    payload = json.dumps({
+        "system_instruction": {"parts": [{"text": PROOFREAD_SYSTEM}]},
+        "contents": [{"role": "user", "parts": [{"text": text}]}],
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")
+        raise RuntimeError(f"Gemini API error {e.code}: {detail[:500]}")
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Could not reach Gemini: {e.reason}")
+
+    candidates = data.get("candidates") or []
+    if not candidates:
+        # Often a safety block or empty response; surface what we can.
+        raise RuntimeError(f"Gemini returned no result: {json.dumps(data)[:400]}")
+    parts = candidates[0].get("content", {}).get("parts", [])
+    out = "".join(p.get("text", "") for p in parts).strip()
+    if not out:
+        raise RuntimeError("Gemini returned an empty response.")
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Folder / file picker (macOS osascript)
 # ---------------------------------------------------------------------------
+
 
 def pick_folder(prompt: str = "Select your Markdown vault folder") -> str | None:
     # Pass the prompt as an argument rather than interpolating it into the
@@ -499,7 +607,9 @@ def pick_folder(prompt: str = "Select your Markdown vault folder") -> str | None
         "  POSIX path of (choose folder with prompt (item 1 of argv))\n"
         "end run"
     )
-    r = subprocess.run(["osascript", "-e", script, prompt], capture_output=True, text=True)
+    r = subprocess.run(
+        ["osascript", "-e", script, prompt], capture_output=True, text=True
+    )
     if r.returncode == 0:
         return r.stdout.strip().rstrip("/")
     return None
@@ -519,7 +629,9 @@ def pick_file(extensions: list, prompt: str = "Select a file") -> str | None:
         f"  POSIX path of (choose file with prompt (item 1 of argv){type_clause})\n"
         "end run"
     )
-    r = subprocess.run(["osascript", "-e", script, prompt], capture_output=True, text=True)
+    r = subprocess.run(
+        ["osascript", "-e", script, prompt], capture_output=True, text=True
+    )
     if r.returncode == 0:
         return r.stdout.strip()
     return None
@@ -528,6 +640,7 @@ def pick_file(extensions: list, prompt: str = "Select a file") -> str | None:
 # ---------------------------------------------------------------------------
 # HTTP Handler
 # ---------------------------------------------------------------------------
+
 
 class Handler(SimpleHTTPRequestHandler):
     server_version = "humd-editor/1.0"
@@ -586,13 +699,17 @@ class Handler(SimpleHTTPRequestHandler):
 
         if path == "/api/settings":
             self.send_json(load_settings())
+        elif path == "/api/version":
+            self.send_json({"version": SERVER_VERSION})
         elif path == "/api/list-vault":
             vault_path = qs.get("path", [None])[0]
             if not vault_path:
                 self.send_error_json("path required")
                 return
             try:
-                self.send_json(list_dir_internal(str(safe_path(vault_path)), is_root=True))
+                self.send_json(
+                    list_dir_internal(str(safe_path(vault_path)), is_root=True)
+                )
             except Exception as e:
                 self.send_error_json(str(e))
         elif path == "/api/list-dir":
@@ -601,7 +718,9 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_error_json("path required")
                 return
             try:
-                self.send_json(list_dir_internal(str(safe_path(dir_path)), is_root=False))
+                self.send_json(
+                    list_dir_internal(str(safe_path(dir_path)), is_root=False)
+                )
             except Exception as e:
                 self.send_error_json(str(e))
         elif path == "/api/read-file":
@@ -610,7 +729,9 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_error_json("path required")
                 return
             try:
-                content = safe_path(file_path, must_exist=True).read_text(encoding="utf-8")
+                content = safe_path(file_path, must_exist=True).read_text(
+                    encoding="utf-8"
+                )
                 self.send_json({"content": content})
             except Exception as e:
                 self.send_error_json(str(e))
@@ -741,7 +862,7 @@ class Handler(SimpleHTTPRequestHandler):
                 # AppleScript. Fall back to a plain delete if Finder declines.
                 script = (
                     "on run argv\n"
-                    "  tell application \"Finder\" to delete (POSIX file (item 1 of argv))\n"
+                    '  tell application "Finder" to delete (POSIX file (item 1 of argv))\n'
                     "end run"
                 )
                 r = subprocess.run(
@@ -790,9 +911,25 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:
                 self.send_error_json(str(e))
 
+        elif path == "/api/proofread":
+            try:
+                data = self.read_body()
+                text = (data.get("text") or "").strip()
+                if not text:
+                    raise ValueError("Nothing to proofread")
+                self.send_json({"result": proofread_text(text)})
+            except Exception as e:
+                self.send_error_json(str(e))
+
         elif path == "/api/shutdown":
             self.send_json({"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
+
+        elif path == "/api/quit":
+            # Hard-exit the whole process (frees the port even when a webview
+            # keeps the main thread alive). Used when a newer build takes over.
+            self.send_json({"ok": True})
+            threading.Timer(0.1, lambda: os._exit(0)).start()
 
         else:
             self.send_error_json("Not found", 404)
@@ -802,12 +939,51 @@ class Handler(SimpleHTTPRequestHandler):
 # Main
 # ---------------------------------------------------------------------------
 
+
 def _server_already_running(port: int) -> bool:
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/settings", timeout=0.5):
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/settings", timeout=0.5
+        ):
             return True
     except Exception:
         return False
+
+
+def _running_server_version(port: int) -> str | None:
+    """Version reported by a server on `port`, or None (unreachable / too old
+    to have the /api/version endpoint)."""
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/version", timeout=0.5
+        ) as r:
+            return json.loads(r.read().decode("utf-8")).get("version")
+    except Exception:
+        return None
+
+
+def _shutdown_running(port: int) -> bool:
+    """Tell the server on `port` to quit and wait for it to release the socket.
+
+    Tries /api/quit (hard process exit — frees the port even for a desktop app
+    whose window keeps the process alive), then /api/shutdown for older servers
+    that lack it. Returns True once the port is free."""
+    for endpoint in ("/api/quit", "/api/shutdown"):
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}{endpoint}",
+                data=b"{}",
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            urllib.request.urlopen(req, timeout=2)
+        except Exception:
+            pass
+        for _ in range(30):  # up to ~3s per endpoint
+            if not _server_already_running(port):
+                return True
+            time.sleep(0.1)
+    return not _server_already_running(port)
 
 
 def _make_server(preferred_port: int):
@@ -820,25 +996,48 @@ def _make_server(preferred_port: int):
         return srv, srv.server_address[1]
 
 
+def ensure_our_server(preferred_port: int):
+    """Decide how to serve on `preferred_port`.
+
+    - If a server with our exact version already runs there → reuse it
+      (returns (None, port)).
+    - If a *different* version runs there → shut it down and take over.
+    - Otherwise → start fresh.
+
+    Returns (server_or_None, port). A None server means "reuse the one already
+    running on the returned port".
+    """
+    if _server_already_running(preferred_port):
+        if _running_server_version(preferred_port) == SERVER_VERSION:
+            return None, preferred_port
+        # Stale / different code is holding the port — replace it.
+        _shutdown_running(preferred_port)
+    return _make_server(preferred_port)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8082)
-    parser.add_argument("--open", action="store_true",
-                        help="open the editor in the browser once the server is up")
+    parser.add_argument(
+        "--open",
+        action="store_true",
+        help="open the editor in the browser once the server is up",
+    )
     # parse_known_args so a macOS app-launch arg (e.g. -psn_…) doesn't crash us.
     args, _ = parser.parse_known_args()
 
     # The bundled .app has no run.sh wrapper, so open the browser itself.
     open_browser = args.open or getattr(sys, "frozen", False)
 
-    # If a copy is already serving, just surface it instead of starting a second.
-    if open_browser and _server_already_running(args.port):
-        webbrowser.open(f"http://127.0.0.1:{args.port}")
-        return
-
+    # Reuse an identical running instance; take over a stale (different-version)
+    # one rather than attaching to its old code.
     # Threaded: the Zotero CAYW proxy blocks while the picker is open, and a
     # single-threaded server would stall every other request meanwhile.
-    server, port = _make_server(args.port)
+    server, port = ensure_our_server(args.port)
+    if server is None:
+        if open_browser:
+            webbrowser.open(f"http://127.0.0.1:{port}")
+        return
 
     def _shutdown(sig, frame):
         threading.Thread(target=server.shutdown, daemon=True).start()
@@ -848,7 +1047,9 @@ def main():
 
     print(f"humd-editor server running on http://127.0.0.1:{port}", flush=True)
     if open_browser:
-        threading.Timer(0.3, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
+        threading.Timer(
+            0.3, lambda: webbrowser.open(f"http://127.0.0.1:{port}")
+        ).start()
     server.serve_forever()
 
 

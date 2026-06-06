@@ -6,6 +6,7 @@ Run with:  python3 -m unittest discover -s tests
 
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -170,6 +171,32 @@ class PathConfinementTests(unittest.TestCase):
         server.load_settings = lambda: {}
         with self.assertRaises(PermissionError):
             server.safe_path("/anything")
+
+
+class VersionTests(unittest.TestCase):
+    def test_version_is_stable_hex(self):
+        v = server._compute_version()
+        self.assertRegex(v, r"^[0-9a-f]{12}$")
+        self.assertEqual(v, server._compute_version())  # deterministic
+
+    def test_ensure_starts_when_nothing_running(self):
+        # Port 0 → OS-assigned ephemeral, so nothing is "already running".
+        srv, _ = server.ensure_our_server(0)
+        self.assertIsNotNone(srv)
+        srv.server_close()
+
+    def test_reuse_when_same_version(self):
+        srv, port = server._make_server(8137)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            time.sleep(0.2)
+            # Same process → same SERVER_VERSION → ensure should say 'reuse'.
+            again, p = server.ensure_our_server(port)
+            self.assertIsNone(again)
+            self.assertEqual(p, port)
+        finally:
+            srv.shutdown()
+            srv.server_close()
 
 
 if __name__ == "__main__":

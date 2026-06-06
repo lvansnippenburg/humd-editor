@@ -24,6 +24,9 @@ let currentUsePandoc = false;
 let currentAutoSave = false;
 let currentBibPath = null;
 let currentCslPath = null;
+let currentGeminiKey = "";
+let currentGeminiModel = "";
+let proofreadRange = null; // { start, end } in the editor that proofreading targets
 let previewVisible = true;
 let savedEditorFlexBasis = null;
 let isDirty = false;
@@ -143,6 +146,8 @@ async function initialize() {
     currentAutoSave = settings.useAutoSave ?? false;
     currentBibPath = settings.cslJsonPath || null;
     currentCslPath = settings.cslStylePath || null;
+    currentGeminiKey = settings.geminiApiKey || "";
+    currentGeminiModel = settings.geminiModel || "";
     document.getElementById("editor").spellcheck = currentSpellCheck;
 
     let vaultPath = settings.vaultPath;
@@ -280,6 +285,14 @@ function setupEventListeners() {
   document.getElementById("new-file-btn").addEventListener("click", promptNewFile);
   document.getElementById("change-vault-btn").addEventListener("click", changeVaultFolder);
   document.getElementById("settings-btn").addEventListener("click", openSettingsDialog);
+  document.getElementById("proofread-btn").addEventListener("click", runProofread);
+  document.getElementById("close-proofread").addEventListener("click", closeProofreadDialog);
+  document.getElementById("cancel-proofread-btn").addEventListener("click", closeProofreadDialog);
+  document.getElementById("proofread-apply-btn").addEventListener("click", applyProofread);
+  document.getElementById("proofread-copy-btn").addEventListener("click", () => {
+    navigator.clipboard?.writeText(document.getElementById("proofread-revised").value);
+    showStatus("Revised text copied");
+  });
   document.getElementById("close-settings").addEventListener("click", cancelSettings);
   document.getElementById("cancel-settings-btn").addEventListener("click", cancelSettings);
   document.getElementById("save-settings-btn").addEventListener("click", saveSettings);
@@ -2034,9 +2047,9 @@ function buildTagsPanel() {
   const list = document.getElementById("tags-list");
   list.innerHTML = "";
 
-  // Sort real tags by frequency (most used first), then alphabetically.
+  // Sort real tags alphabetically (case-insensitive).
   const entries = Object.values(tagIndexCache);
-  entries.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 
   // Pin a synthetic "#notag" entry to the top for files with no tags.
   const rows = [];
@@ -2283,6 +2296,8 @@ function openSettingsDialog() {
   document.getElementById("bib-path-display").textContent = currentBibPath || "None selected";
   document.getElementById("csl-path-display").textContent =
     currentCslPath || "None selected (defaults to APA)";
+  document.getElementById("gemini-key-input").value = currentGeminiKey;
+  document.getElementById("gemini-model-input").value = currentGeminiModel;
   document.getElementById("settings-dialog").showModal();
 }
 
@@ -2304,6 +2319,9 @@ async function saveSettings() {
     const cslDisplay = document.getElementById("csl-path-display").textContent;
     const newCslPath = cslDisplay && !cslDisplay.startsWith("None selected") ? cslDisplay : null;
 
+    const newGeminiKey = document.getElementById("gemini-key-input").value.trim();
+    const newGeminiModel = document.getElementById("gemini-model-input").value.trim();
+
     // Validate vault path
     try {
       await apiFetch(`/api/list-vault?path=${encodeURIComponent(newVaultPath)}`);
@@ -2320,12 +2338,16 @@ async function saveSettings() {
       useAutoSave: newAutoSave,
       cslJsonPath: newBibPath,
       cslStylePath: newCslPath,
+      geminiApiKey: newGeminiKey,
+      geminiModel: newGeminiModel,
     });
 
     currentUserCss = newCss;
     currentSpellCheck = newSpellCheck;
     currentUsePandoc = newUsePandoc;
     currentAutoSave = newAutoSave;
+    currentGeminiKey = newGeminiKey;
+    currentGeminiModel = newGeminiModel;
     document.getElementById("editor").spellcheck = newSpellCheck;
 
     const bibChanged = newBibPath !== currentBibPath;
@@ -2365,6 +2387,96 @@ function cancelSettings() {
   document.getElementById("csl-path-display").textContent =
     settingsBeforeEdit.cslPath || "None selected (defaults to APA)";
   closeSettingsDialog();
+}
+
+// ===== PROOFREADING (Gemini) =====
+
+// Split Gemini's "revised text first, then a bulleted list of changes" reply
+// into the two parts so the revised text can be applied on its own.
+function splitProofread(text) {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const bullet = (s) => /^([-*•]|\d+[.)])\s+/.test(s.trim());
+  let end = lines.length - 1;
+  while (end >= 0 && lines[end].trim() === "") end--;
+  if (end < 0 || !bullet(lines[end])) return { revised: text.trim(), changes: "" };
+  let start = end;
+  while (start - 1 >= 0 && (bullet(lines[start - 1]) || lines[start - 1].trim() === "")) start--;
+  // Pull in an immediately-preceding heading line like "Substantive changes:".
+  let head = start;
+  let p = start - 1;
+  while (p >= 0 && lines[p].trim() === "") p--;
+  if (p >= 0 && /\b(change|edit|correction|revision)/i.test(lines[p]) && lines[p].trim().length < 100) {
+    head = p;
+  }
+  const revised = lines.slice(0, head).join("\n").trim();
+  const changes = lines.slice(head).join("\n").trim();
+  return { revised: revised || text.trim(), changes };
+}
+
+async function runProofread() {
+  if (!currentFilePath) {
+    showStatus("Open a file to proofread", true);
+    return;
+  }
+  const editor = document.getElementById("editor");
+  const isSelection = editor.selectionStart !== editor.selectionEnd;
+  const start = isSelection ? editor.selectionStart : 0;
+  const end = isSelection ? editor.selectionEnd : editor.value.length;
+  const text = editor.value.slice(start, end);
+  if (!text.trim()) {
+    showStatus("Nothing to proofread", true);
+    return;
+  }
+  proofreadRange = { start, end };
+
+  const dlg = document.getElementById("proofread-dialog");
+  const status = document.getElementById("proofread-status");
+  const body = document.getElementById("proofread-body");
+  const applyBtn = document.getElementById("proofread-apply-btn");
+  const copyBtn = document.getElementById("proofread-copy-btn");
+
+  document.getElementById("proofread-scope").textContent =
+    `Proofreading the ${isSelection ? "selected text" : "whole document"} (${text.length} characters).`;
+  applyBtn.textContent = isSelection ? "Replace selection" : "Replace document";
+  status.style.display = "";
+  status.textContent = "Proofreading with Gemini… this can take a few seconds.";
+  body.style.display = "none";
+  applyBtn.disabled = true;
+  copyBtn.disabled = true;
+  if (!dlg.open) dlg.showModal();
+
+  try {
+    const res = await apiPost("/api/proofread", { text });
+    const { revised, changes } = splitProofread(res.result || "");
+    document.getElementById("proofread-revised").value = revised;
+    const changesEl = document.getElementById("proofread-changes");
+    if (changes && typeof marked !== "undefined") {
+      changesEl.innerHTML = marked.parse(changes);
+    } else {
+      changesEl.innerHTML = escapeHtml(changes || "(none listed)").replace(/\n/g, "<br>");
+    }
+    status.style.display = "none";
+    body.style.display = "";
+    applyBtn.disabled = false;
+    copyBtn.disabled = false;
+  } catch (err) {
+    status.textContent = `Error: ${err.message || err}`;
+  }
+}
+
+function applyProofread() {
+  if (!proofreadRange) return;
+  const editor = document.getElementById("editor");
+  const revised = document.getElementById("proofread-revised").value;
+  snapshotForUndo();
+  editorReplace(editor, proofreadRange.start, proofreadRange.end, revised);
+  closeProofreadDialog();
+  showStatus("Applied proofread revisions");
+}
+
+function closeProofreadDialog() {
+  document.getElementById("proofread-dialog").close();
+  proofreadRange = null;
 }
 
 async function pickVaultFolder() {

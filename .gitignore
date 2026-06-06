@@ -16,6 +16,7 @@ dist-ssr
 build
 *.spec
 .build-venv
+src/build_id.txt
 
 # Editor directories and files
 .vscode/*

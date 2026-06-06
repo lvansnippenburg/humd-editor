@@ -44,3 +44,9 @@ Typing `[[` suggests note names; typing `#` suggests existing tags.
 | --- | --- |
 | `Enter` | Confirm (rename, new file) |
 | `Esc` | Cancel / close (rename, new file, settings) |
+
+# Installation
+The build is not yet code-signed or notarized. After installing the app, you must run the command below.
+```
+xattr -dr com.apple.quarantine /Applications/Humd Editor.app
+```
