@@ -10,8 +10,23 @@
 #   any python3 that has it; otherwise an isolated build venv is created — note
 #   that venv would also need pywebview, so installing both into one python3 is
 #   simplest. Override with:  PYTHON=/path/to/python3 ./build_app.sh
-# Override the interpreter with:  PYTHON=/path/to/python3 ./build_app.sh
 # Note: PyInstaller is not a cross-compiler — build on the OS/arch you target.
+#
+# Code signing + notarization (optional, for distributing to other Macs):
+#   Set SIGN_IDENTITY to sign, and additionally NOTARY_PROFILE to notarize:
+#
+#     SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+#     NOTARY_PROFILE="humd-notary" ./build_app.sh
+#
+#   One-time setup:
+#     * A "Developer ID Application" cert in your keychain (Apple Developer
+#       account). List candidates with:
+#         security find-identity -v -p codesigning
+#     * A stored notarytool credential profile:
+#         xcrun notarytool store-credentials "humd-notary" \
+#           --apple-id you@example.com --team-id TEAMID \
+#           --password <app-specific-password>
+#   Without these vars the app is left ad-hoc signed (runs on this machine only).
 
 set -e
 cd "$(dirname "$0")"
@@ -62,6 +77,41 @@ fi
     --collect-all webview \
     server/desktop.py
 
+APP="dist/$APP_NAME.app"
 echo
-echo "Built: dist/$APP_NAME.app"
-echo "Run it with:  open \"dist/$APP_NAME.app\""
+echo "Built: $APP"
+
+# --- Optional: code signing + notarization for distribution ----------------
+if [ -n "$SIGN_IDENTITY" ]; then
+    echo "Signing with hardened runtime: $SIGN_IDENTITY"
+    # --deep applies the identity + entitlements to every nested binary/dylib;
+    # --options runtime enables the hardened runtime that notarization requires.
+    codesign --force --deep --options runtime --timestamp \
+        --entitlements entitlements.plist \
+        --sign "$SIGN_IDENTITY" "$APP"
+    codesign --verify --strict --verbose=2 "$APP"
+    echo "Signed and verified."
+
+    if [ -n "$NOTARY_PROFILE" ]; then
+        ZIP="dist/$APP_NAME.zip"
+        echo "Packaging for notarization: $ZIP"
+        rm -f "$ZIP"
+        ditto -c -k --keepParent "$APP" "$ZIP"
+        echo "Submitting to Apple notary service (can take a few minutes)…"
+        xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+        echo "Stapling the notarization ticket…"
+        xcrun stapler staple "$APP"
+        xcrun stapler validate "$APP"
+        spctl --assess --type execute --verbose=2 "$APP" || true
+        rm -f "$ZIP"
+        echo "Notarized, stapled, and Gatekeeper-checked."
+    else
+        echo "NOTARY_PROFILE not set — signed only (not notarized)."
+    fi
+else
+    echo "SIGN_IDENTITY not set — left ad-hoc signed (runs on this machine only,"
+    echo "not distributable). See the header of this script to enable signing."
+fi
+
+echo
+echo "Run it with:  open \"$APP\""
