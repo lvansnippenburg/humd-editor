@@ -2026,6 +2026,17 @@ function buildLinksPanel() {
     else showStatus(`Note not found: ${stem}`);
   };
 
+  // Format a single citation key using bibliography data if available.
+  const formatCitationKey = (key) => {
+    if (!citeBibData || citeBibData.length === 0) return key;
+    const ref = citeBibData.find((r) => r.id === key);
+    if (!ref) return key;
+    const auth = ref.author?.[0];
+    const year = ref.issued?.["date-parts"]?.[0]?.[0];
+    const name = auth?.family || auth?.literal || key;
+    return year ? `${name}, ${year}` : name;
+  };
+
   const addSection = (title, stems) => {
     const header = document.createElement("li");
     header.className = "links-section";
@@ -2048,9 +2059,31 @@ function buildLinksPanel() {
     });
   };
 
+  const addReferencesSection = (title, citKeys) => {
+    const header = document.createElement("li");
+    header.className = "links-section";
+    header.textContent = title;
+    list.appendChild(header);
+    if (citKeys.length === 0) {
+      const empty = document.createElement("li");
+      empty.className = "links-empty";
+      empty.textContent = "None";
+      list.appendChild(empty);
+      return;
+    }
+    citKeys.forEach((key) => {
+      const li = document.createElement("li");
+      const a = document.createElement("a");
+      a.textContent = formatCitationKey(key);
+      a.title = key; // Show the citation key on hover
+      li.appendChild(a);
+      list.appendChild(li);
+    });
+  };
+
   addSection("Links", outgoing);
   addSection("Backlinks", incoming);
-  addSection("References", references);
+  addReferencesSection("References", references);
 }
 
 // ===== TAGS PANEL =====
