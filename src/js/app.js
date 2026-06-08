@@ -20,6 +20,7 @@ let currentGeminiKey = "";
 let currentGeminiModel = "";
 let proofreadRange = null; // { start, end } in the editor that proofreading targets
 let previewVisible = true;
+let previewStale = false; // edits happened while preview was hidden; refresh on show
 let savedEditorFlexBasis = null;
 let isDirty = false;
 let isInitialized = false;
@@ -540,6 +541,11 @@ function togglePreview() {
   btn.classList.toggle("active", previewVisible);
   btn.title = previewVisible ? "Hide preview (⌘E)" : "Show preview (⌘E)";
   btn.setAttribute("aria-label", previewVisible ? "Hide preview" : "Show preview");
+  // Re-showing a preview that went stale while hidden: render it now.
+  if (previewVisible && previewStale) {
+    previewStale = false;
+    updatePreview();
+  }
   updateTabScrollButtons();
   saveUiState();
 }
@@ -1469,6 +1475,13 @@ function ensurePreviewShell(userCss) {
 }
 
 async function updatePreview() {
+  // While the preview pane is hidden, skip all rendering work (markdown/Pandoc,
+  // citation processing, shell build, stats). Mark it stale so it refreshes the
+  // moment it's shown again (see togglePreview).
+  if (!previewVisible) {
+    previewStale = true;
+    return;
+  }
   const iframe = document.getElementById("preview");
   if (!currentFilePath) {
     resetPreview();
