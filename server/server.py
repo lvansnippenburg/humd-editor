@@ -575,7 +575,7 @@ def export_docx(markdown: str) -> bytes:
     """
     settings = load_settings()
     bib_path = settings.get("cslJsonPath")
-    csl_path = settings.get("cslPath")
+    csl_path = settings.get("cslStylePath")
     ref_doc_path = settings.get("pandocRefDocPath")
 
     if not bib_path:
