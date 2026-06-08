@@ -2006,6 +2006,20 @@ function buildLinksPanel() {
   }
   incoming = [...new Set(incoming)].filter((s) => s.toLowerCase() !== myKey).sort();
 
+  // References: distinct citation keys in the current note.
+  const citationRe = /\[@([^\]]+)\]/g;
+  const citationSeen = new Set();
+  const references = [];
+  let citMatch;
+  while ((citMatch = citationRe.exec(content)) !== null) {
+    const citKey = citMatch[1].trim();
+    if (citKey && !citationSeen.has(citKey.toLowerCase())) {
+      citationSeen.add(citKey.toLowerCase());
+      references.push(citKey);
+    }
+  }
+  references.sort();
+
   const openByStem = async (stem) => {
     const path = findNoteByName(stem);
     if (path) await loadFile(path);
@@ -2036,6 +2050,7 @@ function buildLinksPanel() {
 
   addSection("Links", outgoing);
   addSection("Backlinks", incoming);
+  addSection("References", references);
 }
 
 // ===== TAGS PANEL =====
