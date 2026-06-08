@@ -2,7 +2,15 @@
 // (api, icons, markdown); this file holds the stateful application logic.
 import { apiFetch, apiPost } from "/js/api.js";
 import { ICON_CHEVRON, ICON_FOLDER_CLOSED, ICON_FOLDER_OPEN, getFileIcon } from "/js/icons.js";
-import { buildPreviewShell, configureMarked, renderMarkdownBody, rewriteImageSources } from "/js/markdown.js";
+import {
+  buildPreviewShell,
+  configureMarked,
+  renderMarkdownBody,
+  rewriteImageSources,
+  extractComments,
+  restoreComments,
+  COMMENT_BALLOON_SVG,
+} from "/js/markdown.js";
 
 // ===== STATE =====
 
@@ -1257,7 +1265,7 @@ function renderEditorCommentGutter() {
     if (y < 0 || y > viewHeight) continue; // off-screen
     const b = document.createElement("div");
     b.className = "editor-comment-balloon";
-    b.textContent = "🗨";
+    b.innerHTML = COMMENT_BALLOON_SVG;
     b.title = c.nick;
     b.style.top = `${viewTop + y}px`;
     gutter.appendChild(b);
@@ -1535,6 +1543,7 @@ function performRedo() {
 function applyUndoSnapshot(editor, snap) {
   editor.value = snap.value;
   editor.setSelectionRange(snap.start, snap.end);
+  renderEditorCommentGutter();
   isDirty = true;
   const tab = getActiveTab();
   if (tab) {
@@ -1667,15 +1676,22 @@ async function updatePreview() {
       return `ⓘCITATION_PLACEHOLDER_${citations.length - 1}ⓘ`;
     });
 
+    // Tokenize HTML comments before rendering so they survive both render paths
+    // (Pandoc strips comments; marked drops them too), then splice the balloons
+    // back into the rendered HTML afterward.
+    const { text: contentForRender, balloons: commentBalloons } =
+      extractComments(contentWithPlaceholders);
+
     if (currentUsePandoc) {
       const result = await apiPost("/api/pandoc", {
-        markdown: contentWithPlaceholders,
+        markdown: contentForRender,
         file_path: currentFilePath,
       });
       bodyHtml = result.html;
     } else {
-      bodyHtml = renderMarkdownBody(contentWithPlaceholders);
+      bodyHtml = renderMarkdownBody(contentForRender);
     }
+    bodyHtml = restoreComments(bodyHtml, commentBalloons);
 
     await ensurePreviewShell(currentUserCss);
     const doc = iframe.contentDocument;

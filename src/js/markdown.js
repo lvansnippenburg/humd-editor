@@ -263,7 +263,8 @@ sup.footnote-ref a { text-decoration: none; }
 a.footnote-back { text-decoration: none; margin-left: 4px; }
 a.tag-link { color: #5a6e8c; background: #eef1f6; padding: 0 5px; border-radius: 8px; font-size: 0.85em; text-decoration: none; white-space: nowrap; }
 a.tag-link:hover { background: #dde3ee; }
-.hp-comment { float: right; margin-left: 8px; font-size: 0.85em; line-height: 1.6; opacity: 0.55; cursor: default; user-select: none; }
+.hp-comment { float: right; margin-left: 8px; color: #d99a00; opacity: 0.75; cursor: default; user-select: none; }
+.hp-comment svg { vertical-align: middle; }
 .hp-comment:hover { opacity: 1; }
 section.footnotes { margin-top: 2em; border-top: 1px solid #ddd; padding-top: 1em; font-size: 0.9em; }
 section.footnotes ol { padding-left: 1.5em; }
@@ -391,42 +392,54 @@ function escapeHtmlAttr(s) {
 // Extract the author nickname from a comment body. Comments authored by the
 // editor look like "Nick 2026-06-08 14:30: text"; the nickname is whatever
 // precedes the date stamp. Falls back to the first word for plain comments.
-function commentNick(content) {
+export function commentNick(content) {
   const m = content.match(/^(.*?)\s+\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/);
   const nick = m ? m[1].trim() : (content.split(/\s+/)[0] || "Comment");
   return nick || "Comment";
 }
 
-// Replace HTML comments with private-use placeholder tokens (so the inline/
-// footnote/wikilink preprocessors and marked leave them untouched), collecting
-// the balloon HTML to splice back in after rendering. Mirrors the citation
-// protection pattern. Returns the rewritten markdown; fills `store`.
-function preprocessComments(md, store) {
-  return md.replace(/<!--([\s\S]*?)-->/g, (_full, inner) => {
-    const content = inner.trim();
-    const nick = commentNick(content);
-    const idx = store.length;
-    store.push(
+// Inline SVG speech-bubble for comment balloons in both the editor gutter and
+// the preview (an emoji glyph isn't reliably available across fonts).
+export const COMMENT_BALLOON_SVG =
+  '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">' +
+  '<path fill="currentColor" d="M3 2.5h10A1.5 1.5 0 0 1 14.5 4v6A1.5 1.5 0 0 1 13 ' +
+  '11.5H7.2l-3 2.6a.5.5 0 0 1-.83-.38V11.5H3A1.5 1.5 0 0 1 1.5 10V4A1.5 1.5 0 0 1 3 2.5z"/>' +
+  "</svg>";
+
+// Replace HTML comments with plain alphanumeric tokens (HPCOMMENTn) so the
+// markdown processor — marked or Pandoc — leaves them untouched, and return the
+// balloon HTML for each so the caller can splice them back into the rendered
+// output. Mirrors the citation-protection pattern; runs for both render paths.
+export function extractComments(content) {
+  const balloons = [];
+  const text = content.replace(/<!--([\s\S]*?)-->/g, (_full, inner) => {
+    const body = inner.trim();
+    const nick = commentNick(body);
+    const idx = balloons.length;
+    balloons.push(
       `<span class="hp-comment" title="${escapeHtmlAttr(nick)}" ` +
-        `data-text="${escapeHtmlAttr(content)}">🗨</span>`,
+        `data-text="${escapeHtmlAttr(body)}">${COMMENT_BALLOON_SVG}</span>`,
     );
-    return `HPCOMMENT${idx}`;
+    return `HPCOMMENT${idx}`;
   });
+  return { text, balloons };
+}
+
+// Splice balloon HTML back in for the HPCOMMENTn tokens left by extractComments.
+export function restoreComments(html, balloons) {
+  if (!balloons || balloons.length === 0) return html;
+  return html.replace(/HPCOMMENT(\d+)/g, (_, i) => balloons[Number(i)] || "");
 }
 
 export function renderMarkdownBody(content) {
   let md = stripFrontMatter(content);
-  const commentStore = [];
-  md = preprocessComments(md, commentStore);
   md = preprocessInlineFootnotes(md);
   md = preprocessInlineSpans(md);
   md = preprocessWikilinks(md);
   const { body, footnotesHtml } = extractFootnotes(md);
-  const restore = (html) =>
-    html.replace(/HPCOMMENT(\d+)/g, (_, i) => commentStore[Number(i)] || "");
-  if (typeof marked !== "undefined") return restore(marked.parse(body) + footnotesHtml);
+  if (typeof marked !== "undefined") return marked.parse(body) + footnotesHtml;
   // Fallback: show raw markdown if marked.js hasn't loaded yet.
-  return `<pre>${restore(body.replace(/&/g, "&amp;").replace(/</g, "&lt;"))}</pre>`;
+  return `<pre>${body.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</pre>`;
 }
 
 // Store citations so they can be restored in the DOM after rendering.
