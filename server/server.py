@@ -838,7 +838,7 @@ class Handler(SimpleHTTPRequestHandler):
                 mime = mime or "application/octet-stream"
                 self.send_response(200)
                 self.send_header("Content-Type", mime)
-                self.send_header("Content-Length", len(data))
+                self.send_header("Content-Length", str(len(data)))
                 self.send_header("Cache-Control", "public, max-age=3600")
                 self.end_headers()
                 self.wfile.write(data)
