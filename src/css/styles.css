@@ -723,6 +723,36 @@ body.dragging-file .tree-dir > .tree-label:hover {
     min-width: 200px;
     overflow: hidden;
     background: var(--bg-primary);
+    position: relative;
+}
+
+/* Comment balloons aligned to the editor's right margin. The gutter overlays
+   the pane; balloons are positioned per-line in JS (see renderEditorCommentGutter). */
+#editor-comment-gutter {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 22px;
+    pointer-events: none;
+    overflow: hidden;
+    z-index: 5;
+}
+
+.editor-comment-balloon {
+    position: absolute;
+    right: 4px;
+    transform: translateY(-1px);
+    font-size: 12px;
+    line-height: 1;
+    opacity: 0.55;
+    cursor: default;
+    pointer-events: auto;
+    user-select: none;
+}
+
+.editor-comment-balloon:hover {
+    opacity: 1;
 }
 
 #editor-toolbar {
@@ -1008,6 +1038,28 @@ dialog {
 dialog::backdrop {
     background: rgba(0, 0, 0, 0.4);
     backdrop-filter: blur(2px);
+}
+
+/* Lightweight modal prompt (promptDialog) */
+.prompt-dialog {
+    max-width: 380px;
+    padding: 20px;
+}
+
+.prompt-dialog p {
+    margin: 0 0 12px;
+    font-size: 13px;
+}
+
+.prompt-dialog .settings-input {
+    width: 100%;
+}
+
+.prompt-dialog-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
 }
 
 dialog header {

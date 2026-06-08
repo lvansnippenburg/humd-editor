@@ -263,6 +263,8 @@ sup.footnote-ref a { text-decoration: none; }
 a.footnote-back { text-decoration: none; margin-left: 4px; }
 a.tag-link { color: #5a6e8c; background: #eef1f6; padding: 0 5px; border-radius: 8px; font-size: 0.85em; text-decoration: none; white-space: nowrap; }
 a.tag-link:hover { background: #dde3ee; }
+.hp-comment { float: right; margin-left: 8px; font-size: 0.85em; line-height: 1.6; opacity: 0.55; cursor: default; user-select: none; }
+.hp-comment:hover { opacity: 1; }
 section.footnotes { margin-top: 2em; border-top: 1px solid #ddd; padding-top: 1em; font-size: 0.9em; }
 section.footnotes ol { padding-left: 1.5em; }
 section.footnotes li { margin: 0.25em 0; }
@@ -378,15 +380,53 @@ export function rewriteImageSources(htmlElement, filePath) {
   }
 }
 
+function escapeHtmlAttr(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// Extract the author nickname from a comment body. Comments authored by the
+// editor look like "Nick 2026-06-08 14:30: text"; the nickname is whatever
+// precedes the date stamp. Falls back to the first word for plain comments.
+function commentNick(content) {
+  const m = content.match(/^(.*?)\s+\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/);
+  const nick = m ? m[1].trim() : (content.split(/\s+/)[0] || "Comment");
+  return nick || "Comment";
+}
+
+// Replace HTML comments with private-use placeholder tokens (so the inline/
+// footnote/wikilink preprocessors and marked leave them untouched), collecting
+// the balloon HTML to splice back in after rendering. Mirrors the citation
+// protection pattern. Returns the rewritten markdown; fills `store`.
+function preprocessComments(md, store) {
+  return md.replace(/<!--([\s\S]*?)-->/g, (_full, inner) => {
+    const content = inner.trim();
+    const nick = commentNick(content);
+    const idx = store.length;
+    store.push(
+      `<span class="hp-comment" title="${escapeHtmlAttr(nick)}" ` +
+        `data-text="${escapeHtmlAttr(content)}">🗨</span>`,
+    );
+    return `HPCOMMENT${idx}`;
+  });
+}
+
 export function renderMarkdownBody(content) {
   let md = stripFrontMatter(content);
+  const commentStore = [];
+  md = preprocessComments(md, commentStore);
   md = preprocessInlineFootnotes(md);
   md = preprocessInlineSpans(md);
   md = preprocessWikilinks(md);
   const { body, footnotesHtml } = extractFootnotes(md);
-  if (typeof marked !== "undefined") return marked.parse(body) + footnotesHtml;
+  const restore = (html) =>
+    html.replace(/HPCOMMENT(\d+)/g, (_, i) => commentStore[Number(i)] || "");
+  if (typeof marked !== "undefined") return restore(marked.parse(body) + footnotesHtml);
   // Fallback: show raw markdown if marked.js hasn't loaded yet.
-  return `<pre>${body.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</pre>`;
+  return `<pre>${restore(body.replace(/&/g, "&amp;").replace(/</g, "&lt;"))}</pre>`;
 }
 
 // Store citations so they can be restored in the DOM after rendering.

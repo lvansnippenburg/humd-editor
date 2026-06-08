@@ -16,6 +16,7 @@ let currentAutoSave = false;
 let currentBibPath = null;
 let currentCslPath = null;
 let currentPandocRefDocPath = null;
+let currentUserNickname = "";
 let currentGeminiKey = "";
 let currentGeminiModel = "";
 let proofreadRange = null; // { start, end } in the editor that proofreading targets
@@ -140,6 +141,7 @@ async function initialize() {
     currentBibPath = settings.cslJsonPath || null;
     currentCslPath = settings.cslStylePath || null;
     currentPandocRefDocPath = settings.pandocRefDocPath || null;
+    currentUserNickname = settings.userNickname || "";
     currentGeminiKey = settings.geminiApiKey || "";
     currentGeminiModel = settings.geminiModel || "gemini-3-flash-preview";
     document.getElementById("editor").spellcheck = currentSpellCheck;
@@ -277,6 +279,10 @@ function setupEventListeners() {
       if (document.getElementById("editor-search-panel").style.display !== "none") {
         toggleEditorReplace();
       }
+    }
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "m" || e.key === "M")) {
+      e.preventDefault();
+      insertComment();
     }
   });
 
@@ -826,6 +832,7 @@ async function switchToTab(tabId) {
 
   document.getElementById("editor").value = tab.content;
   await updatePreview();
+  renderEditorCommentGutter();
   await revealFileInTree(tab.path);
   document.querySelectorAll(".file-item").forEach((item) => {
     item.classList.toggle("active", item.dataset.path === tab.path);
@@ -867,6 +874,7 @@ async function closeTab(tabId, skipSave = false) {
       document.getElementById("note-tags").innerHTML = "";
       document.getElementById("editor").value = "";
       resetPreview();
+      renderEditorCommentGutter();
       buildOutline();
       buildLinksPanel();
       renderTabBar();
@@ -885,6 +893,7 @@ function closeFile() {
   document.getElementById("note-tags").innerHTML = "";
   document.getElementById("editor").value = "";
   document.getElementById("preview").srcdoc = "<p>No file open</p>";
+  renderEditorCommentGutter();
   buildOutline();
   buildLinksPanel();
   renderTabBar();
@@ -934,6 +943,7 @@ async function loadFile(path) {
 
     document.getElementById("editor").value = content;
     await updatePreview();
+    renderEditorCommentGutter();
     await revealFileInTree(path);
     document.querySelectorAll(".file-item").forEach((item) => {
       item.classList.toggle("active", item.dataset.path === path);
@@ -1017,6 +1027,8 @@ function onEditorInput() {
   undoDebounceTimer = setTimeout(snapshotForUndo, 500);
 
   updateAutocomplete();
+
+  renderEditorCommentGutter();
 
   clearTimeout(previewDebounceTimer);
   previewDebounceTimer = setTimeout(() => {
@@ -1184,6 +1196,161 @@ function closeAutocomplete() {
   acActive = false;
   acItems = [];
   getAutocompletePopup().style.display = "none";
+}
+
+// ===== COMMENTS =====
+
+// Two-digit zero-pad.
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+// Local timestamp "YYYY-MM-DD HH:MM" for signing comments.
+function commentTimestamp(d = new Date()) {
+  return (
+    `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
+    `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+  );
+}
+
+// Locate every HTML comment, the character offset where its marker begins
+// (used to align the balloon to the correct visual row, even on wrapped lines),
+// and the author nickname. Returns { offset, nick } per comment.
+function findCommentLines(text) {
+  const out = [];
+  const re = /<!--([\s\S]*?)-->/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const content = m[1].trim();
+    const dm = content.match(/^(.*?)\s+\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/);
+    const nick = (dm ? dm[1].trim() : content.split(/\s+/)[0] || "Comment") || "Comment";
+    out.push({ offset: m.index, nick });
+  }
+  return out;
+}
+
+let commentGutterRaf = null;
+function scheduleCommentGutterRender() {
+  if (commentGutterRaf) return;
+  commentGutterRaf = requestAnimationFrame(() => {
+    commentGutterRaf = null;
+    renderEditorCommentGutter();
+  });
+}
+
+// Draw a balloon in the editor's right margin for each line holding a comment,
+// aligned via the same hidden-mirror measurement used for the caret. Balloons
+// scrolled out of the textarea's viewport are skipped.
+function renderEditorCommentGutter() {
+  const gutter = document.getElementById("editor-comment-gutter");
+  if (!gutter) return;
+  gutter.innerHTML = "";
+  if (!currentFilePath) return;
+  const editor = document.getElementById("editor");
+  const comments = findCommentLines(editor.value);
+  if (comments.length === 0) return;
+  const viewTop = editor.offsetTop;
+  const viewHeight = editor.clientHeight;
+  const scrollTop = editor.scrollTop;
+  for (const c of comments) {
+    const y = getCaretCoords(editor, c.offset).top - scrollTop;
+    if (y < 0 || y > viewHeight) continue; // off-screen
+    const b = document.createElement("div");
+    b.className = "editor-comment-balloon";
+    b.textContent = "🗨";
+    b.title = c.nick;
+    b.style.top = `${viewTop + y}px`;
+    gutter.appendChild(b);
+  }
+}
+
+// Ensure a nickname is configured; prompt for and persist one if not.
+async function ensureNickname() {
+  if (currentUserNickname) return currentUserNickname;
+  const entered = (await promptDialog("Enter a nickname to sign your comments:", "")) || "";
+  const nick = entered.trim();
+  if (!nick) return "";
+  currentUserNickname = nick;
+  try {
+    await apiPost("/api/settings", { userNickname: nick });
+  } catch (e) {
+    console.warn("Failed to save nickname:", e);
+  }
+  return nick;
+}
+
+// Insert an HTML comment at the cursor, signed with the nickname + timestamp.
+// Any selected text is wrapped inside; otherwise the caret lands ready to type.
+async function insertComment() {
+  if (!currentFilePath) {
+    showStatus("Open a file to add a comment", true);
+    return;
+  }
+  const nick = await ensureNickname();
+  if (!nick) return; // user cancelled the nickname prompt
+  const editor = document.getElementById("editor");
+  const start = editor.selectionStart;
+  const end = editor.selectionEnd;
+  const selected = editor.value.slice(start, end);
+  const prefix = `<!-- ${nick} ${commentTimestamp()}: `;
+  const suffix = " -->";
+  const insertText = prefix + selected + suffix;
+  editor.value = editor.value.slice(0, start) + insertText + editor.value.slice(end);
+  // Caret just after "... : " (before the closing -->) so the user can type.
+  const caret = start + prefix.length + selected.length;
+  editor.focus();
+  editor.setSelectionRange(caret, caret);
+  onEditorInput();
+  showStatus("Comment inserted");
+}
+
+// Minimal promise-based text prompt (window.prompt is unreliable in the
+// packaged native window). Resolves to the entered string, or null on cancel.
+function promptDialog(message, defaultValue = "") {
+  return new Promise((resolve) => {
+    const dlg = document.createElement("dialog");
+    dlg.className = "prompt-dialog";
+    const label = document.createElement("p");
+    label.textContent = message;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "settings-input";
+    input.value = defaultValue;
+    const row = document.createElement("div");
+    row.className = "prompt-dialog-buttons";
+    const ok = document.createElement("button");
+    ok.className = "primary";
+    ok.textContent = "OK";
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    row.append(cancel, ok);
+    dlg.append(label, input, row);
+    document.body.appendChild(dlg);
+
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      dlg.close();
+      dlg.remove();
+      resolve(value);
+    };
+    ok.addEventListener("click", () => finish(input.value));
+    cancel.addEventListener("click", () => finish(null));
+    dlg.addEventListener("cancel", (e) => {
+      e.preventDefault();
+      finish(null);
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        finish(input.value);
+      }
+    });
+    dlg.showModal();
+    input.focus();
+    input.select();
+  });
 }
 
 // Inspect the text before the caret and (re)build the completion list.
@@ -1658,6 +1825,7 @@ async function reloadCleanTabsFromDisk() {
       if (t.id === activeTabId) {
         document.getElementById("editor").value = content;
         await updatePreview();
+        renderEditorCommentGutter();
         if (activeSidebarTab === "links") buildLinksPanel();
       }
     } catch (_) {}
@@ -1910,6 +2078,8 @@ function getEditorHeadingPositions() {
 }
 
 function onEditorScroll() {
+  // Comment balloons must track the scroll regardless of preview visibility.
+  scheduleCommentGutterRender();
   if (suppressEditorScroll || !previewVisible || !currentFilePath) return;
   clearTimeout(editorScrollTimer);
   editorScrollTimer = setTimeout(() => {
@@ -2465,6 +2635,7 @@ function openSettingsDialog() {
     currentCslPath || "None selected (defaults to APA)";
   document.getElementById("pandoc-ref-doc-display").textContent =
     currentPandocRefDocPath || "None selected";
+  document.getElementById("nickname-input").value = currentUserNickname;
   document.getElementById("gemini-key-input").value = currentGeminiKey;
   document.getElementById("gemini-model-input").value = currentGeminiModel;
   document.getElementById("settings-dialog").showModal();
@@ -2493,6 +2664,7 @@ async function saveSettings() {
         ? pandocRefDocDisplay
         : null;
 
+    const newNickname = document.getElementById("nickname-input").value.trim();
     const newGeminiKey = document.getElementById("gemini-key-input").value.trim();
     const newGeminiModel = document.getElementById("gemini-model-input").value.trim();
 
@@ -2513,6 +2685,7 @@ async function saveSettings() {
       cslJsonPath: newBibPath,
       cslStylePath: newCslPath,
       pandocRefDocPath: newPandocRefDocPath,
+      userNickname: newNickname,
       geminiApiKey: newGeminiKey,
       geminiModel: newGeminiModel,
     });
@@ -2521,6 +2694,7 @@ async function saveSettings() {
     currentSpellCheck = newSpellCheck;
     currentUsePandoc = newUsePandoc;
     currentAutoSave = newAutoSave;
+    currentUserNickname = newNickname;
     currentGeminiKey = newGeminiKey;
     currentGeminiModel = newGeminiModel;
     document.getElementById("editor").spellcheck = newSpellCheck;
@@ -2662,6 +2836,7 @@ function syncProofreadPanelWidth() {
 
 // Sync panel width whenever the window resizes (catches sidebar resize too).
 window.addEventListener("resize", syncProofreadPanelWidth);
+window.addEventListener("resize", scheduleCommentGutterRender);
 
 async function exportToWord() {
   if (!currentFilePath) {

@@ -302,6 +302,9 @@
                     placeholder="Select a file to start editing..."
                 ></textarea>
 
+                <!-- Comment balloons in the right margin, aligned to comment lines -->
+                <div id="editor-comment-gutter" aria-hidden="true"></div>
+
                 <!-- Search and Replace Panel -->
                 <div id="editor-search-panel" class="search-panel" style="display: none">
                     <div class="search-row">
@@ -387,6 +390,17 @@
                 <p id="auto-save-warning" class="settings-warning" style="display: none">
                     Auto-save clears undo history after each save. Undo/redo will not work across
                     save boundaries.
+                </p>
+                <label class="settings-label" style="margin-top: 10px">Comment nickname</label>
+                <input
+                    type="text"
+                    id="nickname-input"
+                    class="settings-input"
+                    placeholder="Your name or initials"
+                    autocomplete="off"
+                />
+                <p class="settings-hint">
+                    Used to sign comments inserted with ⌘⇧M.
                 </p>
             </div>
 
