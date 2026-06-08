@@ -165,6 +165,12 @@ function preprocessWikilinks(md) {
 export function buildPreviewShell(userCss) {
   const clickIntercept = `<script>
 document.addEventListener('click', function(e) {
+  var cmt = e.target.closest('.hp-comment');
+  if (cmt) {
+    e.preventDefault();
+    window.parent.postMessage({ type: 'comment', text: cmt.getAttribute('data-text') || '' }, '*');
+    return;
+  }
   var a = e.target.closest('a');
   if (!a) return;
   var href = a.getAttribute('href') || '';
@@ -263,7 +269,7 @@ sup.footnote-ref a { text-decoration: none; }
 a.footnote-back { text-decoration: none; margin-left: 4px; }
 a.tag-link { color: #5a6e8c; background: #eef1f6; padding: 0 5px; border-radius: 8px; font-size: 0.85em; text-decoration: none; white-space: nowrap; }
 a.tag-link:hover { background: #dde3ee; }
-.hp-comment { float: right; margin-left: 8px; color: #d99a00; opacity: 0.75; cursor: default; user-select: none; }
+.hp-comment { float: right; margin-left: 8px; color: #d99a00; opacity: 0.75; cursor: pointer; user-select: none; }
 .hp-comment svg { vertical-align: middle; }
 .hp-comment:hover { opacity: 1; }
 section.footnotes { margin-top: 2em; border-top: 1px solid #ddd; padding-top: 1em; font-size: 0.9em; }
@@ -401,7 +407,7 @@ export function commentNick(content) {
 // Inline SVG speech-bubble for comment balloons in both the editor gutter and
 // the preview (an emoji glyph isn't reliably available across fonts).
 export const COMMENT_BALLOON_SVG =
-  '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">' +
+  '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">' +
   '<path fill="currentColor" d="M3 2.5h10A1.5 1.5 0 0 1 14.5 4v6A1.5 1.5 0 0 1 13 ' +
   '11.5H7.2l-3 2.6a.5.5 0 0 1-.83-.38V11.5H3A1.5 1.5 0 0 1 1.5 10V4A1.5 1.5 0 0 1 3 2.5z"/>' +
   "</svg>";

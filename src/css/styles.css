@@ -746,7 +746,7 @@ body.dragging-file .tree-dir > .tree-label:hover {
     align-items: center;
     color: #d99a00;
     opacity: 0.75;
-    cursor: default;
+    cursor: pointer;
     pointer-events: auto;
     user-select: none;
 }

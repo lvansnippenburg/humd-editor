@@ -392,6 +392,10 @@ function setupEventListeners() {
       expandTag(msg.data.tag);
       return;
     }
+    if (msg.data.type === "comment") {
+      showStatus(msg.data.text || "(empty comment)", true);
+      return;
+    }
     if (msg.data.type === "preview-scroll") {
       if (suppressPreviewScroll || !currentFilePath) return;
       const { currentId, nextId, fraction } = msg.data;
@@ -1223,7 +1227,7 @@ function commentTimestamp(d = new Date()) {
 
 // Locate every HTML comment, the character offset where its marker begins
 // (used to align the balloon to the correct visual row, even on wrapped lines),
-// and the author nickname. Returns { offset, nick } per comment.
+// the author nickname, and the full comment body. Returns { offset, nick, text }.
 function findCommentLines(text) {
   const out = [];
   const re = /<!--([\s\S]*?)-->/g;
@@ -1232,7 +1236,7 @@ function findCommentLines(text) {
     const content = m[1].trim();
     const dm = content.match(/^(.*?)\s+\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/);
     const nick = (dm ? dm[1].trim() : content.split(/\s+/)[0] || "Comment") || "Comment";
-    out.push({ offset: m.index, nick });
+    out.push({ offset: m.index, nick, text: content });
   }
   return out;
 }
@@ -1268,6 +1272,7 @@ function renderEditorCommentGutter() {
     b.innerHTML = COMMENT_BALLOON_SVG;
     b.title = c.nick;
     b.style.top = `${viewTop + y}px`;
+    b.addEventListener("click", () => showStatus(c.text, true));
     gutter.appendChild(b);
   }
 }
