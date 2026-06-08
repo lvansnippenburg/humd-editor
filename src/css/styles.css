@@ -762,6 +762,12 @@ body.dragging-file .tree-dir > .tree-label:hover {
     margin: 6px 0;
 }
 
+#export-docx-btn {
+    flex-shrink: 0;
+    align-self: center;
+    margin: 6px 0;
+}
+
 .tab-scroll-btn {
     align-self: center;
     margin: 0 2px;
