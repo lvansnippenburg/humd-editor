@@ -402,6 +402,16 @@ body[data-platform="ios"] .resize-handle {
     padding-top: 2px;
 }
 
+.reference-item {
+    padding: 4px 8px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text-primary);
+    /* Hanging indent like a bibliography entry. */
+    padding-left: 1.6em;
+    text-indent: -1.2em;
+}
+
 /* ===== EDITOR AUTOCOMPLETE ===== */
 #autocomplete-popup {
     position: fixed;

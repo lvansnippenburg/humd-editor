@@ -2006,35 +2006,28 @@ function buildLinksPanel() {
   }
   incoming = [...new Set(incoming)].filter((s) => s.toLowerCase() !== myKey).sort();
 
-  // References: distinct citation keys in the current note.
-  const citationRe = /\[@([^\]]+)\]/g;
-  const citationSeen = new Set();
+  // References: distinct citation keys in the current note. Parse each [@...]
+  // block with parseCitationInner so multi-cites ([@a; @b]) and locators
+  // ([@a, p. 5]) yield clean keys rather than raw captured text.
+  const citeBlockRe = /\[[^\]]*@[^\]]+\]/g;
+  const refSeen = new Set();
   const references = [];
   let citMatch;
-  while ((citMatch = citationRe.exec(content)) !== null) {
-    const citKey = citMatch[1].trim();
-    if (citKey && !citationSeen.has(citKey.toLowerCase())) {
-      citationSeen.add(citKey.toLowerCase());
-      references.push(citKey);
+  while ((citMatch = citeBlockRe.exec(content)) !== null) {
+    const inner = citMatch[0].slice(1, -1); // strip surrounding [ ]
+    for (const item of parseCitationInner(inner).citationItems) {
+      if (item.id && !refSeen.has(item.id.toLowerCase())) {
+        refSeen.add(item.id.toLowerCase());
+        references.push(item.id);
+      }
     }
   }
-  references.sort();
+  references.sort((a, b) => a.localeCompare(b));
 
   const openByStem = async (stem) => {
     const path = findNoteByName(stem);
     if (path) await loadFile(path);
     else showStatus(`Note not found: ${stem}`);
-  };
-
-  // Format a single citation key using bibliography data if available.
-  const formatCitationKey = (key) => {
-    if (!citeBibData || citeBibData.length === 0) return key;
-    const ref = citeBibData.find((r) => r.id === key);
-    if (!ref) return key;
-    const auth = ref.author?.[0];
-    const year = ref.issued?.["date-parts"]?.[0]?.[0];
-    const name = auth?.family || auth?.literal || key;
-    return year ? `${name}, ${year}` : name;
   };
 
   const addSection = (title, stems) => {
@@ -2059,6 +2052,9 @@ function buildLinksPanel() {
     });
   };
 
+  // References render as the full formatted bibliography entry (same output as
+  // the preview's reference list), via citation-js. Falls back to the raw key
+  // when no bibliography is loaded or a key is missing from it.
   const addReferencesSection = (title, citKeys) => {
     const header = document.createElement("li");
     header.className = "links-section";
@@ -2071,12 +2067,37 @@ function buildLinksPanel() {
       list.appendChild(empty);
       return;
     }
+
+    let allCite = null;
+    const refMap = {};
+    if (citeBibData && citeBibData.length > 0 && Cite) {
+      citeBibData.forEach((ref) => {
+        refMap[ref.id] = ref;
+      });
+      try {
+        allCite = new Cite(citeBibData);
+      } catch {
+        allCite = null;
+      }
+    }
+    const template = citeTemplateName || "apa";
+
     citKeys.forEach((key) => {
       const li = document.createElement("li");
-      const a = document.createElement("a");
-      a.textContent = formatCitationKey(key);
-      a.title = key; // Show the citation key on hover
-      li.appendChild(a);
+      li.className = "reference-item";
+      let label = key;
+      if (allCite && refMap[key]) {
+        try {
+          const formatted = allCite
+            .format("bibliography", { format: "text", template, entry: [key], nosort: true })
+            .trim();
+          if (formatted) label = formatted;
+        } catch {
+          /* fall back to key */
+        }
+      }
+      li.textContent = label;
+      li.title = key; // Show the citation key on hover
       list.appendChild(li);
     });
   };
