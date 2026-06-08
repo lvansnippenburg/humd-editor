@@ -731,6 +731,16 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # suppress default request logging
 
+    def end_headers(self):
+        # Dev server with no build step: the loop is "edit a file, reload the
+        # browser". Tell the browser to always revalidate static assets so it
+        # can't link a fresh app.js against a stale, cached ES module (which
+        # surfaces as "Importing binding name '…' is not found"). API responses
+        # set their own caching (e.g. /api/image), so leave those alone.
+        if not self.path.startswith("/api/"):
+            self.send_header("Cache-Control", "no-cache")
+        super().end_headers()
+
     def translate_path(self, path):
         # Serve static files from src/
         parsed = urlparse(path)
