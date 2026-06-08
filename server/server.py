@@ -728,7 +728,7 @@ def pick_file(extensions: list, prompt: str = "Select a file") -> str | None:
 class Handler(SimpleHTTPRequestHandler):
     server_version = "humd-editor/1.0"
 
-    def log_message(self, fmt, *args):
+    def log_message(self, format, *args):
         pass  # suppress default request logging
 
     def translate_path(self, path):
