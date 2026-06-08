@@ -692,12 +692,21 @@ def pick_folder(prompt: str = "Select your Markdown vault folder") -> str | None
 def pick_file(extensions: list, prompt: str = "Select a file") -> str | None:
     # Sanitise extensions (they come from the client) to a safe alphanumeric set
     # and pass the prompt as an argument to avoid AppleScript injection.
-    safe_exts = [re.sub(r"[^A-Za-z0-9]", "", e) for e in extensions]
+    # Convert extensions to macOS UTIs for proper file filtering.
+    ext_to_uti = {
+        "json": "public.json",
+        "bib": "public.plain-text",
+        "csl": "public.xml",
+        "docx": "org.openxmlformats.wordprocessingml.document",
+        "xml": "public.xml",
+    }
+    safe_exts = [re.sub(r"[^A-Za-z0-9]", "", e).lower() for e in extensions]
     safe_exts = [e for e in safe_exts if e]
+    utis = [ext_to_uti.get(e, f"public.{e}") for e in safe_exts]
     type_clause = ""
-    if safe_exts:
-        ext_list = ", ".join(f'"{e}"' for e in safe_exts)
-        type_clause = f" of type {{{ext_list}}}"
+    if utis:
+        uti_list = ", ".join(f'"{u}"' for u in utis)
+        type_clause = f" of type {{{uti_list}}}"
     script = (
         "on run argv\n"
         f"  POSIX path of (choose file with prompt (item 1 of argv){type_clause})\n"
