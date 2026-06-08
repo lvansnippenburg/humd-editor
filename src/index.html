@@ -282,6 +282,37 @@
                     spellcheck="true"
                     placeholder="Select a file to start editing..."
                 ></textarea>
+
+                <!-- Search and Replace Panel -->
+                <div id="editor-search-panel" class="search-panel" style="display: none">
+                    <div class="search-row">
+                        <input
+                            type="text"
+                            id="editor-search-input"
+                            class="search-input"
+                            placeholder="Find…"
+                            autocomplete="off"
+                        />
+                        <span id="editor-search-count" class="search-count">0/0</span>
+                    </div>
+                    <div class="search-row" style="display: none" id="editor-replace-row">
+                        <input
+                            type="text"
+                            id="editor-replace-input"
+                            class="search-input"
+                            placeholder="Replace…"
+                            autocomplete="off"
+                        />
+                    </div>
+                    <div class="search-controls">
+                        <button id="editor-search-prev-btn" class="search-btn" title="Previous (⇧Enter)">↑</button>
+                        <button id="editor-search-next-btn" class="search-btn" title="Next (Enter)">↓</button>
+                        <button id="editor-search-toggle-replace-btn" class="search-btn" title="Toggle replace (⌘H)">⧔</button>
+                        <button id="editor-search-replace-btn" class="search-btn" title="Replace (⌘⇧1)" style="display: none">Replace</button>
+                        <button id="editor-search-replace-all-btn" class="search-btn" title="Replace all (⌘⇧2)" style="display: none">All</button>
+                        <button id="editor-search-close-btn" class="search-btn" title="Close (Esc)">✕</button>
+                    </div>
+                </div>
             </section>
 
             <div class="resize-handle" id="editor-resize"></div>
@@ -425,37 +456,21 @@ a:hover { text-decoration: underline; }"
             </footer>
         </dialog>
 
-        <dialog id="proofread-dialog">
+        <div id="proofread-panel" class="proofread-panel" style="display: none">
             <header>
-                <h2>Proofread</h2>
-                <button
-                    id="close-proofread"
-                    class="icon-btn"
-                    aria-label="Close proofread"
-                    title="Close"
-                >
-                    ✕
-                </button>
+                <h3>Suggestions</h3>
+                <p id="proofread-scope" class="proofread-hint"></p>
+                <button id="close-proofread" class="icon-btn" aria-label="Close" title="Close">✕</button>
             </header>
-
-            <p id="proofread-scope" class="settings-hint"></p>
-            <p id="proofread-status" class="proofread-status">Proofreading with Gemini…</p>
-
-            <div id="proofread-body" style="display: none">
-                <label class="settings-label">Revised text (edit before applying if needed)</label>
-                <textarea id="proofread-revised" spellcheck="false"></textarea>
-                <label class="settings-label" style="margin-top: 10px">Substantive changes</label>
-                <div id="proofread-changes" class="proofread-changes"></div>
+            <div id="proofread-content">
+                <div id="proofread-loading" class="proofread-loading">
+                    <p>Proofreading…</p>
+                </div>
+                <div id="proofread-suggestions" style="display: none">
+                    <ul id="proofread-list"></ul>
+                </div>
             </div>
-
-            <footer>
-                <button id="proofread-apply-btn" class="primary" disabled>Replace</button>
-                <button id="proofread-copy-btn" disabled title="Copy revised text">
-                    Copy revised
-                </button>
-                <button id="cancel-proofread-btn">Cancel</button>
-            </footer>
-        </dialog>
+        </div>
 
         <!-- Status Bar -->
         <div id="status-bar">

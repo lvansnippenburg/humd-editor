@@ -27,6 +27,8 @@ On macOS use **⌘ (Cmd)**; on other platforms use **Ctrl**.
 | `⌘2` | Make the line a level-2 heading (`## `) |
 | `⌘3` | Make the line a level-3 heading (`### `) |
 | `\@` | Open the Zotero (Better BibTeX) citation picker |
+| `⌘F` | Search |
+| `⌘H` | Search and replace |
 
 ### Autocomplete (while the suggestion popup is open)
 
@@ -49,4 +51,9 @@ Typing `[[` suggests note names; typing `#` suggests existing tags.
 The build is not yet code-signed or notarized. After installing the app, you must run the command below.
 ```
 xattr -dr com.apple.quarantine /Applications/Humd Editor.app
+```
+
+To install Pandoc either go to https://pandoc.org/installing.html or use brew.
+```
+brew install pandoc
 ```

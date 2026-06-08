@@ -3,6 +3,32 @@
 // preview iframe HTML. Pure functions — no app state. `marked` is read from
 // the global scope (loaded dynamically at startup).
 
+// Resolve a relative image path to an absolute path given the current file's
+// directory. Used to convert ![alt](../images/foo.png) to a full path the
+// server can serve.
+function resolveImagePath(relPath, filePath) {
+  if (!filePath || !relPath || relPath.startsWith("/") || relPath.startsWith("http")) {
+    return relPath; // absolute or external, leave unchanged
+  }
+  // Split filePath into directory and filename.
+  const lastSlash = filePath.lastIndexOf("/");
+  const fileDir = lastSlash >= 0 ? filePath.slice(0, lastSlash) : "/";
+  // Resolve the relative path: ../images/foo.png from /vault/thesis/file.md
+  // becomes /vault/images/foo.png
+  const parts = (fileDir + "/" + relPath).split("/");
+  const resolved = [];
+  for (const part of parts) {
+    if (part === "" || part === ".") {
+      continue;
+    } else if (part === "..") {
+      resolved.pop();
+    } else {
+      resolved.push(part);
+    }
+  }
+  return "/" + resolved.join("/");
+}
+
 function stripFrontMatter(md) {
   const lines = md.split("\n");
   if (!lines.length || !lines[0].trim().startsWith("---")) return md;
@@ -333,6 +359,25 @@ function extractFootnotes(md) {
 
 // Render markdown to a body-HTML fragment (no document shell). The shell is
 // built once by buildPreviewShell; only this fragment changes per edit.
+// Rewrite <img src="..."> tags in the rendered HTML to use the /api/image
+// endpoint (for the sandboxed iframe to access vault images). Resolves relative
+// paths using the current file's directory, then converts to API URLs.
+export function rewriteImageSources(htmlElement, filePath) {
+  if (!htmlElement) return;
+  const imgs = htmlElement.querySelectorAll("img");
+  const port = location.port || (location.protocol === "https:" ? 443 : 80);
+  const apiBase = `http://127.0.0.1:${port}/api/image?path=`;
+  for (const img of imgs) {
+    const src = img.getAttribute("src") || "";
+    // Only rewrite local file paths (not external URLs or data URIs).
+    if (src && !src.startsWith("http") && !src.startsWith("data:")) {
+      // Resolve relative paths using the current file's directory.
+      const resolved = resolveImagePath(src, filePath);
+      img.setAttribute("src", apiBase + encodeURIComponent(resolved));
+    }
+  }
+}
+
 export function renderMarkdownBody(content) {
   let md = stripFrontMatter(content);
   md = preprocessInlineFootnotes(md);
@@ -343,6 +388,9 @@ export function renderMarkdownBody(content) {
   // Fallback: show raw markdown if marked.js hasn't loaded yet.
   return `<pre>${body.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</pre>`;
 }
+
+// Store citations so they can be restored in the DOM after rendering.
+window._citationsToRestore = [];
 
 export function configureMarked() {
   if (typeof marked === "undefined") return;

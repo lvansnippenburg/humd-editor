@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import mimetypes
 import os
 import re
 import shutil
@@ -87,8 +88,41 @@ def safe_path(p: str, *, must_exist: bool = False) -> Path:
     if root is None:
         raise PermissionError("No vault configured")
     resolved = Path(p).resolve()
-    if resolved != root and not resolved.is_relative_to(root):
+    root_str = str(root)
+    resolved_str = str(resolved)
+    # Check if the path is the vault root or a descendant. Try is_relative_to
+    # first (Python 3.9+), then fall back to string prefix matching for edge cases.
+    try:
+        is_inside = resolved == root or resolved.is_relative_to(root)
+    except ValueError:
+        is_inside = resolved_str.startswith(root_str + "/") or resolved_str == root_str
+    if not is_inside:
         raise PermissionError("Path is outside the vault")
+    if must_exist and not resolved.exists():
+        raise FileNotFoundError(p)
+    return resolved
+
+
+def safe_path_home(p: str, *, must_exist: bool = False) -> Path:
+    """Resolve `p` and ensure it's under the user's home directory.
+
+    Used for reading bibliography/CSL files which are typically stored outside
+    the vault. Still prevents path traversal by confirming the path is within
+    the user's home directory.
+    """
+    resolved = Path(p).resolve()
+    home = Path.home()
+    home_str = str(home)
+    resolved_str = str(resolved)
+
+    # Check if the path is the home dir or a descendant.
+    try:
+        is_inside = resolved == home or resolved.is_relative_to(home)
+    except ValueError:
+        is_inside = resolved_str.startswith(home_str + "/") or resolved_str == home_str
+
+    if not is_inside:
+        raise PermissionError(f"Path is outside home directory: {p}")
     if must_exist and not resolved.exists():
         raise FileNotFoundError(p)
     return resolved
@@ -538,11 +572,13 @@ def render_pandoc(markdown: str, file_path: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 PROOFREAD_SYSTEM = (
-    "You are the editor of an academic historical magazine. Correct grammar, "
-    "punctuation, and clarity. Preserve the author's voice, long sentences when "
-    "they work, and any deliberate archaic or period-appropriate terminology. "
-    "Use British spelling. Return the revised text first, then a short bulleted "
-    "list of substantive changes with brief reasons."
+    "You are the editor of an academic historical magazine. Review the text for "
+    "grammar, punctuation, clarity, and British spelling. Preserve the author's "
+    "voice, long sentences when they work, and any deliberate archaic or "
+    "period-appropriate terminology. Return ONLY a markdown bulleted list of "
+    "specific, actionable suggestions. Each point should identify the exact issue "
+    "and suggest a fix. Do not include opinions, praise, or any text outside "
+    "the bulleted list. Do not number the list."
 )
 DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
 
@@ -729,12 +765,39 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_error_json("path required")
                 return
             try:
-                content = safe_path(file_path, must_exist=True).read_text(
-                    encoding="utf-8"
-                )
+                # Try vault path first. If it's outside the vault, allow it if
+                # it's in the home directory (for bibliography/CSL files).
+                try:
+                    fpath = safe_path(file_path, must_exist=True)
+                except PermissionError as e:
+                    if "outside the vault" in str(e):
+                        fpath = safe_path_home(file_path, must_exist=True)
+                    else:
+                        raise
+                content = fpath.read_text(encoding="utf-8")
                 self.send_json({"content": content})
             except Exception as e:
                 self.send_error_json(str(e))
+
+        elif path == "/api/image":
+            file_path = qs.get("path", [None])[0]
+            if not file_path:
+                self.send_error_json("path required")
+                return
+            try:
+                fpath = safe_path(file_path, must_exist=True)
+                data = fpath.read_bytes()
+                mime, _ = mimetypes.guess_type(str(fpath))
+                mime = mime or "application/octet-stream"
+                self.send_response(200)
+                self.send_header("Content-Type", mime)
+                self.send_header("Content-Length", len(data))
+                self.send_header("Cache-Control", "public, max-age=3600")
+                self.end_headers()
+                self.wfile.write(data)
+            except Exception as e:
+                self.send_error_json(str(e))
+
         elif path == "/api/vault-hash":
             vault_path = qs.get("path", [None])[0]
             if not vault_path:

@@ -1,17 +1,8 @@
 // humd-editor frontend entry point. Pure layers live in sibling modules
 // (api, icons, markdown); this file holds the stateful application logic.
 import { apiFetch, apiPost } from "/js/api.js";
-import {
-  ICON_CHEVRON,
-  ICON_FOLDER_CLOSED,
-  ICON_FOLDER_OPEN,
-  getFileIcon,
-} from "/js/icons.js";
-import {
-  buildPreviewShell,
-  configureMarked,
-  renderMarkdownBody,
-} from "/js/markdown.js";
+import { ICON_CHEVRON, ICON_FOLDER_CLOSED, ICON_FOLDER_OPEN, getFileIcon } from "/js/icons.js";
+import { buildPreviewShell, configureMarked, renderMarkdownBody, rewriteImageSources } from "/js/markdown.js";
 
 // ===== STATE =====
 
@@ -147,7 +138,7 @@ async function initialize() {
     currentBibPath = settings.cslJsonPath || null;
     currentCslPath = settings.cslStylePath || null;
     currentGeminiKey = settings.geminiApiKey || "";
-    currentGeminiModel = settings.geminiModel || "";
+    currentGeminiModel = settings.geminiModel || "gemini-3-flash-preview";
     document.getElementById("editor").spellcheck = currentSpellCheck;
 
     let vaultPath = settings.vaultPath;
@@ -274,6 +265,16 @@ function setupEventListeners() {
       e.preventDefault();
       saveCurrentFile();
     }
+    if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+      e.preventDefault();
+      openEditorSearch();
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key === "h") {
+      e.preventDefault();
+      if (document.getElementById("editor-search-panel").style.display !== "none") {
+        toggleEditorReplace();
+      }
+    }
   });
 
   document.querySelectorAll(".sidebar-tab").forEach((btn) => {
@@ -286,13 +287,15 @@ function setupEventListeners() {
   document.getElementById("change-vault-btn").addEventListener("click", changeVaultFolder);
   document.getElementById("settings-btn").addEventListener("click", openSettingsDialog);
   document.getElementById("proofread-btn").addEventListener("click", runProofread);
-  document.getElementById("close-proofread").addEventListener("click", closeProofreadDialog);
-  document.getElementById("cancel-proofread-btn").addEventListener("click", closeProofreadDialog);
-  document.getElementById("proofread-apply-btn").addEventListener("click", applyProofread);
-  document.getElementById("proofread-copy-btn").addEventListener("click", () => {
-    navigator.clipboard?.writeText(document.getElementById("proofread-revised").value);
-    showStatus("Revised text copied");
-  });
+  document.getElementById("close-proofread").addEventListener("click", closeProofreadPanel);
+  document.getElementById("editor-search-input").addEventListener("keydown", handleEditorSearchKeydown);
+  document.getElementById("editor-replace-input").addEventListener("keydown", handleEditorSearchKeydown);
+  document.getElementById("editor-search-prev-btn").addEventListener("click", editorSearchPrevious);
+  document.getElementById("editor-search-next-btn").addEventListener("click", editorSearchNext);
+  document.getElementById("editor-search-toggle-replace-btn").addEventListener("click", toggleEditorReplace);
+  document.getElementById("editor-search-replace-btn").addEventListener("click", editorReplaceCurrent);
+  document.getElementById("editor-search-replace-all-btn").addEventListener("click", editorReplaceAll);
+  document.getElementById("editor-search-close-btn").addEventListener("click", closeEditorSearch);
   document.getElementById("close-settings").addEventListener("click", cancelSettings);
   document.getElementById("cancel-settings-btn").addEventListener("click", cancelSettings);
   document.getElementById("save-settings-btn").addEventListener("click", saveSettings);
@@ -1118,9 +1121,21 @@ function getCaretCoords(textarea, pos) {
   const div = document.createElement("div");
   const style = getComputedStyle(textarea);
   const props = [
-    "boxSizing", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
-    "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth",
-    "fontFamily", "fontSize", "fontWeight", "lineHeight", "letterSpacing", "tabSize",
+    "boxSizing",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "borderTopWidth",
+    "borderRightWidth",
+    "borderBottomWidth",
+    "borderLeftWidth",
+    "fontFamily",
+    "fontSize",
+    "fontWeight",
+    "lineHeight",
+    "letterSpacing",
+    "tabSize",
   ];
   props.forEach((p) => (div.style[p] = style[p]));
   div.style.position = "absolute";
@@ -1182,7 +1197,9 @@ function updateAutocomplete() {
   const q = query.toLowerCase();
   let items = [];
   if (type === "wikilink") {
-    const names = [...new Set(Object.values(noteIndexCache).map((p) => p.split("/").pop().replace(/\.md$/, "")))];
+    const names = [
+      ...new Set(Object.values(noteIndexCache).map((p) => p.split("/").pop().replace(/\.md$/, ""))),
+    ];
     items = names
       .filter((n) => n.toLowerCase().includes(q))
       .sort((a, b) => {
@@ -1407,7 +1424,11 @@ function resetPreview() {
 // renders only swap the body, avoiding a full iframe reload per keystroke.
 function ensurePreviewShell(userCss) {
   const iframe = document.getElementById("preview");
-  if (previewShellReady && previewShellCss === userCss && iframe.contentDocument?.getElementById("hp-body")) {
+  if (
+    previewShellReady &&
+    previewShellCss === userCss &&
+    iframe.contentDocument?.getElementById("hp-body")
+  ) {
     return Promise.resolve();
   }
   previewShellReady = false;
@@ -1441,14 +1462,23 @@ async function updatePreview() {
   try {
     const content = document.getElementById("editor").value;
     let bodyHtml;
+
+    // Extract citations before rendering to protect them from markdown processor.
+    const citationRe = /\[@[^\]]+\]/g;
+    const citations = [];
+    const contentWithPlaceholders = content.replace(citationRe, (match) => {
+      citations.push(match);
+      return `__CITATION_PLACEHOLDER_${citations.length - 1}__`;
+    });
+
     if (currentUsePandoc) {
       const result = await apiPost("/api/pandoc", {
-        markdown: content,
+        markdown: contentWithPlaceholders,
         file_path: currentFilePath,
       });
       bodyHtml = result.html;
     } else {
-      bodyHtml = renderMarkdownBody(content);
+      bodyHtml = renderMarkdownBody(contentWithPlaceholders);
     }
 
     await ensurePreviewShell(currentUserCss);
@@ -1457,6 +1487,31 @@ async function updatePreview() {
     if (!bodyEl) return; // shell not ready (e.g. mid-reload); next edit retries
 
     bodyEl.innerHTML = bodyHtml;
+
+    // Restore citations in the DOM by walking text nodes and replacing placeholders.
+    const walker = doc.createTreeWalker(bodyEl, NodeFilter.SHOW_TEXT);
+    const nodesToReplace = [];
+    let node;
+    while ((node = walker.nextNode())) {
+      if (/__CITATION_PLACEHOLDER_\d+__/.test(node.textContent)) {
+        nodesToReplace.push(node);
+      }
+    }
+    for (const textNode of nodesToReplace) {
+      const parts = textNode.textContent.split(/(__CITATION_PLACEHOLDER_\d+__)/);
+      const fragment = doc.createDocumentFragment();
+      for (const part of parts) {
+        const m = part.match(/__CITATION_PLACEHOLDER_(\d+)__/);
+        if (m) {
+          fragment.appendChild(doc.createTextNode(citations[parseInt(m[1])]));
+        } else if (part) {
+          fragment.appendChild(doc.createTextNode(part));
+        }
+      }
+      textNode.parentNode.replaceChild(fragment, textNode);
+    }
+
+    rewriteImageSources(bodyEl, currentFilePath);
 
     // Highlight only the freshly inserted code blocks (no full-document rescan).
     const hl = iframe.contentWindow.hljs;
@@ -1477,8 +1532,7 @@ async function updatePreview() {
     updatePreviewStats(bodyEl.innerHTML);
   } catch (error) {
     previewShellReady = false;
-    iframe.srcdoc =
-      `<div style="padding:20px;color:red;font-family:sans-serif"><strong>Error rendering preview:</strong><br>${error.message || error}</div>`;
+    iframe.srcdoc = `<div style="padding:20px;color:red;font-family:sans-serif"><strong>Error rendering preview:</strong><br>${error.message || error}</div>`;
     const el = document.getElementById("preview-stats");
     if (el) el.textContent = "";
   }
@@ -1682,7 +1736,8 @@ async function runSearch() {
 
     const head = document.createElement("div");
     head.className = "search-file-name";
-    head.innerHTML = `<span class="tree-file-icon">${getFileIcon(hit.path)}</span>` +
+    head.innerHTML =
+      `<span class="tree-file-icon">${getFileIcon(hit.path)}</span>` +
       `<span class="tree-item-name">${escapeHtml(hit.name)}</span>`;
     head.title = hit.path;
     head.addEventListener("click", () => loadFile(hit.path));
@@ -1705,9 +1760,10 @@ async function runSearch() {
 }
 
 function escapeHtml(s) {
-  return s.replace(/[&<>"']/g, (c) => (
-    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
-  ));
+  return s.replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+  );
 }
 
 function highlightQuery(text, query) {
@@ -2393,26 +2449,6 @@ function cancelSettings() {
 
 // Split Gemini's "revised text first, then a bulleted list of changes" reply
 // into the two parts so the revised text can be applied on its own.
-function splitProofread(text) {
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
-  const bullet = (s) => /^([-*•]|\d+[.)])\s+/.test(s.trim());
-  let end = lines.length - 1;
-  while (end >= 0 && lines[end].trim() === "") end--;
-  if (end < 0 || !bullet(lines[end])) return { revised: text.trim(), changes: "" };
-  let start = end;
-  while (start - 1 >= 0 && (bullet(lines[start - 1]) || lines[start - 1].trim() === "")) start--;
-  // Pull in an immediately-preceding heading line like "Substantive changes:".
-  let head = start;
-  let p = start - 1;
-  while (p >= 0 && lines[p].trim() === "") p--;
-  if (p >= 0 && /\b(change|edit|correction|revision)/i.test(lines[p]) && lines[p].trim().length < 100) {
-    head = p;
-  }
-  const revised = lines.slice(0, head).join("\n").trim();
-  const changes = lines.slice(head).join("\n").trim();
-  return { revised: revised || text.trim(), changes };
-}
-
 async function runProofread() {
   if (!currentFilePath) {
     showStatus("Open a file to proofread", true);
@@ -2429,55 +2465,83 @@ async function runProofread() {
   }
   proofreadRange = { start, end };
 
-  const dlg = document.getElementById("proofread-dialog");
-  const status = document.getElementById("proofread-status");
-  const body = document.getElementById("proofread-body");
-  const applyBtn = document.getElementById("proofread-apply-btn");
-  const copyBtn = document.getElementById("proofread-copy-btn");
+  const panel = document.getElementById("proofread-panel");
+  const loading = document.getElementById("proofread-loading");
+  const suggestions = document.getElementById("proofread-suggestions");
+  const list = document.getElementById("proofread-list");
+
+  // Sync panel width to the sidebar (which may have been resized).
+  const sidebar = document.getElementById("sidebar");
+  const sidebarWidth = sidebar.offsetWidth;
+  panel.style.width = sidebarWidth + "px";
 
   document.getElementById("proofread-scope").textContent =
-    `Proofreading the ${isSelection ? "selected text" : "whole document"} (${text.length} characters).`;
-  applyBtn.textContent = isSelection ? "Replace selection" : "Replace document";
-  status.style.display = "";
-  status.textContent = "Proofreading with Gemini… this can take a few seconds.";
-  body.style.display = "none";
-  applyBtn.disabled = true;
-  copyBtn.disabled = true;
-  if (!dlg.open) dlg.showModal();
+    `${isSelection ? "Selected text" : "Whole document"} (${text.length} chars)`;
+  loading.style.display = "";
+  suggestions.style.display = "none";
+  list.innerHTML = "";
+  panel.style.display = "";
 
   try {
     const res = await apiPost("/api/proofread", { text });
-    const { revised, changes } = splitProofread(res.result || "");
-    document.getElementById("proofread-revised").value = revised;
-    const changesEl = document.getElementById("proofread-changes");
-    if (changes && typeof marked !== "undefined") {
-      changesEl.innerHTML = marked.parse(changes);
+    const suggestionsText = res.result || "";
+
+    // Gemini returns markdown bulleted list. Render it as HTML.
+    if (!suggestionsText.trim()) {
+      list.innerHTML = "<li style='color: var(--text-secondary); padding: 16px;'>No suggestions found — excellent work!</li>";
+    } else if (typeof marked !== "undefined") {
+      // Parse the markdown (which is a bulleted list) and extract just the items.
+      const html = marked.parse(suggestionsText);
+      // marked wraps bullet lists in <ul><li>…</li></ul>, so extract and insert.
+      const tempDiv = document.createElement("div");
+      tempDiv.innerHTML = html;
+      const ul = tempDiv.querySelector("ul");
+      if (ul && ul.childNodes.length > 0) {
+        // Copy the <li> elements into our list.
+        for (const li of ul.querySelectorAll("li")) {
+          list.appendChild(li.cloneNode(true));
+        }
+      } else {
+        list.innerHTML = "<li style='color: var(--text-secondary); padding: 16px;'>No suggestions found.</li>";
+      }
     } else {
-      changesEl.innerHTML = escapeHtml(changes || "(none listed)").replace(/\n/g, "<br>");
+      // Fallback if marked isn't loaded: treat as plain text bullets.
+      const lines = suggestionsText.split("\n").filter((l) => l.trim());
+      if (lines.length === 0) {
+        list.innerHTML = "<li style='color: var(--text-secondary); padding: 16px;'>No suggestions found.</li>";
+      } else {
+        for (const line of lines) {
+          const clean = line.replace(/^[-•*]\s*/, "").trim();
+          if (clean) {
+            const li = document.createElement("li");
+            li.textContent = clean;
+            list.appendChild(li);
+          }
+        }
+      }
     }
-    status.style.display = "none";
-    body.style.display = "";
-    applyBtn.disabled = false;
-    copyBtn.disabled = false;
+    loading.style.display = "none";
+    suggestions.style.display = "";
   } catch (err) {
-    status.textContent = `Error: ${err.message || err}`;
+    loading.innerHTML = `<p style="color: var(--text-secondary); margin: 0; padding: 12px 16px; font-size: 12px;">Error: ${escapeHtml(err.message || err)}</p>`;
   }
 }
 
-function applyProofread() {
-  if (!proofreadRange) return;
-  const editor = document.getElementById("editor");
-  const revised = document.getElementById("proofread-revised").value;
-  snapshotForUndo();
-  editorReplace(editor, proofreadRange.start, proofreadRange.end, revised);
-  closeProofreadDialog();
-  showStatus("Applied proofread revisions");
-}
-
-function closeProofreadDialog() {
-  document.getElementById("proofread-dialog").close();
+function closeProofreadPanel() {
+  document.getElementById("proofread-panel").style.display = "none";
   proofreadRange = null;
 }
+
+function syncProofreadPanelWidth() {
+  const panel = document.getElementById("proofread-panel");
+  if (panel.style.display !== "none") {
+    const sidebar = document.getElementById("sidebar");
+    panel.style.width = sidebar.offsetWidth + "px";
+  }
+}
+
+// Sync panel width whenever the window resizes (catches sidebar resize too).
+window.addEventListener("resize", syncProofreadPanelWidth);
 
 async function pickVaultFolder() {
   try {
@@ -2502,6 +2566,137 @@ async function pickFileForSetting(displayId, extensions, title) {
   } catch (error) {
     showStatus(`Error: ${error.message || error}`);
   }
+}
+
+// ===== EDITOR SEARCH AND REPLACE =====
+
+let editorSearchMatches = [];
+let editorSearchIndex = -1;
+
+function openEditorSearch() {
+  const panel = document.getElementById("editor-search-panel");
+  panel.style.display = "";
+  document.getElementById("editor-search-input").focus();
+  document.getElementById("editor-search-input").select();
+}
+
+function closeEditorSearch() {
+  document.getElementById("editor-search-panel").style.display = "none";
+  editorSearchMatches = [];
+  editorSearchIndex = -1;
+  document.getElementById("editor").focus();
+}
+
+function toggleEditorReplace() {
+  const row = document.getElementById("editor-replace-row");
+  const replaceBtn = document.getElementById("editor-search-replace-btn");
+  const replaceAllBtn = document.getElementById("editor-search-replace-all-btn");
+  const isHidden = row.style.display === "none";
+  row.style.display = isHidden ? "" : "none";
+  replaceBtn.style.display = isHidden ? "" : "none";
+  replaceAllBtn.style.display = isHidden ? "" : "none";
+  if (isHidden) document.getElementById("editor-replace-input").focus();
+}
+
+function updateEditorSearchResults() {
+  const query = document.getElementById("editor-search-input").value;
+  const editor = document.getElementById("editor");
+  const text = editor.value;
+
+  if (!query.trim()) {
+    editorSearchMatches = [];
+    editorSearchIndex = -1;
+    document.getElementById("editor-search-count").textContent = "0/0";
+    return;
+  }
+
+  editorSearchMatches = [];
+  const lowerText = text.toLowerCase();
+  const lowerQuery = query.toLowerCase();
+  let pos = 0;
+  while ((pos = lowerText.indexOf(lowerQuery, pos)) !== -1) {
+    editorSearchMatches.push({ start: pos, end: pos + query.length });
+    pos += 1;
+  }
+
+  editorSearchIndex = editorSearchMatches.length > 0 ? 0 : -1;
+  updateEditorSearchDisplay();
+}
+
+function updateEditorSearchDisplay() {
+  const editor = document.getElementById("editor");
+  const count = editorSearchMatches.length;
+  const currentNum = editorSearchIndex >= 0 ? editorSearchIndex + 1 : 0;
+  document.getElementById("editor-search-count").textContent = `${currentNum}/${count}`;
+
+  if (editorSearchIndex >= 0 && editorSearchMatches[editorSearchIndex]) {
+    const match = editorSearchMatches[editorSearchIndex];
+    editor.setSelectionRange(match.start, match.end);
+    editor.focus();
+    editor.scrollTop = editor.scrollHeight * (match.start / editor.value.length);
+  }
+}
+
+function editorSearchNext() {
+  if (editorSearchMatches.length === 0) return;
+  editorSearchIndex = (editorSearchIndex + 1) % editorSearchMatches.length;
+  updateEditorSearchDisplay();
+}
+
+function editorSearchPrevious() {
+  if (editorSearchMatches.length === 0) return;
+  editorSearchIndex = (editorSearchIndex - 1 + editorSearchMatches.length) % editorSearchMatches.length;
+  updateEditorSearchDisplay();
+}
+
+function handleEditorSearchKeydown(e) {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    // First time: perform the search. Subsequent times: navigate.
+    if (editorSearchMatches.length === 0 && document.getElementById("editor-search-input").value.trim()) {
+      updateEditorSearchResults();
+    } else if (e.shiftKey) {
+      editorSearchPrevious();
+    } else {
+      editorSearchNext();
+    }
+  } else if (e.key === "Escape") {
+    closeEditorSearch();
+  }
+}
+
+function editorReplaceCurrent() {
+  if (editorSearchIndex < 0 || !editorSearchMatches[editorSearchIndex]) return;
+  const editor = document.getElementById("editor");
+  const replace = document.getElementById("editor-replace-input").value;
+  const match = editorSearchMatches[editorSearchIndex];
+
+  snapshotForUndo();
+  const newText = editor.value.slice(0, match.start) + replace + editor.value.slice(match.end);
+  editor.value = newText;
+
+  const query = document.getElementById("editor-search-input").value;
+  updateEditorSearchResults();
+  isDirty = true;
+  updatePreview();
+}
+
+function editorReplaceAll() {
+  if (editorSearchMatches.length === 0) return;
+  const editor = document.getElementById("editor");
+  const replace = document.getElementById("editor-replace-input").value;
+
+  snapshotForUndo();
+  let newText = editor.value;
+  for (let i = editorSearchMatches.length - 1; i >= 0; i--) {
+    const match = editorSearchMatches[i];
+    newText = newText.slice(0, match.start) + replace + newText.slice(match.end);
+  }
+  editor.value = newText;
+  updateEditorSearchResults();
+  isDirty = true;
+  updatePreview();
+  showStatus(`Replaced ${editorSearchMatches.length} occurrence(s)`);
 }
 
 // ===== UI HELPERS =====

@@ -1137,64 +1137,84 @@ dialog h2 {
 }
 
 /* ===== PROOFREAD DIALOG ===== */
-#proofread-dialog {
-    max-width: 720px;
+.proofread-panel {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    background: var(--bg-primary);
+    border-right: 1px solid var(--border);
+    box-shadow: 2px 0 8px rgba(0, 0, 0, 0.1);
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
 }
 
-#proofread-dialog > p {
-    padding: 12px 20px 0;
+.proofread-panel header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    position: relative;
+}
+
+.proofread-panel h3 {
+    margin: 0 0 4px 0;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.proofread-hint {
     margin: 0;
-}
-
-#proofread-body {
-    padding: 12px 20px 0;
-}
-
-.proofread-status {
-    padding: 28px 20px;
-    font-size: 13px;
+    font-size: 12px;
     color: var(--text-secondary);
-    text-align: center;
+    line-height: 1.3;
 }
 
-#proofread-revised {
-    width: 100%;
-    height: 200px;
-    padding: 10px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    font-family: var(--font-mono);
-    font-size: 12.5px;
-    background: var(--bg-secondary);
-    color: var(--text-primary);
-    resize: vertical;
-    outline: none;
-    box-sizing: border-box;
+.proofread-panel #close-proofread {
+    position: absolute;
+    right: 8px;
+    top: 12px;
 }
 
-#proofread-revised:focus {
-    border-color: var(--accent);
-}
-
-.proofread-changes {
-    margin-top: 4px;
-    padding: 8px 12px;
-    max-height: 180px;
+#proofread-content {
+    flex: 1;
     overflow-y: auto;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-secondary);
-    font-size: 12.5px;
-    color: var(--text-primary);
+    font-size: 13px;
+    line-height: 1.5;
 }
 
-.proofread-changes ul {
+.proofread-loading {
+    padding: 20px 16px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+#proofread-suggestions {
+    padding: 12px 0;
+}
+
+#proofread-list {
     margin: 0;
-    padding-left: 1.2em;
+    padding: 0;
+    list-style: none;
 }
 
-.proofread-changes li {
-    margin: 0.2em 0;
+#proofread-list li {
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-primary);
+    line-height: 1.4;
+    font-size: 12px;
+}
+
+#proofread-list li:hover {
+    background: var(--hover-bg);
+}
+
+#proofread-list li:last-child {
+    border-bottom: none;
 }
 
 dialog footer {
@@ -1374,4 +1394,73 @@ body[data-platform="ios"] #status-bar {
 
 body[data-platform="ios"] .macos-only {
     display: none;
+}
+
+/* ===== SEARCH AND REPLACE ===== */
+.search-panel {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    padding: 8px 12px;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.search-row {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+
+.search-input {
+    flex: 1;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 12px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    outline: none;
+    box-sizing: border-box;
+}
+
+.search-input:focus {
+    border-color: var(--accent);
+}
+
+.search-count {
+    font-size: 12px;
+    color: var(--text-secondary);
+    min-width: 40px;
+    text-align: right;
+    padding: 0 4px;
+}
+
+.search-controls {
+    display: flex;
+    gap: 4px;
+}
+
+.search-btn {
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 12px;
+    cursor: pointer;
+    outline: none;
+}
+
+.search-btn:hover {
+    background: var(--hover-bg);
+}
+
+.search-btn:active {
+    background: var(--active-file-bg);
 }
