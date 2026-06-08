@@ -1464,11 +1464,12 @@ async function updatePreview() {
     let bodyHtml;
 
     // Extract citations before rendering to protect them from markdown processor.
+    // Use a placeholder format that won't be interpreted as markdown (no __, **, etc).
     const citationRe = /\[@[^\]]+\]/g;
     const citations = [];
     const contentWithPlaceholders = content.replace(citationRe, (match) => {
       citations.push(match);
-      return `__CITATION_PLACEHOLDER_${citations.length - 1}__`;
+      return `ⓘCITATION_PLACEHOLDER_${citations.length - 1}ⓘ`;
     });
 
     if (currentUsePandoc) {
@@ -1493,15 +1494,15 @@ async function updatePreview() {
     const nodesToReplace = [];
     let node;
     while ((node = walker.nextNode())) {
-      if (/__CITATION_PLACEHOLDER_\d+__/.test(node.textContent)) {
+      if (/ⓘCITATION_PLACEHOLDER_\d+ⓘ/.test(node.textContent)) {
         nodesToReplace.push(node);
       }
     }
     for (const textNode of nodesToReplace) {
-      const parts = textNode.textContent.split(/(__CITATION_PLACEHOLDER_\d+__)/);
+      const parts = textNode.textContent.split(/(ⓘCITATION_PLACEHOLDER_\d+ⓘ)/);
       const fragment = doc.createDocumentFragment();
       for (const part of parts) {
-        const m = part.match(/__CITATION_PLACEHOLDER_(\d+)__/);
+        const m = part.match(/ⓘCITATION_PLACEHOLDER_(\d+)ⓘ/);
         if (m) {
           fragment.appendChild(doc.createTextNode(citations[parseInt(m[1])]));
         } else if (part) {
