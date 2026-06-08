@@ -567,6 +567,44 @@ def render_pandoc(markdown: str, file_path: str | None) -> str:
     return result.stdout.decode()
 
 
+def export_docx(markdown: str) -> bytes:
+    """Export markdown to DOCX via Pandoc with bibliography and reference doc.
+
+    Uses settings for bibliography, CSL style, and reference document paths.
+    Returns the binary DOCX file content.
+    """
+    settings = load_settings()
+    bib_path = settings.get("cslJsonPath")
+    csl_path = settings.get("cslPath")
+    ref_doc_path = settings.get("pandocRefDocPath")
+
+    if not bib_path:
+        raise ValueError("Bibliography path not configured in settings")
+    if not csl_path:
+        raise ValueError("CSL style path not configured in settings")
+
+    cmd = [
+        _find_pandoc(),
+        "-C",  # citeproc
+        f"--bibliography={bib_path}",
+        f"--csl={csl_path}",
+        "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables",
+        "--to=docx",
+    ]
+
+    if ref_doc_path:
+        cmd.append(f"--reference-doc={ref_doc_path}")
+
+    result = subprocess.run(
+        cmd,
+        input=markdown.encode(),
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.decode())
+    return result.stdout
+
+
 # ---------------------------------------------------------------------------
 # AI proofreading (Google Gemini)
 # ---------------------------------------------------------------------------
@@ -971,6 +1009,23 @@ class Handler(SimpleHTTPRequestHandler):
                 data = self.read_body()
                 html = render_pandoc(data["markdown"], data.get("file_path"))
                 self.send_json({"html": html})
+            except Exception as e:
+                self.send_error_json(str(e))
+
+        elif path == "/api/export-docx":
+            try:
+                data = self.read_body()
+                markdown = data.get("markdown", "")
+                if not markdown:
+                    raise ValueError("No markdown content provided")
+                docx_bytes = export_docx(markdown)
+                # Send as binary attachment
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                self.send_header("Content-Disposition", 'attachment; filename="document.docx"')
+                self.send_header("Content-Length", str(len(docx_bytes)))
+                self.end_headers()
+                self.wfile.write(docx_bytes)
             except Exception as e:
                 self.send_error_json(str(e))
 

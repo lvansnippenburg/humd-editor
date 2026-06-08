@@ -15,6 +15,7 @@ let currentUsePandoc = false;
 let currentAutoSave = false;
 let currentBibPath = null;
 let currentCslPath = null;
+let currentPandocRefDocPath = null;
 let currentGeminiKey = "";
 let currentGeminiModel = "";
 let proofreadRange = null; // { start, end } in the editor that proofreading targets
@@ -137,6 +138,7 @@ async function initialize() {
     currentAutoSave = settings.useAutoSave ?? false;
     currentBibPath = settings.cslJsonPath || null;
     currentCslPath = settings.cslStylePath || null;
+    currentPandocRefDocPath = settings.pandocRefDocPath || null;
     currentGeminiKey = settings.geminiApiKey || "";
     currentGeminiModel = settings.geminiModel || "gemini-3-flash-preview";
     document.getElementById("editor").spellcheck = currentSpellCheck;
@@ -287,6 +289,7 @@ function setupEventListeners() {
   document.getElementById("change-vault-btn").addEventListener("click", changeVaultFolder);
   document.getElementById("settings-btn").addEventListener("click", openSettingsDialog);
   document.getElementById("proofread-btn").addEventListener("click", runProofread);
+  document.getElementById("export-docx-btn").addEventListener("click", exportToWord);
   document.getElementById("close-proofread").addEventListener("click", closeProofreadPanel);
   document.getElementById("editor-search-input").addEventListener("keydown", handleEditorSearchKeydown);
   document.getElementById("editor-replace-input").addEventListener("keydown", handleEditorSearchKeydown);
@@ -322,6 +325,18 @@ function setupEventListeners() {
     );
   document.getElementById("clear-csl-btn")?.addEventListener("click", () => {
     document.getElementById("csl-path-display").textContent = "None selected (defaults to APA)";
+  });
+  document
+    .getElementById("pick-pandoc-ref-doc-btn")
+    ?.addEventListener("click", () =>
+      pickFileForSetting(
+        "pandoc-ref-doc-display",
+        ["docx"],
+        "Select Pandoc reference document (.docx)",
+      ),
+    );
+  document.getElementById("clear-pandoc-ref-doc-btn")?.addEventListener("click", () => {
+    document.getElementById("pandoc-ref-doc-display").textContent = "None selected";
   });
 
   document.getElementById("settings-dialog").addEventListener("keydown", (e) => {
@@ -2412,6 +2427,7 @@ let settingsBeforeEdit = {
   autoSave: false,
   bibPath: null,
   cslPath: null,
+  pandocRefDocPath: null,
 };
 
 function openSettingsDialog() {
@@ -2423,6 +2439,7 @@ function openSettingsDialog() {
     autoSave: currentAutoSave,
     bibPath: currentBibPath,
     cslPath: currentCslPath,
+    pandocRefDocPath: currentPandocRefDocPath,
   };
   document.getElementById("vault-path-display").textContent = currentVaultPath;
   document.getElementById("css-editor").value = currentUserCss;
@@ -2433,6 +2450,8 @@ function openSettingsDialog() {
   document.getElementById("bib-path-display").textContent = currentBibPath || "None selected";
   document.getElementById("csl-path-display").textContent =
     currentCslPath || "None selected (defaults to APA)";
+  document.getElementById("pandoc-ref-doc-display").textContent =
+    currentPandocRefDocPath || "None selected";
   document.getElementById("gemini-key-input").value = currentGeminiKey;
   document.getElementById("gemini-model-input").value = currentGeminiModel;
   document.getElementById("settings-dialog").showModal();
@@ -2455,6 +2474,11 @@ async function saveSettings() {
     const newBibPath = bibDisplay && bibDisplay !== "None selected" ? bibDisplay : null;
     const cslDisplay = document.getElementById("csl-path-display").textContent;
     const newCslPath = cslDisplay && !cslDisplay.startsWith("None selected") ? cslDisplay : null;
+    const pandocRefDocDisplay = document.getElementById("pandoc-ref-doc-display").textContent;
+    const newPandocRefDocPath =
+      pandocRefDocDisplay && pandocRefDocDisplay !== "None selected"
+        ? pandocRefDocDisplay
+        : null;
 
     const newGeminiKey = document.getElementById("gemini-key-input").value.trim();
     const newGeminiModel = document.getElementById("gemini-model-input").value.trim();
@@ -2475,6 +2499,7 @@ async function saveSettings() {
       useAutoSave: newAutoSave,
       cslJsonPath: newBibPath,
       cslStylePath: newCslPath,
+      pandocRefDocPath: newPandocRefDocPath,
       geminiApiKey: newGeminiKey,
       geminiModel: newGeminiModel,
     });
@@ -2491,6 +2516,7 @@ async function saveSettings() {
     const cslChanged = newCslPath !== currentCslPath;
     currentBibPath = newBibPath;
     currentCslPath = newCslPath;
+    currentPandocRefDocPath = newPandocRefDocPath;
     if (bibChanged || cslChanged) await loadCitations();
 
     if (newVaultPath !== currentVaultPath) {
@@ -2623,6 +2649,54 @@ function syncProofreadPanelWidth() {
 
 // Sync panel width whenever the window resizes (catches sidebar resize too).
 window.addEventListener("resize", syncProofreadPanelWidth);
+
+async function exportToWord() {
+  if (!currentFilePath) {
+    showStatus("No file open");
+    return;
+  }
+  if (!currentBibPath || !currentCslPath) {
+    showStatus("Bibliography or CSL style not configured in settings");
+    return;
+  }
+
+  try {
+    const content = getEditorContent();
+    if (!content.trim()) {
+      showStatus("Document is empty");
+      return;
+    }
+
+    showStatus("Exporting to Word...");
+    // Use fetch directly for binary response (apiPost returns JSON)
+    const response = await fetch("/api/export-docx", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ markdown: content }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || "Export failed");
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const fileName = currentFilePath.split("/").pop().replace(/\.md$/, ".docx");
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showStatus("Document exported successfully");
+  } catch (error) {
+    showStatus(`Export failed: ${error.message || error}`);
+    console.error("Export error:", error);
+  }
+}
 
 async function pickVaultFolder() {
   try {

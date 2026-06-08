@@ -390,7 +390,7 @@ body[data-platform="ios"] .resize-handle {
 }
 
 .links-section {
-    padding: 8px 8px 2px;
+    padding: 8px 0 2px !important;
     font-size: 10.5px;
     font-weight: 600;
     text-transform: uppercase;
@@ -403,13 +403,12 @@ body[data-platform="ios"] .resize-handle {
 }
 
 .reference-item {
-    padding: 4px 8px;
+    padding: 4px 8px !important;
     font-size: 12px;
     line-height: 1.45;
     color: var(--text-primary);
-    /* Hanging indent like a bibliography entry. */
-    padding-left: 1.6em;
-    text-indent: -1.2em;
+    /* Hanging indent like a bibliography entry.
+    text-indent: -1.2em; */
 }
 
 /* ===== EDITOR AUTOCOMPLETE ===== */
