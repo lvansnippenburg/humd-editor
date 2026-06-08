@@ -2085,19 +2085,30 @@ function buildLinksPanel() {
     citKeys.forEach((key) => {
       const li = document.createElement("li");
       li.className = "reference-item";
-      let label = key;
+      li.title = key; // Show the citation key on hover
+      // Format as HTML so emphasis (italic titles etc.) is preserved, mirroring
+      // the preview's reference list. citation-js wraps the entry in a
+      // .csl-entry container; we lift out its inner HTML for the list item.
+      let html = null;
       if (allCite && refMap[key]) {
         try {
-          const formatted = allCite
-            .format("bibliography", { format: "text", template, entry: [key], nosort: true })
-            .trim();
-          if (formatted) label = formatted;
+          const formatted = allCite.format("bibliography", {
+            format: "html",
+            template,
+            entry: [key],
+            nosort: true,
+          });
+          const tmp = document.createElement("div");
+          tmp.innerHTML = formatted;
+          const entryEl = tmp.querySelector(".csl-entry");
+          const inner = (entryEl ? entryEl.innerHTML : tmp.innerHTML).trim();
+          if (inner) html = inner;
         } catch {
           /* fall back to key */
         }
       }
-      li.textContent = label;
-      li.title = key; // Show the citation key on hover
+      if (html) li.innerHTML = html;
+      else li.textContent = key;
       list.appendChild(li);
     });
   };
