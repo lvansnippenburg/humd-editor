@@ -48,6 +48,49 @@
                                 />
                             </svg>
                         </button>
+                        <button
+                            id="graph-btn"
+                            class="icon-btn"
+                            title="Graph"
+                            aria-label="Open graph"
+                        >
+                            <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 15 15"
+                                fill="none"
+                                xmlns="http://www.w3.org/2000/svg"
+                            >
+                                <circle cx="3" cy="3" r="1.5" fill="currentColor" />
+                                <circle cx="12" cy="3" r="1.5" fill="currentColor" />
+                                <circle cx="3" cy="12" r="1.5" fill="currentColor" />
+                                <circle cx="7.5" cy="7.5" r="1.5" fill="currentColor" />
+                                <line
+                                    x1="4.5"
+                                    y1="3.5"
+                                    x2="6.5"
+                                    y2="6.5"
+                                    stroke="currentColor"
+                                    stroke-width="1"
+                                />
+                                <line
+                                    x1="10.5"
+                                    y1="3.5"
+                                    x2="8.5"
+                                    y2="6.5"
+                                    stroke="currentColor"
+                                    stroke-width="1"
+                                />
+                                <line
+                                    x1="4.5"
+                                    y1="11.5"
+                                    x2="6.5"
+                                    y2="8.5"
+                                    stroke="currentColor"
+                                    stroke-width="1"
+                                />
+                            </svg>
+                        </button>
                         <button class="sidebar-tab" data-tab="search" title="Search">
                             <svg
                                 width="14"
@@ -305,6 +348,19 @@
                 <!-- Comment balloons in the right margin, aligned to comment lines -->
                 <div id="editor-comment-gutter" aria-hidden="true"></div>
 
+                <!-- Graph container (shown when graph tab is active) -->
+                <div
+                    id="graph-container"
+                    style="
+                        display: none;
+                        flex: 1;
+                        min-height: 0;
+                        width: 100%;
+                        overflow: hidden;
+                        position: relative;
+                    "
+                ></div>
+
                 <!-- Search and Replace Panel -->
                 <div id="editor-search-panel" class="search-panel" style="display: none">
                     <div class="search-row">
@@ -327,12 +383,42 @@
                         />
                     </div>
                     <div class="search-controls">
-                        <button id="editor-search-prev-btn" class="search-btn" title="Previous (⇧Enter)">↑</button>
-                        <button id="editor-search-next-btn" class="search-btn" title="Next (Enter)">↓</button>
-                        <button id="editor-search-toggle-replace-btn" class="search-btn" title="Toggle replace (⌘H)">⧔</button>
-                        <button id="editor-search-replace-btn" class="search-btn" title="Replace (⌘⇧1)" style="display: none">Replace</button>
-                        <button id="editor-search-replace-all-btn" class="search-btn" title="Replace all (⌘⇧2)" style="display: none">All</button>
-                        <button id="editor-search-close-btn" class="search-btn" title="Close (Esc)">✕</button>
+                        <button
+                            id="editor-search-prev-btn"
+                            class="search-btn"
+                            title="Previous (⇧Enter)"
+                        >
+                            ↑
+                        </button>
+                        <button id="editor-search-next-btn" class="search-btn" title="Next (Enter)">
+                            ↓
+                        </button>
+                        <button
+                            id="editor-search-toggle-replace-btn"
+                            class="search-btn"
+                            title="Toggle replace (⌘H)"
+                        >
+                            ⧔
+                        </button>
+                        <button
+                            id="editor-search-replace-btn"
+                            class="search-btn"
+                            title="Replace (⌘⇧1)"
+                            style="display: none"
+                        >
+                            Replace
+                        </button>
+                        <button
+                            id="editor-search-replace-all-btn"
+                            class="search-btn"
+                            title="Replace all (⌘⇧2)"
+                            style="display: none"
+                        >
+                            All
+                        </button>
+                        <button id="editor-search-close-btn" class="search-btn" title="Close (Esc)">
+                            ✕
+                        </button>
                     </div>
                 </div>
             </section>
@@ -399,9 +485,7 @@
                     placeholder="Your name or initials"
                     autocomplete="off"
                 />
-                <p class="settings-hint">
-                    Used to sign comments inserted with ⌘⇧M.
-                </p>
+                <p class="settings-hint">Used to sign comments inserted with ⌘⇧M.</p>
             </div>
 
             <div class="settings-section">
@@ -429,12 +513,17 @@
             <div class="settings-section">
                 <h3>Export</h3>
                 <p class="settings-hint">
-                    Configure options for exporting documents to Microsoft Word (.docx) format using Pandoc.
+                    Configure options for exporting documents to Microsoft Word (.docx) format using
+                    Pandoc.
                 </p>
-                <label class="settings-label" style="margin-top: 10px">Pandoc Reference Document</label>
+                <label class="settings-label" style="margin-top: 10px"
+                    >Pandoc Reference Document</label
+                >
                 <div class="file-path-container">
                     <code id="pandoc-ref-doc-display" class="path-display">None selected</code>
-                    <button id="pick-pandoc-ref-doc-btn" title="Choose reference document (.docx)">Choose File…</button>
+                    <button id="pick-pandoc-ref-doc-btn" title="Choose reference document (.docx)">
+                        Choose File…
+                    </button>
                     <button id="clear-pandoc-ref-doc-btn" class="icon-btn" title="Clear">✕</button>
                 </div>
             </div>
@@ -442,9 +531,9 @@
             <div class="settings-section">
                 <h3>Proofreading</h3>
                 <p class="settings-hint">
-                    Proofread the document (or a selection) with Google Gemini. Get a free API
-                    key at <code>aistudio.google.com/apikey</code>. The key is stored locally in
-                    your settings file and sent only to Google when you proofread.
+                    Proofread the document (or a selection) with Google Gemini. Get a free API key
+                    at <code>aistudio.google.com/apikey</code>. The key is stored locally in your
+                    settings file and sent only to Google when you proofread.
                 </p>
                 <label class="settings-label">Gemini API key</label>
                 <input
@@ -506,7 +595,9 @@ a:hover { text-decoration: underline; }"
             <header>
                 <h3>Suggestions</h3>
                 <p id="proofread-scope" class="proofread-hint"></p>
-                <button id="close-proofread" class="icon-btn" aria-label="Close" title="Close">✕</button>
+                <button id="close-proofread" class="icon-btn" aria-label="Close" title="Close">
+                    ✕
+                </button>
             </header>
             <div id="proofread-content">
                 <div id="proofread-loading" class="proofread-loading">
@@ -535,6 +626,7 @@ a:hover { text-decoration: underline; }"
         <script>
             window.Cite = typeof require !== "undefined" ? require("citation-js") : window.Cite;
         </script>
+        <script src="/js/d3.min.js"></script>
         <script type="module" src="/js/app.js"></script>
     </body>
 </html>

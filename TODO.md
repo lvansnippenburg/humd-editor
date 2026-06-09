@@ -1,3 +1,2 @@
 - Codeberg/Git integration to create some sort of correction mechanism
-- graph of relations
 - remember last 5 vaults

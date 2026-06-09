@@ -11,6 +11,7 @@ import {
   restoreComments,
   COMMENT_BALLOON_SVG,
 } from "/js/markdown.js";
+import { renderGraph } from "/js/graph.js";
 
 // ===== STATE =====
 
@@ -54,6 +55,7 @@ let noteIndexCache = {}; // lowercased note name -> full path, from the link ind
 let tagIndexCache = {}; // lowercased tag -> {name, count, files}, from the link index
 let untaggedCache = []; // paths of files with no tags at all, from the link index
 let backlinksCache = {}; // wikilink target name -> [source note stems], from the link index
+let graphCleanup = null; // Cleanup function for the current graph simulation
 
 // Editor autocomplete ([[wikilinks]] and #tags)
 let acActive = false;
@@ -301,6 +303,7 @@ function setupEventListeners() {
   document.getElementById("search-input").addEventListener("input", onSearchInput);
 
   document.getElementById("new-file-btn").addEventListener("click", promptNewFile);
+  document.getElementById("graph-btn").addEventListener("click", openGraphTab);
   document.getElementById("change-vault-btn").addEventListener("click", changeVaultFolder);
   document.getElementById("settings-btn").addEventListener("click", openSettingsDialog);
   document.getElementById("proofread-btn").addEventListener("click", runProofread);
@@ -767,8 +770,8 @@ function renderTabBar() {
 
     const nameEl = document.createElement("span");
     nameEl.className = "tab-filename" + (tab.isDirty ? " tab-dirty" : "");
-    nameEl.textContent = tab.path.split("/").pop();
-    nameEl.title = tab.path;
+    nameEl.textContent = tab.isGraph ? "Graph" : tab.path.split("/").pop();
+    nameEl.title = tab.isGraph ? "Graph visualization" : tab.path;
     el.appendChild(nameEl);
 
     const closeBtn = document.createElement("button");
@@ -815,9 +818,15 @@ function scrollTabBar(direction) {
 async function switchToTab(tabId) {
   if (tabId === activeTabId) return;
 
+  // Stop graph simulation if one is running
+  if (graphCleanup) {
+    graphCleanup();
+    graphCleanup = null;
+  }
+
   if (activeTabId !== null) {
     const cur = getActiveTab();
-    if (cur) {
+    if (cur && !cur.isGraph) {
       clearTimeout(autoSaveDebounceTimer);
       clearTimeout(undoDebounceTimer);
       cur.content = getEditorContent();
@@ -837,22 +846,66 @@ async function switchToTab(tabId) {
 
   activeTabId = tabId;
   const tab = tabs.find((t) => t.id === tabId);
-  currentFilePath = tab.path;
-  isDirty = tab.isDirty;
-  undoStack = tab.undoStack ? tab.undoStack.slice() : [];
-  redoStack = tab.redoStack ? tab.redoStack.slice() : [];
 
-  document.getElementById("editor").value = tab.content;
-  await updatePreview();
-  renderEditorCommentGutter();
-  await revealFileInTree(tab.path);
-  document.querySelectorAll(".file-item").forEach((item) => {
-    item.classList.toggle("active", item.dataset.path === tab.path);
-  });
+  const editor = document.getElementById("editor");
+  const preview = document.getElementById("preview");
+  const tabBar = document.getElementById("editor-tab-bar");
 
-  await updateTagsBar(tab.path);
-  buildOutline();
-  buildLinksPanel();
+  const graphContainer = document.getElementById("graph-container");
+
+  if (tab.isGraph) {
+    // Show graph tab
+    editor.style.display = "none";
+    if (graphContainer) {
+      graphContainer.style.display = "flex";
+      graphContainer.innerHTML = ""; // Clear old graph
+    }
+    currentFilePath = null;
+    isDirty = false;
+
+    // Render the graph (show preview if it was visible, hide otherwise)
+    // Actually, hide both editor and preview when showing graph to give it full space
+    preview.style.display = "none";
+
+    // Render the graph
+    const linkIndex = {
+      notes: noteIndexCache,
+      tag_index: tagIndexCache,
+      backlinks: backlinksCache,
+    };
+
+    const onDocClick = (noteKey) => {
+      const path = noteIndexCache[noteKey];
+      if (path) loadFile(path);
+    };
+
+    if (graphContainer) {
+      graphCleanup = renderGraph(graphContainer, linkIndex, onDocClick);
+    }
+  } else {
+    // Show document tab
+    currentFilePath = tab.path;
+    isDirty = tab.isDirty;
+    undoStack = tab.undoStack ? tab.undoStack.slice() : [];
+    redoStack = tab.redoStack ? tab.redoStack.slice() : [];
+
+    editor.style.display = "block";
+    preview.style.display = previewVisible ? "flex" : "none";
+    if (graphContainer) graphContainer.style.display = "none";
+
+    editor.value = tab.content;
+    await updatePreview();
+    renderEditorCommentGutter();
+    await revealFileInTree(tab.path);
+    document.querySelectorAll(".file-item").forEach((item) => {
+      item.classList.toggle("active", item.dataset.path === tab.path);
+    });
+
+    await updateTagsBar(tab.path);
+    buildOutline();
+    buildLinksPanel();
+  }
+
   renderTabBar();
   saveUiState();
 }
@@ -861,7 +914,13 @@ async function closeTab(tabId, skipSave = false) {
   const tab = tabs.find((t) => t.id === tabId);
   if (!tab) return;
 
-  if (!skipSave) {
+  // Stop graph simulation if closing the graph tab
+  if (tab.isGraph && graphCleanup) {
+    graphCleanup();
+    graphCleanup = null;
+  }
+
+  if (!skipSave && !tab.isGraph) {
     if (tabId === activeTabId && isDirty) {
       await saveCurrentFile();
     } else if (tab.isDirty) {
@@ -910,6 +969,23 @@ function closeFile() {
   buildLinksPanel();
   renderTabBar();
   saveUiState();
+}
+
+async function openGraphTab() {
+  // Check if graph tab already exists
+  let graphTab = tabs.find((t) => t.path === "__graph__");
+  if (!graphTab) {
+    // Create a new graph tab
+    graphTab = {
+      id: ++tabCounter,
+      path: "__graph__",
+      isGraph: true,
+      isDirty: false,
+      content: "",
+    };
+    tabs.push(graphTab);
+  }
+  await switchToTab(graphTab.id);
 }
 
 async function loadFile(path) {
