@@ -199,6 +199,17 @@ body[data-platform="ios"] .resize-handle {
     color: var(--accent);
 }
 
+#help-btn {
+    border: 2px solid var(--text-secondary);
+    font-weight: 600;
+    font-size: 14px;
+    line-height: 1;
+}
+
+#help-btn:hover {
+    border-color: var(--text-primary);
+}
+
 /* ===== FILE TREE ===== */
 #file-tree-container,
 #outline-container,
@@ -715,6 +726,18 @@ body.dragging-file .tree-dir > .tree-label:hover {
     margin-left: auto;
 }
 
+/* While dragging a file, make the trash a visible target; brighten it when
+   the cursor is over it. */
+body.dragging-file #trash-btn {
+    color: var(--text-primary);
+    background: var(--hover-bg);
+}
+
+#trash-btn.tree-drop-target {
+    color: #fff;
+    background: #e5484d;
+}
+
 /* ===== EDITOR PANE ===== */
 #editor-pane {
     display: flex;
@@ -1038,6 +1061,88 @@ dialog {
 dialog::backdrop {
     background: rgba(0, 0, 0, 0.4);
     backdrop-filter: blur(2px);
+}
+
+#help-dialog {
+    max-width: 700px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+}
+
+#help-dialog header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+#help-dialog h2 {
+    margin: 0;
+    font-size: 16px;
+}
+
+.help-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.help-content h3 {
+    margin-top: 16px;
+    margin-bottom: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.help-content h3:first-child {
+    margin-top: 0;
+}
+
+.help-content p {
+    margin: 0 0 8px;
+    color: var(--text-secondary);
+}
+
+.help-content table {
+    margin: 12px 0;
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.help-content th,
+.help-content td {
+    padding: 6px 8px;
+    text-align: left;
+    border: 1px solid var(--border);
+    font-size: 12px;
+}
+
+.help-content th {
+    background: var(--bg-secondary);
+    font-weight: 600;
+}
+
+.help-content code {
+    background: var(--bg-secondary);
+    padding: 2px 4px;
+    border-radius: 2px;
+    font-size: 12px;
+}
+
+.help-content ul,
+.help-content ol {
+    margin: 8px 0;
+    padding-left: 20px;
+}
+
+.help-content li {
+    margin: 4px 0;
 }
 
 /* Lightweight modal prompt (promptDialog) */
@@ -1530,4 +1635,13 @@ body[data-platform="ios"] .macos-only {
 
 .search-btn:active {
     background: var(--active-file-bg);
+}
+
+/* some defaults for other things */
+.footnote-ref a {
+    font-size: 0.6em;
+}
+
+sup {
+    font-size: 0.6em;
 }

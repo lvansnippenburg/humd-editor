@@ -67,6 +67,9 @@ let acIndex = 0;
 // Citation engine state
 let citeBibData = null;
 let citeTemplateName = null;
+// Monotonic so each loaded CSL gets a unique template name (citation-js caches
+// compiled engines by name and won't recompile under a reused name).
+let cslTemplateCounter = 0;
 
 // ===== INLINE RENAME =====
 
@@ -78,6 +81,9 @@ async function startInlineRename(nameEl, oldPath) {
   input.type = "text";
   input.className = "tree-rename-input";
   input.value = oldName;
+  // Keep clicks inside the field from bubbling to the row (which would open
+  // the file) while the user is positioning the caret.
+  input.addEventListener("click", (e) => e.stopPropagation());
   nameEl.replaceWith(input);
   input.focus();
   const dotIdx = oldName.lastIndexOf(".");
@@ -134,6 +140,40 @@ async function startInlineRename(nameEl, oldPath) {
       cancel();
     }
   });
+}
+
+// Hovering a tree name without moving the cursor for ~1s opens inline rename.
+// Any cursor movement (or a drag) restarts the timer, so it only fires when
+// the pointer genuinely rests on the name.
+function addHoverRename(nameEl, path) {
+  let timer = null;
+  let lastX = 0;
+  let lastY = 0;
+  const clear = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+  const schedule = (x, y) => {
+    lastX = x;
+    lastY = y;
+    clear();
+    timer = setTimeout(() => {
+      timer = null;
+      startInlineRename(nameEl, path);
+    }, 1000);
+  };
+  nameEl.addEventListener("mouseenter", (e) => schedule(e.clientX, e.clientY));
+  // Only a real move restarts the timer; ignore the sub-pixel jitter a still
+  // hand/trackpad emits, otherwise the 1s timer never elapses.
+  nameEl.addEventListener("mousemove", (e) => {
+    if (Math.abs(e.clientX - lastX) < 4 && Math.abs(e.clientY - lastY) < 4) return;
+    schedule(e.clientX, e.clientY);
+  });
+  nameEl.addEventListener("mouseleave", clear);
+  // If a drag begins on the row, don't pop the rename mid-drag.
+  nameEl.addEventListener("mousedown", clear);
 }
 
 // ===== INITIALIZATION =====
@@ -306,16 +346,28 @@ function setupEventListeners() {
   document.getElementById("graph-btn").addEventListener("click", openGraphTab);
   document.getElementById("change-vault-btn").addEventListener("click", changeVaultFolder);
   document.getElementById("settings-btn").addEventListener("click", openSettingsDialog);
+  document.getElementById("help-btn").addEventListener("click", openHelpDialog);
+  document.getElementById("close-help").addEventListener("click", closeHelpDialog);
   document.getElementById("proofread-btn").addEventListener("click", runProofread);
   document.getElementById("export-docx-btn").addEventListener("click", exportToWord);
   document.getElementById("close-proofread").addEventListener("click", closeProofreadPanel);
-  document.getElementById("editor-search-input").addEventListener("keydown", handleEditorSearchKeydown);
-  document.getElementById("editor-replace-input").addEventListener("keydown", handleEditorSearchKeydown);
+  document
+    .getElementById("editor-search-input")
+    .addEventListener("keydown", handleEditorSearchKeydown);
+  document
+    .getElementById("editor-replace-input")
+    .addEventListener("keydown", handleEditorSearchKeydown);
   document.getElementById("editor-search-prev-btn").addEventListener("click", editorSearchPrevious);
   document.getElementById("editor-search-next-btn").addEventListener("click", editorSearchNext);
-  document.getElementById("editor-search-toggle-replace-btn").addEventListener("click", toggleEditorReplace);
-  document.getElementById("editor-search-replace-btn").addEventListener("click", editorReplaceCurrent);
-  document.getElementById("editor-search-replace-all-btn").addEventListener("click", editorReplaceAll);
+  document
+    .getElementById("editor-search-toggle-replace-btn")
+    .addEventListener("click", toggleEditorReplace);
+  document
+    .getElementById("editor-search-replace-btn")
+    .addEventListener("click", editorReplaceCurrent);
+  document
+    .getElementById("editor-search-replace-all-btn")
+    .addEventListener("click", editorReplaceAll);
   document.getElementById("editor-search-close-btn").addEventListener("click", closeEditorSearch);
   document.getElementById("close-settings").addEventListener("click", cancelSettings);
   document.getElementById("cancel-settings-btn").addEventListener("click", cancelSettings);
@@ -339,7 +391,7 @@ function setupEventListeners() {
   document
     .getElementById("pick-csl-btn")
     ?.addEventListener("click", () =>
-      pickFileForSetting("csl-path-display", ["csl", "xml"], "Select CSL style file"),
+      pickFileForSetting("csl-path-display", ["csl"], "Select CSL style file (.csl)"),
     );
   document.getElementById("clear-csl-btn")?.addEventListener("click", () => {
     document.getElementById("csl-path-display").textContent = "None selected (defaults to APA)";
@@ -482,12 +534,17 @@ function addFileMouseDrag(li, filePath, fileName) {
     }
 
     function getDropZone(x, y) {
+      const el = document.elementFromPoint(x, y);
+      // Trash sits in the sidebar footer; check it before the generic
+      // sidebar->vault-root zone below.
+      if (el?.closest("#trash-btn")) {
+        return { destDir: null, dir: null, overEditor: false, trash: true };
+      }
       const editorEl = document.getElementById("editor");
       const er = editorEl?.getBoundingClientRect();
       if (er && x >= er.left && x <= er.right && y >= er.top && y <= er.bottom) {
         return { destDir: null, dir: null, overEditor: true };
       }
-      const el = document.elementFromPoint(x, y);
       const dir = el?.closest(".tree-dir");
       if (dir) {
         const destDir =
@@ -520,8 +577,9 @@ function addFileMouseDrag(li, filePath, fileName) {
       ghost.style.left = e.clientX + 14 + "px";
       ghost.style.top = e.clientY - 10 + "px";
       clearHighlights();
-      const { dir } = getDropZone(e.clientX, e.clientY);
-      if (dir) dir.classList.add("tree-drop-target");
+      const { dir, trash } = getDropZone(e.clientX, e.clientY);
+      if (trash) document.getElementById("trash-btn")?.classList.add("tree-drop-target");
+      else if (dir) dir.classList.add("tree-drop-target");
     }
 
     async function onUp(e) {
@@ -536,7 +594,23 @@ function addFileMouseDrag(li, filePath, fileName) {
       ghost?.remove();
       clearHighlights();
 
-      const { destDir, overEditor } = getDropZone(e.clientX, e.clientY);
+      const { destDir, overEditor, trash } = getDropZone(e.clientX, e.clientY);
+
+      if (trash) {
+        try {
+          await apiPost("/api/trash-file", { path: filePath });
+          // Close any open tabs for the trashed file without trying to save it.
+          for (const t of tabs.filter((t) => t.path === filePath)) {
+            await closeTab(t.id, true);
+          }
+          await refreshFileTree();
+          await buildLinkIndex();
+          showStatus(`Moved "${fileName}" to Trash`);
+        } catch (err) {
+          showStatus(`Trash failed: ${err}`, true);
+        }
+        return;
+      }
 
       if (overEditor) {
         const editor = document.getElementById("editor");
@@ -752,6 +826,7 @@ function renderFileTree(nodes, container = null) {
         e.stopPropagation();
         startInlineRename(nameSpan, node.path);
       });
+      addHoverRename(nameSpan, node.path);
       li.appendChild(label);
       li.appendChild(nested);
     } else {
@@ -776,6 +851,7 @@ function renderFileTree(nodes, container = null) {
         e.stopPropagation();
         startInlineRename(nameEl, node.path);
       });
+      addHoverRename(nameEl, node.path);
       addFileMouseDrag(li, node.path, node.name);
     }
     container.appendChild(li);
@@ -1511,8 +1587,7 @@ function showCommentPopup(balloonElement, thread, fullContent, commentOffset) {
 
     if (targetStart !== -1) {
       const newJson = `<!-- ${JSON.stringify(thread)} -->`;
-      editor.value =
-        editor.value.slice(0, targetStart) + newJson + editor.value.slice(targetEnd);
+      editor.value = editor.value.slice(0, targetStart) + newJson + editor.value.slice(targetEnd);
       onEditorInput();
     }
 
@@ -2769,10 +2844,16 @@ async function loadCitations() {
   if (currentCslPath) {
     try {
       const cslResult = await apiFetch(`/api/read-file?path=${encodeURIComponent(currentCslPath)}`);
-      citeTemplateName = "user-csl";
+      // citation-js caches the compiled CSL engine by template name and never
+      // invalidates it when the XML changes. Registering under a fresh name
+      // each time forces a new engine, so changing the CSL file in settings
+      // actually takes effect in the preview (instead of reusing the first
+      // style loaded this session).
+      citeTemplateName = `user-csl-${++cslTemplateCounter}`;
       Cite.plugins.config.get("@csl").templates.add(citeTemplateName, cslResult.content);
     } catch (e) {
       console.warn("Failed to load CSL style:", e);
+      showStatus("Warning: could not load CSL style — using default (APA)");
       citeTemplateName = null;
     }
   }
@@ -2958,9 +3039,7 @@ async function saveSettings() {
     const newCslPath = cslDisplay && !cslDisplay.startsWith("None selected") ? cslDisplay : null;
     const pandocRefDocDisplay = document.getElementById("pandoc-ref-doc-display").textContent;
     const newPandocRefDocPath =
-      pandocRefDocDisplay && pandocRefDocDisplay !== "None selected"
-        ? pandocRefDocDisplay
-        : null;
+      pandocRefDocDisplay && pandocRefDocDisplay !== "None selected" ? pandocRefDocDisplay : null;
 
     const newNickname = document.getElementById("nickname-input").value.trim();
     const newGeminiKey = document.getElementById("gemini-key-input").value.trim();
@@ -3080,7 +3159,8 @@ async function runProofread() {
 
     // Gemini returns markdown bulleted list. Render it as HTML.
     if (!suggestionsText.trim()) {
-      list.innerHTML = "<li style='color: var(--text-secondary); padding: 16px;'>No suggestions found — excellent work!</li>";
+      list.innerHTML =
+        "<li style='color: var(--text-secondary); padding: 16px;'>No suggestions found — excellent work!</li>";
     } else if (typeof marked !== "undefined") {
       // Parse the markdown (which is a bulleted list) and extract just the items.
       const html = marked.parse(suggestionsText);
@@ -3094,13 +3174,15 @@ async function runProofread() {
           list.appendChild(li.cloneNode(true));
         }
       } else {
-        list.innerHTML = "<li style='color: var(--text-secondary); padding: 16px;'>No suggestions found.</li>";
+        list.innerHTML =
+          "<li style='color: var(--text-secondary); padding: 16px;'>No suggestions found.</li>";
       }
     } else {
       // Fallback if marked isn't loaded: treat as plain text bullets.
       const lines = suggestionsText.split("\n").filter((l) => l.trim());
       if (lines.length === 0) {
-        list.innerHTML = "<li style='color: var(--text-secondary); padding: 16px;'>No suggestions found.</li>";
+        list.innerHTML =
+          "<li style='color: var(--text-secondary); padding: 16px;'>No suggestions found.</li>";
       } else {
         for (const line of lines) {
           const clean = line.replace(/^[-•*]\s*/, "").trim();
@@ -3286,7 +3368,8 @@ function editorSearchNext() {
 
 function editorSearchPrevious() {
   if (editorSearchMatches.length === 0) return;
-  editorSearchIndex = (editorSearchIndex - 1 + editorSearchMatches.length) % editorSearchMatches.length;
+  editorSearchIndex =
+    (editorSearchIndex - 1 + editorSearchMatches.length) % editorSearchMatches.length;
   updateEditorSearchDisplay();
 }
 
@@ -3294,7 +3377,10 @@ function handleEditorSearchKeydown(e) {
   if (e.key === "Enter") {
     e.preventDefault();
     // First time: perform the search. Subsequent times: navigate.
-    if (editorSearchMatches.length === 0 && document.getElementById("editor-search-input").value.trim()) {
+    if (
+      editorSearchMatches.length === 0 &&
+      document.getElementById("editor-search-input").value.trim()
+    ) {
       updateEditorSearchResults();
     } else if (e.shiftKey) {
       editorSearchPrevious();
@@ -3355,6 +3441,30 @@ function showStatus(message, isError = false) {
       isError ? 8000 : 3000,
     );
   }
+}
+
+// ===== HELP =====
+
+async function openHelpDialog() {
+  const dialog = document.getElementById("help-dialog");
+  const content = document.getElementById("help-content");
+
+  try {
+    const response = await fetch("/help.md");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const markdown = await response.text();
+    // Use renderMarkdownBody to get proper processing of superscript, subscript, etc.
+    const html = renderMarkdownBody(markdown);
+    content.innerHTML = html;
+    dialog.showModal();
+  } catch (error) {
+    showStatus(`Failed to load help: ${error.message || error}`, true);
+  }
+}
+
+function closeHelpDialog() {
+  const dialog = document.getElementById("help-dialog");
+  dialog.close();
 }
 
 // ===== MAIN =====

@@ -638,10 +638,12 @@ def proofread_text(text: str) -> str:
         f"https://generativelanguage.googleapis.com/v1beta/models/"
         f"{model}:generateContent"
     )
-    payload = json.dumps({
-        "system_instruction": {"parts": [{"text": PROOFREAD_SYSTEM}]},
-        "contents": [{"role": "user", "parts": [{"text": text}]}],
-    }).encode("utf-8")
+    payload = json.dumps(
+        {
+            "system_instruction": {"parts": [{"text": PROOFREAD_SYSTEM}]},
+            "contents": [{"role": "user", "parts": [{"text": text}]}],
+        }
+    ).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=payload,
@@ -696,7 +698,7 @@ def pick_file(extensions: list, prompt: str = "Select a file") -> str | None:
     ext_to_uti = {
         "json": "public.json",
         "bib": "public.plain-text",
-        "csl": "public.xml",
+        "csl": "public.item",
         "docx": "org.openxmlformats.wordprocessingml.document",
         "xml": "public.xml",
     }
@@ -978,19 +980,33 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 data = self.read_body()
                 file_path = str(safe_path(data["path"], must_exist=True))
-                # Pass the path as an argument so a crafted filename can't inject
-                # AppleScript. Fall back to a plain delete if Finder declines.
+                # Move to the system Trash (recoverable), never a hard delete.
+                # JXA calls Foundation's -trashItemAtURL:, the same API Finder
+                # uses; it doesn't need Finder automation permissions. The path
+                # comes in as argv so a crafted filename can't inject script.
                 script = (
-                    "on run argv\n"
-                    '  tell application "Finder" to delete (POSIX file (item 1 of argv))\n'
-                    "end run"
+                    "function run(argv) {\n"
+                    "  ObjC.import('Foundation');\n"
+                    "  var fm = $.NSFileManager.defaultManager;\n"
+                    "  var url = $.NSURL.fileURLWithPath(argv[0]);\n"
+                    "  var err = Ref();\n"
+                    "  var ok = fm.trashItemAtURLResultingItemURLError(url, null, err);\n"
+                    "  if (!ok) {\n"
+                    "    throw new Error(ObjC.unwrap(err[0].localizedDescription) || 'trash failed');\n"
+                    "  }\n"
+                    "}\n"
                 )
                 r = subprocess.run(
-                    ["osascript", "-e", script, file_path],
+                    ["osascript", "-l", "JavaScript", "-e", script, file_path],
                     capture_output=True,
+                    text=True,
                 )
                 if r.returncode != 0:
-                    os.remove(file_path)
+                    # Do NOT fall back to os.remove — a failure must leave the
+                    # file in place rather than destroy it.
+                    raise RuntimeError(
+                        r.stderr.strip() or "Could not move file to Trash"
+                    )
                 self.send_json({"ok": True})
             except Exception as e:
                 self.send_error_json(str(e))
@@ -1040,8 +1056,13 @@ class Handler(SimpleHTTPRequestHandler):
                 docx_bytes = export_docx(markdown)
                 # Send as binary attachment
                 self.send_response(200)
-                self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-                self.send_header("Content-Disposition", 'attachment; filename="document.docx"')
+                self.send_header(
+                    "Content-Type",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+                self.send_header(
+                    "Content-Disposition", 'attachment; filename="document.docx"'
+                )
                 self.send_header("Content-Length", str(len(docx_bytes)))
                 self.end_headers()
                 self.wfile.write(docx_bytes)

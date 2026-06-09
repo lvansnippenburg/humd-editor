@@ -203,6 +203,27 @@
                         </svg>
                     </button>
                     <button
+                        id="trash-btn"
+                        class="icon-btn"
+                        aria-label="Trash"
+                        title="Drag a file here to move it to the Trash"
+                    >
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 15 15"
+                            fill="none"
+                            xmlns="http://www.w3.org/2000/svg"
+                        >
+                            <path
+                                d="M5.5 1C5.22386 1 5 1.22386 5 1.5C5 1.77614 5.22386 2 5.5 2H9.5C9.77614 2 10 1.77614 10 1.5C10 1.22386 9.77614 1 9.5 1H5.5ZM3 3.5C3 3.22386 3.22386 3 3.5 3H5H10H11.5C11.7761 3 12 3.22386 12 3.5C12 3.77614 11.7761 4 11.5 4H11V12C11 12.5523 10.5523 13 10 13H5C4.44772 13 4 12.5523 4 12V4H3.5C3.22386 4 3 3.77614 3 3.5ZM5 4H10V12H5V4Z"
+                                fill="currentColor"
+                                fill-rule="evenodd"
+                                clip-rule="evenodd"
+                            />
+                        </svg>
+                    </button>
+                    <button
                         id="settings-btn"
                         class="icon-btn"
                         aria-label="Open settings"
@@ -222,6 +243,14 @@
                                 clip-rule="evenodd"
                             />
                         </svg>
+                    </button>
+                    <button
+                        id="help-btn"
+                        class="icon-btn"
+                        aria-label="Help"
+                        title="Help"
+                    >
+                        ?
                     </button>
                 </div>
             </aside>
@@ -591,6 +620,22 @@ a:hover { text-decoration: underline; }
                 </button>
                 <button id="cancel-settings-btn" title="Discard changes">Cancel</button>
             </footer>
+        </dialog>
+
+        <!-- Help Dialog -->
+        <dialog id="help-dialog" class="help-dialog">
+            <header>
+                <h2>Help</h2>
+                <button
+                    id="close-help"
+                    class="icon-btn"
+                    title="Close"
+                    aria-label="Close help"
+                >
+                    ✕
+                </button>
+            </header>
+            <div id="help-content" class="help-content"></div>
         </dialog>
 
         <div id="proofread-panel" class="proofread-panel" style="display: none">
