@@ -168,7 +168,8 @@ document.addEventListener('click', function(e) {
   var cmt = e.target.closest('.hp-comment');
   if (cmt) {
     e.preventDefault();
-    window.parent.postMessage({ type: 'comment', text: cmt.getAttribute('data-text') || '' }, '*');
+    const fullContent = cmt.getAttribute('data-text') || '';
+    window.parent.postMessage({ type: 'comment', content: fullContent }, '*');
     return;
   }
   var a = e.target.closest('a');
@@ -269,7 +270,7 @@ sup.footnote-ref a { text-decoration: none; }
 a.footnote-back { text-decoration: none; margin-left: 4px; }
 a.tag-link { color: #5a6e8c; background: #eef1f6; padding: 0 5px; border-radius: 8px; font-size: 0.85em; text-decoration: none; white-space: nowrap; }
 a.tag-link:hover { background: #dde3ee; }
-.hp-comment { float: right; margin-left: 8px; color: #d99a00; opacity: 0.75; cursor: pointer; user-select: none; }
+.hp-comment { float: right; margin-left: 8px; color: #2563eb; opacity: 0.75; cursor: pointer; user-select: none; }
 .hp-comment svg { vertical-align: middle; }
 .hp-comment:hover { opacity: 1; }
 section.footnotes { margin-top: 2em; border-top: 1px solid #ddd; padding-top: 1em; font-size: 0.9em; }
@@ -395,13 +396,28 @@ function escapeHtmlAttr(s) {
     .replace(/>/g, "&gt;");
 }
 
-// Extract the author nickname from a comment body. Comments authored by the
-// editor look like "Nick 2026-06-08 14:30: text"; the nickname is whatever
-// precedes the date stamp. Falls back to the first word for plain comments.
+// Parse comment thread from JSON or old format
+function parseCommentThread(content) {
+  try {
+    const trimmed = content.trim();
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      return JSON.parse(trimmed);
+    }
+  } catch (e) {
+    // Fall back to old format
+  }
+  // Fallback for old format "nickname YYYY-MM-DD HH:MM: text"
+  const dm = content.match(/^(.*?)\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}):\s*(.*)/s);
+  if (dm) {
+    return [{ creator: dm[1].trim(), timestamp: dm[2], comment: dm[3] }];
+  }
+  return [{ creator: "Comment", timestamp: "", comment: content }];
+}
+
+// Extract the author nickname from a comment thread (first creator)
 export function commentNick(content) {
-  const m = content.match(/^(.*?)\s+\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/);
-  const nick = m ? m[1].trim() : (content.split(/\s+/)[0] || "Comment");
-  return nick || "Comment";
+  const thread = parseCommentThread(content);
+  return (thread && thread[0] ? thread[0].creator : "Comment") || "Comment";
 }
 
 // Inline SVG speech-bubble for comment balloons in both the editor gutter and

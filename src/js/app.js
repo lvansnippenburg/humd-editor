@@ -396,7 +396,41 @@ function setupEventListeners() {
       return;
     }
     if (msg.data.type === "comment") {
-      showStatus(msg.data.text || "(empty comment)", true);
+      const content = msg.data.content || "";
+      // Parse comment thread
+      let thread = [];
+      try {
+        const trimmed = content.trim();
+        if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+          thread = JSON.parse(trimmed);
+        }
+      } catch (e) {}
+      // Fallback for old format
+      if (thread.length === 0) {
+        const dm = content.match(/^(.*?)\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}):\s*(.*)/s);
+        if (dm) {
+          thread = [{ creator: dm[1].trim(), timestamp: dm[2], comment: dm[3] }];
+        } else {
+          thread = [{ creator: "Comment", timestamp: "", comment: content }];
+        }
+      }
+      // Find the matching comment balloon in the editor and open its popup
+      const editor = document.getElementById("editor");
+      const comments = findCommentLines(editor.value);
+      for (const c of comments) {
+        if (c.fullContent === content) {
+          // Found the matching comment - find its balloon in the gutter
+          const gutter = document.getElementById("editor-comment-gutter");
+          const balloons = gutter.querySelectorAll(".editor-comment-balloon");
+          if (balloons.length > 0) {
+            // Open popup for the first matching balloon
+            showCommentPopup(balloons[0], c.thread, c.fullContent, c.offset);
+          }
+          return;
+        }
+      }
+      // Fallback: show in status bar if we can't find the editor comment
+      showStatus("Comment: " + (thread[0]?.comment || content), false);
       return;
     }
     if (msg.data.type === "preview-scroll") {
@@ -1301,18 +1335,36 @@ function commentTimestamp(d = new Date()) {
   );
 }
 
+// Parse comment JSON from HTML comment content, returning array of {creator, timestamp, comment}.
+function parseCommentThread(content) {
+  try {
+    const trimmed = content.trim();
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      return JSON.parse(trimmed);
+    }
+  } catch (e) {
+    // Fall back to old format if JSON parsing fails
+  }
+  // Fallback for old format "nickname YYYY-MM-DD HH:MM: text"
+  const dm = content.match(/^(.*?)\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}):\s*(.*)/s);
+  if (dm) {
+    return [{ creator: dm[1].trim(), timestamp: dm[2], comment: dm[3] }];
+  }
+  return [{ creator: "Comment", timestamp: "", comment: content }];
+}
+
 // Locate every HTML comment, the character offset where its marker begins
 // (used to align the balloon to the correct visual row, even on wrapped lines),
-// the author nickname, and the full comment body. Returns { offset, nick, text }.
+// the creator of the first comment, and the full thread. Returns { offset, nick, thread, fullContent }.
 function findCommentLines(text) {
   const out = [];
   const re = /<!--([\s\S]*?)-->/g;
   let m;
   while ((m = re.exec(text)) !== null) {
     const content = m[1].trim();
-    const dm = content.match(/^(.*?)\s+\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/);
-    const nick = (dm ? dm[1].trim() : content.split(/\s+/)[0] || "Comment") || "Comment";
-    out.push({ offset: m.index, nick, text: content });
+    const thread = parseCommentThread(content);
+    const nick = (thread && thread[0] ? thread[0].creator : "Comment") || "Comment";
+    out.push({ offset: m.index, nick, thread, fullContent: content });
   }
   return out;
 }
@@ -1348,9 +1400,158 @@ function renderEditorCommentGutter() {
     b.innerHTML = COMMENT_BALLOON_SVG;
     b.title = c.nick;
     b.style.top = `${viewTop + y}px`;
-    b.addEventListener("click", () => showStatus(c.text, true));
+    b.addEventListener("click", () => showCommentPopup(b, c.thread, c.fullContent, c.offset));
     gutter.appendChild(b);
   }
+}
+
+// Show a popup displaying a comment thread and allowing replies
+function showCommentPopup(balloonElement, thread, fullContent, commentOffset) {
+  const editor = document.getElementById("editor");
+  const rect = balloonElement.getBoundingClientRect();
+
+  // Create popup container
+  const popup = document.createElement("div");
+  popup.className = "comment-popup";
+  popup.style.position = "fixed";
+  popup.style.zIndex = "1000";
+  popup.style.backgroundColor = "var(--bg-primary)";
+  popup.style.border = "1px solid var(--border)";
+  popup.style.borderRadius = "6px";
+  popup.style.padding = "12px";
+  popup.style.maxWidth = "400px";
+  popup.style.maxHeight = "400px";
+  popup.style.display = "flex";
+  popup.style.flexDirection = "column";
+  popup.style.boxShadow = "0 4px 12px rgba(0,0,0,0.15)";
+
+  // Thread display
+  const threadEl = document.createElement("div");
+  threadEl.style.flex = "1";
+  threadEl.style.minHeight = "0";
+  threadEl.style.overflowY = "auto";
+  threadEl.style.marginBottom = "8px";
+
+  thread.forEach((comment, idx) => {
+    const item = document.createElement("div");
+    item.style.marginBottom = "8px";
+    item.style.paddingBottom = "8px";
+    item.style.borderBottom = idx < thread.length - 1 ? "1px solid var(--border)" : "none";
+
+    const header = document.createElement("div");
+    header.style.fontSize = "12px";
+    header.style.fontWeight = "600";
+    header.style.color = "var(--text-primary)";
+    header.textContent = `${comment.creator} — ${comment.timestamp}`;
+    item.appendChild(header);
+
+    const body = document.createElement("div");
+    body.style.fontSize = "12px";
+    body.style.color = "var(--text-secondary)";
+    body.style.marginTop = "4px";
+    body.textContent = comment.comment;
+    item.appendChild(body);
+
+    threadEl.appendChild(item);
+  });
+
+  popup.appendChild(threadEl);
+
+  // Reply input
+  const inputDiv = document.createElement("div");
+  inputDiv.style.display = "flex";
+  inputDiv.style.gap = "4px";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "Add a reply...";
+  input.style.flex = "1";
+  input.style.fontSize = "12px";
+  input.style.padding = "6px 8px";
+  input.style.border = "1px solid var(--border)";
+  input.style.borderRadius = "4px";
+  input.style.backgroundColor = "var(--bg-secondary)";
+  input.style.color = "var(--text-primary)";
+  inputDiv.appendChild(input);
+
+  const replyBtn = document.createElement("button");
+  replyBtn.textContent = "Reply";
+  replyBtn.style.padding = "6px 10px";
+  replyBtn.style.fontSize = "11px";
+  replyBtn.style.border = "1px solid var(--border)";
+  replyBtn.style.borderRadius = "4px";
+  replyBtn.style.backgroundColor = "var(--bg-secondary)";
+  replyBtn.style.color = "var(--accent)";
+  replyBtn.style.cursor = "pointer";
+  replyBtn.style.fontWeight = "600";
+
+  replyBtn.addEventListener("click", async () => {
+    const reply = input.value.trim();
+    if (!reply) return;
+
+    const nick = currentUserNickname || (await ensureNickname());
+    if (!nick) return;
+
+    // Add reply to thread
+    thread.push({ creator: nick, timestamp: commentTimestamp(), comment: reply });
+
+    // Update the comment in the editor
+    const commentRegex = /<!--([\s\S]*?)-->/g;
+    let match;
+    let targetStart = -1;
+    let targetEnd = -1;
+
+    while ((match = commentRegex.exec(editor.value)) !== null) {
+      if (match.index === commentOffset) {
+        targetStart = match.index;
+        targetEnd = match.index + match[0].length;
+        break;
+      }
+    }
+
+    if (targetStart !== -1) {
+      const newJson = `<!-- ${JSON.stringify(thread)} -->`;
+      editor.value =
+        editor.value.slice(0, targetStart) + newJson + editor.value.slice(targetEnd);
+      onEditorInput();
+    }
+
+    // Close and reopen popup to show new reply
+    popup.remove();
+    input.value = "";
+  });
+
+  inputDiv.appendChild(replyBtn);
+  popup.appendChild(inputDiv);
+
+  document.body.appendChild(popup);
+
+  // Position popup to stay in viewport
+  let top = rect.top - popup.offsetHeight - 8;
+  let left = rect.right + 8;
+
+  if (top < 8) {
+    top = rect.bottom + 8;
+  }
+  if (left + popup.offsetWidth > window.innerWidth - 8) {
+    left = rect.left - popup.offsetWidth - 8;
+  }
+
+  popup.style.top = `${Math.max(8, top)}px`;
+  popup.style.left = `${Math.max(8, Math.min(left, window.innerWidth - popup.offsetWidth - 8))}px`;
+
+  // Close on outside click
+  const closePopup = (e) => {
+    if (!popup.contains(e.target) && !balloonElement.contains(e.target)) {
+      popup.remove();
+      document.removeEventListener("click", closePopup);
+    }
+  };
+
+  setTimeout(() => {
+    document.addEventListener("click", closePopup);
+    input.focus();
+  }, 0);
 }
 
 // Ensure a nickname is configured; prompt for and persist one if not.
@@ -1368,7 +1569,7 @@ async function ensureNickname() {
   return nick;
 }
 
-// Insert an HTML comment at the cursor, signed with the nickname + timestamp.
+// Insert an HTML comment at the cursor, signed with the nickname + timestamp, in JSON format.
 // Any selected text is wrapped inside; otherwise the caret lands ready to type.
 async function insertComment() {
   if (!currentFilePath) {
@@ -1381,12 +1582,12 @@ async function insertComment() {
   const start = editor.selectionStart;
   const end = editor.selectionEnd;
   const selected = editor.value.slice(start, end);
-  const prefix = `<!-- ${nick} ${commentTimestamp()}: `;
-  const suffix = " -->";
-  const insertText = prefix + selected + suffix;
+  const thread = [{ creator: nick, timestamp: commentTimestamp(), comment: selected }];
+  const commentJson = JSON.stringify(thread);
+  const insertText = `<!-- ${commentJson} -->`;
   editor.value = editor.value.slice(0, start) + insertText + editor.value.slice(end);
-  // Caret just after "... : " (before the closing -->) so the user can type.
-  const caret = start + prefix.length + selected.length;
+  // Position caret after the comment for continued editing
+  const caret = start + insertText.length;
   editor.focus();
   editor.setSelectionRange(caret, caret);
   onEditorInput();
