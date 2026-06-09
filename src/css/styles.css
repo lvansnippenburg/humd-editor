@@ -731,7 +731,7 @@ body.dragging-file .tree-dir > .tree-label:hover {
 #editor-comment-gutter {
     position: absolute;
     top: 0;
-    right: 0;
+    left: 0;
     bottom: 0;
     width: 22px;
     pointer-events: none;
@@ -741,7 +741,7 @@ body.dragging-file .tree-dir > .tree-label:hover {
 
 .editor-comment-balloon {
     position: absolute;
-    right: 4px;
+    left: 4px;
     display: flex;
     align-items: center;
     color: #2563eb;

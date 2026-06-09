@@ -164,6 +164,42 @@ function preprocessWikilinks(md) {
 
 export function buildPreviewShell(userCss) {
   const clickIntercept = `<script>
+// Move comment balloons to the gutter
+function repositionComments() {
+  var gutter = document.getElementById('preview-comment-gutter');
+  var comments = document.querySelectorAll('.hp-comment');
+
+  comments.forEach(function(cmt) {
+    // Get the position of the comment relative to the viewport
+    var rect = cmt.getBoundingClientRect();
+
+    // Create a balloon in the gutter at the same vertical position
+    var balloon = document.createElement('div');
+    balloon.className = 'preview-comment-balloon';
+    balloon.innerHTML = cmt.innerHTML;
+    balloon.title = cmt.title;
+    balloon.setAttribute('data-text', cmt.getAttribute('data-text'));
+    balloon.style.position = 'absolute';
+    // Position at the top of the line this comment is on, relative to the page
+    balloon.style.top = (rect.top + window.scrollY) + 'px';
+    balloon.style.left = '2px';
+    balloon.style.pointerEvents = 'auto';
+
+    balloon.addEventListener('click', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const fullContent = balloon.getAttribute('data-text') || '';
+      window.parent.postMessage({ type: 'comment', content: fullContent }, '*');
+    });
+
+    gutter.appendChild(balloon);
+    cmt.remove();  // Remove the original inline comment
+  });
+}
+
+window.addEventListener('load', repositionComments);
+window.addEventListener('resize', repositionComments);
+
 document.addEventListener('click', function(e) {
   var cmt = e.target.closest('.hp-comment');
   if (cmt) {
@@ -250,7 +286,8 @@ window.addEventListener('message', function(e) {
 <meta charset="UTF-8">
 ${hlCss}
 <style>
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.6; padding: 20px; max-width: 800px; margin: 0 auto; color: #333; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.6; padding: 20px; max-width: 800px; margin: 0 auto; color: #333; position: relative; }
+#preview-comment-gutter { position: absolute; top: 0; left: 0; bottom: 0; width: 22px; pointer-events: none; overflow: hidden; }
 img { max-width: 100%; height: auto; }
 pre { border-radius: 5px; overflow-x: auto; padding: 12px 16px; font-size: 0.9em; }
 pre code { background: none; padding: 0; font-size: inherit; }
@@ -270,9 +307,9 @@ sup.footnote-ref a { text-decoration: none; }
 a.footnote-back { text-decoration: none; margin-left: 4px; }
 a.tag-link { color: #5a6e8c; background: #eef1f6; padding: 0 5px; border-radius: 8px; font-size: 0.85em; text-decoration: none; white-space: nowrap; }
 a.tag-link:hover { background: #dde3ee; }
-.hp-comment { float: right; margin-left: 8px; color: #2563eb; opacity: 0.75; cursor: pointer; user-select: none; }
-.hp-comment svg { vertical-align: middle; }
-.hp-comment:hover { opacity: 1; }
+.hp-comment { display: inline-block; color: #2563eb; opacity: 0.75; cursor: pointer; user-select: none; }
+.preview-comment-balloon { display: inline-block; color: #2563eb; opacity: 0.75; user-select: none; }
+.preview-comment-balloon:hover { opacity: 1; }
 section.footnotes { margin-top: 2em; border-top: 1px solid #ddd; padding-top: 1em; font-size: 0.9em; }
 section.footnotes ol { padding-left: 1.5em; }
 section.footnotes li { margin: 0.25em 0; }
@@ -293,6 +330,7 @@ ${userCss}
 </style>
 </head>
 <body>
+<div id="preview-comment-gutter"></div>
 <div id="hp-body"></div>
 ${clickIntercept}
 <script src="/js/highlight.min.js"><\/script>
