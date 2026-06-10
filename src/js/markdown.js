@@ -136,9 +136,11 @@ function applyInlineSpans(line) {
     }
     // #tag → clickable link (mirrors the server's inline-tag rules: # at a
     // boundary, a letter next, no heading because a space after # won't match)
+    // BUT: skip if this is (#anchor) — part of a markdown link reference [text](#anchor)
     if (line[i] === "#" && /[A-Za-z]/.test(line[i + 1] || "")) {
       const prev = line[i - 1];
-      if (i === 0 || /[\s(>"']/.test(prev)) {
+      const isLinkAnchor = prev === "(" && /[\w-]+\)/.test(line.slice(i + 1));
+      if ((i === 0 || /[\s(>"']/.test(prev)) && !isLinkAnchor) {
         let j = i + 1;
         while (j < line.length && /[\w/-]/.test(line[j])) j++;
         const tag = line.slice(i + 1, j);

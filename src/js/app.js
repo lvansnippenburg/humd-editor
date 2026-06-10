@@ -3457,6 +3457,21 @@ async function openHelpDialog() {
     const html = renderMarkdownBody(markdown);
     content.innerHTML = html;
     dialog.showModal();
+
+    // Wire up anchor links inside the dialog to scroll to headings.
+    // Important: scroll within the content container only, don't affect window scroll.
+    content.querySelectorAll('a[href^="#"]').forEach((link) => {
+      link.addEventListener("click", (e) => {
+        e.preventDefault();
+        const targetId = link.getAttribute("href").slice(1);
+        const target = content.querySelector(`#${CSS.escape(targetId)}`);
+        if (target) {
+          // Scroll within the content container, not the window
+          const offset = target.offsetTop - content.offsetTop;
+          content.scrollTo({ top: offset, behavior: "smooth" });
+        }
+      });
+    });
   } catch (error) {
     showStatus(`Failed to load help: ${error.message || error}`, true);
   }
