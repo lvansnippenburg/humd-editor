@@ -38,3 +38,4 @@ CLAUDE.md
 .claude
 .vscode
 .node_modules
+src/.link-index.json
