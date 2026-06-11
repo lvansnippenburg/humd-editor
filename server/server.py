@@ -618,7 +618,7 @@ PROOFREAD_SYSTEM = (
     "and suggest a fix. Do not include opinions, praise, or any text outside "
     "the bulleted list. Do not number the list."
 )
-DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite"
 
 
 def proofread_text(text: str) -> str:
