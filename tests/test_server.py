@@ -32,7 +32,9 @@ class InlineTagTests(unittest.TestCase):
         self.assertEqual(server.extract_inline_tags(md), ["yes"])
 
     def test_ignores_url_fragments(self):
-        self.assertEqual(server.extract_inline_tags("see https://x.com/p#frag and #real"), ["real"])
+        self.assertEqual(
+            server.extract_inline_tags("see https://x.com/p#frag and #real"), ["real"]
+        )
 
     def test_ignores_midword_hash(self):
         self.assertEqual(server.extract_inline_tags("a#b not a tag"), [])
@@ -40,17 +42,23 @@ class InlineTagTests(unittest.TestCase):
 
 class YamlTagTests(unittest.TestCase):
     def test_inline_flow(self):
-        self.assertEqual(server.extract_yaml_tags("---\ntags: [a, b]\n---\nx"), ["a", "b"])
+        self.assertEqual(
+            server.extract_yaml_tags("---\ntags: [a, b]\n---\nx"), ["a", "b"]
+        )
 
     def test_scalar_comma_list(self):
-        self.assertEqual(server.extract_yaml_tags("---\ntags: hist, modern\n---"), ["hist", "modern"])
+        self.assertEqual(
+            server.extract_yaml_tags("---\ntags: hist, modern\n---"), ["hist", "modern"]
+        )
 
     def test_block_sequence(self):
         md = "---\ntitle: t\ntags:\n  - one\n  - two\n---\nbody"
         self.assertEqual(server.extract_yaml_tags(md), ["one", "two"])
 
     def test_strips_hash_and_quotes(self):
-        self.assertEqual(server.extract_yaml_tags('---\ntags: ["#foo", bar]\n---'), ["foo", "bar"])
+        self.assertEqual(
+            server.extract_yaml_tags('---\ntags: ["#foo", bar]\n---'), ["foo", "bar"]
+        )
 
     def test_no_frontmatter(self):
         self.assertEqual(server.extract_yaml_tags("no front matter #x"), [])
@@ -171,6 +179,20 @@ class PathConfinementTests(unittest.TestCase):
         server.load_settings = lambda: {}
         with self.assertRaises(PermissionError):
             server.safe_path("/anything")
+
+    def test_safe_path_home_ok(self):
+        home_dir = Path.home()
+        p = server.safe_path_home(str(home_dir / "somefile.csl"))
+        self.assertEqual(p, (home_dir / "somefile.csl").resolve())
+
+    def test_safe_path_home_traversal_rejected(self):
+        home_dir = Path.home()
+        with self.assertRaises(PermissionError):
+            server.safe_path_home(str(home_dir / ".." / "some_other_user"))
+
+    def test_safe_path_home_outside_rejected(self):
+        with self.assertRaises(PermissionError):
+            server.safe_path_home("/etc/passwd")
 
 
 class VersionTests(unittest.TestCase):
