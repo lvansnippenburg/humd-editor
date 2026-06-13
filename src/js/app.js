@@ -436,7 +436,13 @@ function setupEventListeners() {
       return;
     }
     if (msg.data.type === "wikilink") {
-      const stem = (msg.data.href || "").replace(/^\.\//, "").replace(/\.md$/, "");
+      // marked percent-encodes spaces in the href (e.g. "./My%20Note.md"), so
+      // decode before resolving the note name.
+      const raw = (msg.data.href || "").replace(/^\.\//, "").replace(/\.md$/, "");
+      let stem = raw;
+      try {
+        stem = decodeURIComponent(raw);
+      } catch {}
       const path = findNoteByName(stem);
       if (path) await loadFile(path);
       else showStatus(`Note not found: ${stem}`);
@@ -2099,6 +2105,10 @@ async function updatePreview() {
     }
 
     updatePreviewStats(bodyEl.innerHTML);
+
+    // Rebuild the comment gutter for the freshly rendered body. This also
+    // empties the gutter, clearing any ghost balloons from a prior document.
+    iframe.contentWindow?.repositionComments?.();
   } catch (error) {
     previewShellReady = false;
     iframe.srcdoc = `<div style="padding:20px;color:red;font-family:sans-serif"><strong>Error rendering preview:</strong><br>${error.message || error}</div>`;

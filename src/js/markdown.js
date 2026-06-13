@@ -160,7 +160,10 @@ function preprocessWikilinks(md) {
   // [[note-name]] → [note-name](./note-name.md)
   return md.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, target, display) => {
     const text = display ? display.trim() : target.trim();
-    return `[${text}](./${target.trim()}.md)`;
+    // Wrap the URL in angle brackets so targets containing spaces (or other
+    // special characters) still parse as a link in marked. Without this,
+    // `[Note](./My Note.md)` is left as literal text rather than an anchor.
+    return `[${text}](<./${target.trim()}.md>)`;
   });
 }
 
@@ -169,6 +172,10 @@ export function buildPreviewShell(userCss) {
 // Move comment balloons to the gutter
 function repositionComments() {
   var gutter = document.getElementById('preview-comment-gutter');
+  if (!gutter) return;
+  // Clear any balloons left over from a previous render/document so they
+  // don't linger as ghosts after the body content is swapped out.
+  gutter.innerHTML = '';
   var comments = document.querySelectorAll('.hp-comment');
 
   comments.forEach(function(cmt) {
