@@ -541,7 +541,7 @@ export function configureMarked() {
   marked.setOptions({
     renderer,
     gfm: true,
-    breaks: false,
+    breaks: true, // a single newline becomes <br>, matching note-app expectations
     pedantic: false,
   });
 }

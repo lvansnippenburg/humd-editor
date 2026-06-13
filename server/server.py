@@ -555,7 +555,7 @@ def render_pandoc(markdown: str, file_path: str | None) -> str:
     result = subprocess.run(
         [
             _find_pandoc(),
-            "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables",
+            "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables+lists_without_preceding_blankline+hard_line_breaks",
             "--to=html5",
             "--standalone=false",
         ],
@@ -588,7 +588,7 @@ def export_docx(markdown: str) -> bytes:
         "-C",  # citeproc
         f"--bibliography={bib_path}",
         f"--csl={csl_path}",
-        "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables",
+        "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables+lists_without_preceding_blankline+hard_line_breaks",
         "--to=docx",
     ]
 
