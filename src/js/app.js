@@ -10,7 +10,6 @@ import {
   extractComments,
   restoreComments,
   COMMENT_BALLOON_SVG,
-  sanitizeHtml,
 } from "/js/markdown.js";
 import { renderGraph } from "/js/graph.js";
 
@@ -2050,7 +2049,6 @@ async function updatePreview() {
       bodyHtml = renderMarkdownBody(contentForRender);
     }
     bodyHtml = restoreComments(bodyHtml, commentBalloons);
-    bodyHtml = sanitizeHtml(bodyHtml);
 
     await ensurePreviewShell(currentUserCss);
     const doc = iframe.contentDocument;
@@ -3120,7 +3118,8 @@ function cancelSettings() {
 
 // ===== PROOFREADING (Gemini) =====
 
-// Send text to Gemini for proofreading and display the list of suggestions.
+// Split Gemini's "revised text first, then a bulleted list of changes" reply
+// into the two parts so the revised text can be applied on its own.
 async function runProofread() {
   if (!currentFilePath) {
     showStatus("Open a file to proofread", true);

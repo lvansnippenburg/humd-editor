@@ -137,8 +137,8 @@ def load_settings() -> dict:
     if SETTINGS_PATH.exists():
         try:
             return json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-        except Exception as e:
-            raise RuntimeError(f"Failed to read or parse settings file: {e}") from e
+        except Exception:
+            pass
     return {}
 
 
@@ -147,14 +147,6 @@ def save_settings(data: dict) -> None:
     tmp = SETTINGS_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(SETTINGS_PATH)
-
-
-def safe_write_text(file_path: Path, content: str) -> None:
-    """Write text content to a file atomically by writing to a temporary file
-    and replacing the target file."""
-    tmp = file_path.with_suffix(".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    tmp.replace(file_path)
 
 
 # ---------------------------------------------------------------------------
@@ -521,7 +513,7 @@ def rename_wikilink_targets(vault_path: str, old_stem: str, new_stem: str) -> in
         )
         if n:
             try:
-                safe_write_text(Path(fpath), new_content)
+                Path(fpath).write_text(new_content, encoding="utf-8")
                 changed += 1
             except OSError:
                 pass
@@ -626,7 +618,7 @@ PROOFREAD_SYSTEM = (
     "and suggest a fix. Do not include opinions, praise, or any text outside "
     "the bulleted list. Do not number the list."
 )
-DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite"
 
 
 def proofread_text(text: str) -> str:
@@ -933,7 +925,7 @@ class Handler(SimpleHTTPRequestHandler):
         elif path == "/api/write-file":
             try:
                 data = self.read_body()
-                safe_write_text(safe_path(data["path"]), data["content"])
+                safe_path(data["path"]).write_text(data["content"], encoding="utf-8")
                 self.send_json({"ok": True})
             except Exception as e:
                 self.send_error_json(str(e))
@@ -1005,7 +997,7 @@ class Handler(SimpleHTTPRequestHandler):
                     "}\n"
                 )
                 r = subprocess.run(
-                    ["osascript", "-l", "JavaScript", "-e", script, "--", file_path],
+                    ["osascript", "-l", "JavaScript", "-e", script, file_path],
                     capture_output=True,
                     text=True,
                 )
@@ -1142,8 +1134,7 @@ def _shutdown_running(port: int) -> bool:
                 method="POST",
                 headers={"Content-Type": "application/json"},
             )
-            with urllib.request.urlopen(req, timeout=2):
-                pass
+            urllib.request.urlopen(req, timeout=2)
         except Exception:
             pass
         for _ in range(30):  # up to ~3s per endpoint
