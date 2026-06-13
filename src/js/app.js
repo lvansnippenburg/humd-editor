@@ -351,6 +351,17 @@ function setupEventListeners() {
   document.getElementById("proofread-btn").addEventListener("click", runProofread);
   document.getElementById("export-docx-btn").addEventListener("click", exportToWord);
   document.getElementById("close-proofread").addEventListener("click", closeProofreadPanel);
+  // Delegated: the Apply button replaces the passage; clicking elsewhere on a
+  // suggestion highlights its source passage in the editor.
+  document.getElementById("proofread-list").addEventListener("click", (e) => {
+    const li = e.target.closest("li[data-original]");
+    if (!li) return;
+    if (e.target.closest(".proofread-apply")) {
+      applyProofreadSuggestion(li);
+    } else {
+      highlightProofreadSnippet(li.dataset.original, li);
+    }
+  });
   document
     .getElementById("editor-search-input")
     .addEventListener("keydown", handleEditorSearchKeydown);
@@ -3148,6 +3159,24 @@ async function runProofread() {
 
   try {
     const res = await apiPost("/api/proofread", { text });
+
+    // Preferred path: structured suggestions ({ original, suggestion, comment }).
+    // Each item is clickable and highlights its source passage in the editor.
+    if (Array.isArray(res.suggestions)) {
+      if (res.suggestions.length === 0) {
+        list.innerHTML =
+          "<li style='color: var(--text-secondary); padding: 16px;'>No suggestions found — excellent work!</li>";
+      } else {
+        for (const item of res.suggestions) {
+          list.appendChild(buildSuggestionItem(item));
+        }
+      }
+      loading.style.display = "none";
+      suggestions.style.display = "";
+      return;
+    }
+
+    // Legacy fallback: model returned a markdown bulleted list as plain text.
     const suggestionsText = res.result || "";
 
     // Gemini returns markdown bulleted list. Render it as HTML.
@@ -3192,6 +3221,134 @@ async function runProofread() {
   } catch (err) {
     loading.innerHTML = `<p style="color: var(--text-secondary); margin: 0; padding: 12px 16px; font-size: 12px;">Error: ${escapeHtml(err.message || err)}</p>`;
   }
+}
+
+// Build a clickable suggestion <li> from a structured proofread item. The exact
+// source passage and its replacement are stashed in the dataset so a click can
+// locate it (highlight) and the Apply button can swap it in.
+function buildSuggestionItem(item) {
+  const li = document.createElement("li");
+  li.className = "proofread-item";
+  if (item.original) li.dataset.original = item.original;
+  if (item.suggestion != null) li.dataset.suggestion = item.suggestion;
+  const comment = item.comment || item.suggestion || "";
+  let html = `<div class="proofread-comment">${escapeHtml(comment)}</div>`;
+  if (item.original || item.suggestion) {
+    html +=
+      `<div class="proofread-change">` +
+      `<span class="proofread-original">${escapeHtml(item.original || "")}</span>` +
+      ` → <span class="proofread-suggestion">${escapeHtml(item.suggestion || "")}</span>` +
+      `</div>`;
+  }
+  // Apply button — replaces the original passage with the suggestion. Only shown
+  // when there's an actual change to make.
+  if (item.original && item.suggestion != null && item.suggestion !== item.original) {
+    html +=
+      `<div class="proofread-actions">` +
+      `<button type="button" class="proofread-apply">Apply</button>` +
+      `</div>`;
+  }
+  li.innerHTML = html;
+  return li;
+}
+
+// Locate a proofread snippet in the editor, returning a {start, end} range in
+// full-document offsets, or null if not found. Searches only within the region
+// that was proofread (proofreadRange) so offsets map back correctly.
+function findProofreadSnippetRange(snippet) {
+  if (!snippet) return null;
+  const editor = document.getElementById("editor");
+  const range = proofreadRange || { start: 0, end: editor.value.length };
+  const haystack = editor.value.slice(range.start, range.end);
+
+  let idx = haystack.indexOf(snippet);
+  let len = snippet.length;
+  if (idx === -1) {
+    // Fall back to a whitespace-normalised, case-insensitive match: collapse
+    // runs of whitespace in both sides and map the hit back to a real range.
+    const norm = (s) => s.replace(/\s+/g, " ");
+    const normHay = norm(haystack).toLowerCase();
+    const normSnip = norm(snippet).trim().toLowerCase();
+    const ni = normSnip ? normHay.indexOf(normSnip) : -1;
+    if (ni !== -1) {
+      // Walk the original text counting normalised characters to recover offsets.
+      const map = mapNormalizedToOriginal(haystack);
+      idx = map[ni] ?? -1;
+      const endNorm = ni + normSnip.length - 1;
+      const endOrig = map[endNorm] ?? -1;
+      if (idx !== -1 && endOrig !== -1) len = endOrig - idx + 1;
+    }
+  }
+  if (idx === -1) return null;
+  return { start: range.start + idx, end: range.start + idx + len };
+}
+
+// Select and scroll to a passage in the editor.
+function highlightProofreadSnippet(snippet, li) {
+  const r = findProofreadSnippetRange(snippet);
+  if (!r) {
+    showStatus("Couldn't locate that passage in the editor", true);
+    return;
+  }
+  const editor = document.getElementById("editor");
+  editor.focus();
+  editor.setSelectionRange(r.start, r.end);
+  editor.scrollTop = editor.scrollHeight * (r.start / Math.max(1, editor.value.length));
+
+  // Mark the clicked item active for visual feedback.
+  document
+    .querySelectorAll("#proofread-list li.active")
+    .forEach((el) => el.classList.remove("active"));
+  if (li) li.classList.add("active");
+}
+
+// Replace the original passage with the suggested text in the editor. The user
+// triggers this explicitly via the Apply button, so they stay in control.
+function applyProofreadSuggestion(li) {
+  const original = li.dataset.original;
+  const suggestion = li.dataset.suggestion;
+  if (original == null || suggestion == null) return;
+  const r = findProofreadSnippetRange(original);
+  if (!r) {
+    showStatus("Couldn't locate that passage in the editor", true);
+    return;
+  }
+  const editor = document.getElementById("editor");
+  editorReplace(editor, r.start, r.end, suggestion);
+  // The document length changed; shift the proofread window's end so later
+  // lookups still search the right region.
+  if (proofreadRange) proofreadRange.end += suggestion.length - (r.end - r.start);
+  // Keep the new text selected and visible.
+  editor.setSelectionRange(r.start, r.start + suggestion.length);
+  editor.scrollTop = editor.scrollHeight * (r.start / Math.max(1, editor.value.length));
+
+  // Mark this suggestion as applied so it's clearly done and can't double-apply.
+  li.classList.add("applied");
+  li.classList.remove("active");
+  const btn = li.querySelector(".proofread-apply");
+  if (btn) {
+    btn.textContent = "Applied";
+    btn.disabled = true;
+  }
+}
+
+// Build an index mapping each character position in the whitespace-normalised
+// form of `text` back to its position in the original string.
+function mapNormalizedToOriginal(text) {
+  const map = [];
+  let prevSpace = false;
+  for (let i = 0; i < text.length; i++) {
+    const isSpace = /\s/.test(text[i]);
+    if (isSpace) {
+      if (prevSpace) continue; // collapsed run — skip
+      map.push(i);
+      prevSpace = true;
+    } else {
+      map.push(i);
+      prevSpace = false;
+    }
+  }
+  return map;
 }
 
 function closeProofreadPanel() {

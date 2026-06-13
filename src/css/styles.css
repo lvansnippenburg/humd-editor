@@ -1396,12 +1396,72 @@ dialog h2 {
     font-size: 12px;
 }
 
+#proofread-list li[data-original] {
+    cursor: pointer;
+}
+
 #proofread-list li:hover {
     background: var(--hover-bg);
 }
 
+#proofread-list li.active {
+    background: var(--hover-bg);
+    box-shadow: inset 3px 0 0 var(--accent);
+}
+
 #proofread-list li:last-child {
     border-bottom: none;
+}
+
+.proofread-comment {
+    margin-bottom: 4px;
+}
+
+.proofread-change {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.proofread-original {
+    text-decoration: line-through;
+    opacity: 0.8;
+}
+
+.proofread-suggestion {
+    color: var(--text-primary);
+}
+
+.proofread-actions {
+    margin-top: 6px;
+}
+
+.proofread-apply {
+    font-size: 11px;
+    padding: 2px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.proofread-apply:hover:not(:disabled) {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+
+.proofread-apply:disabled {
+    cursor: default;
+    opacity: 0.6;
+}
+
+#proofread-list li.applied {
+    opacity: 0.55;
+}
+
+#proofread-list li.applied .proofread-original {
+    color: var(--text-secondary);
 }
 
 dialog footer {

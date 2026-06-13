@@ -613,11 +613,29 @@ PROOFREAD_SYSTEM = (
     "You are the editor of an academic historical magazine. Review the text for "
     "grammar, punctuation, clarity, and British spelling. Preserve the author's "
     "voice, long sentences when they work, and any deliberate archaic or "
-    "period-appropriate terminology. Return ONLY a markdown bulleted list of "
-    "specific, actionable suggestions. Each point should identify the exact issue "
-    "and suggest a fix. Do not include opinions, praise, or any text outside "
-    "the bulleted list. Do not number the list."
+    "period-appropriate terminology. Return a JSON array of specific, actionable "
+    "suggestions. Each element is an object with three string fields: "
+    "'original' — the exact passage to change, copied verbatim character-for-"
+    "character from the input text (no paraphrasing, no added quotes or ellipses, "
+    "and short enough to locate unambiguously); 'suggestion' — the corrected "
+    "replacement for that passage; and 'comment' — a brief explanation of the "
+    "issue. Do not include opinions, praise, or any text outside the JSON array. "
+    "If the text needs no changes, return an empty array."
 )
+
+# Schema forcing Gemini to emit the structured suggestion list the client expects.
+PROOFREAD_SCHEMA = {
+    "type": "ARRAY",
+    "items": {
+        "type": "OBJECT",
+        "properties": {
+            "original": {"type": "STRING"},
+            "suggestion": {"type": "STRING"},
+            "comment": {"type": "STRING"},
+        },
+        "required": ["original", "suggestion", "comment"],
+    },
+}
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite"
 
 
@@ -642,6 +660,10 @@ def proofread_text(text: str) -> str:
         {
             "system_instruction": {"parts": [{"text": PROOFREAD_SYSTEM}]},
             "contents": [{"role": "user", "parts": [{"text": text}]}],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "responseSchema": PROOFREAD_SCHEMA,
+            },
         }
     ).encode("utf-8")
     req = urllib.request.Request(
@@ -1075,7 +1097,22 @@ class Handler(SimpleHTTPRequestHandler):
                 text = (data.get("text") or "").strip()
                 if not text:
                     raise ValueError("Nothing to proofread")
-                self.send_json({"result": proofread_text(text)})
+                raw = proofread_text(text)
+                # The model is asked for a JSON array of suggestions. Parse it so
+                # the client gets structured data; fall back to the raw string if
+                # the response isn't valid JSON (so something is still shown).
+                stripped = raw.strip()
+                if stripped.startswith("```"):
+                    # Strip a ```json … ``` fence the model occasionally adds.
+                    stripped = re.sub(r"^```[a-zA-Z]*\n?", "", stripped)
+                    stripped = re.sub(r"\n?```$", "", stripped).strip()
+                try:
+                    suggestions = json.loads(stripped)
+                    if not isinstance(suggestions, list):
+                        raise ValueError("not a list")
+                    self.send_json({"suggestions": suggestions})
+                except (json.JSONDecodeError, ValueError):
+                    self.send_json({"result": raw})
             except Exception as e:
                 self.send_error_json(str(e))
 
