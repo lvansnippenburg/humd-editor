@@ -1997,13 +1997,6 @@ function ensurePreviewShell(userCss) {
     iframe.addEventListener(
       "load",
       () => {
-        const doc = iframe.contentDocument;
-        if (doc && !doc.getElementById("citation-style")) {
-          const st = doc.createElement("style");
-          st.id = "citation-style";
-          st.textContent = CITATION_CSS;
-          doc.head.appendChild(st);
-        }
         previewShellReady = true;
         resolve();
       },
@@ -2827,16 +2820,6 @@ async function saveUiState() {
 // ===== CITATIONS =====
 
 const Cite = window.Cite;
-
-const CITATION_CSS = `
-.citation-ref { color: #888; font-size: 0.9em; cursor: default; }
-.citation-ref a { color: #6366f1; text-decoration: none; }
-.citation-ref a:hover { text-decoration: underline; }
-.citation-missing { color: #888; background: rgba(99,102,241,0.1); border-radius: 2px; padding: 0 2px; }
-#citation-bibliography { margin-top: 16px; border-top: 1px solid #e5e5e5; padding-top: 8px; }
-#citation-bibliography h2 { font-size: 1em; font-weight: 600; margin: 0 0 12px; text-transform: uppercase; letter-spacing: 0.05em; }
-#citation-bibliography .csl-entry { margin-bottom: 8px; font-size: 0.9em; line-height: 1.5; padding-left: 1.5em; text-indent: -1.5em; }
-`;
 
 async function loadCitations() {
   citeBibData = null;

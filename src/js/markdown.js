@@ -294,47 +294,8 @@ window.addEventListener('message', function(e) {
 <head>
 <meta charset="UTF-8">
 ${hlCss}
+<link rel="stylesheet" href="/css/preview.css">
 <style>
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.6; padding: 20px; max-width: 800px; margin: 0 auto; color: #333; position: relative; }
-#preview-comment-gutter { position: absolute; top: 0; left: 0; bottom: 0; width: 22px; pointer-events: none; overflow: hidden; }
-img { max-width: 100%; height: auto; }
-pre { border-radius: 5px; overflow-x: auto; padding: 12px 16px; font-size: 0.9em; }
-pre code { background: none; padding: 0; font-size: inherit; }
-code { background: #f0f0f0; padding: 2px 5px; border-radius: 3px; font-size: 0.9em; }
-mark { background-color: #fff176; color: inherit; padding: 1px 2px; border-radius: 2px; }
-.task-list-item { list-style-type: none; margin-left: -20px; }
-.task-list-item input[type="checkbox"] { margin-right: 6px; vertical-align: middle; }
-dt { font-weight: 600; margin-top: 10px; }
-dd { margin-left: 24px; color: #555; }
-table { border-collapse: collapse; width: 100%; margin: 1em 0; }
-th, td { border: 1px solid #ddd; padding: 6px 12px; text-align: left; }
-th { background: #f5f5f5; font-weight: 600; }
-tr:nth-child(even) { background: #fafafa; }
-a.footnote-ref { font-size: 0.8em; vertical-align: super; }
-sup.footnote-ref { font-size: 0.75em; }
-sup.footnote-ref a { text-decoration: none; }
-a.footnote-back { text-decoration: none; margin-left: 4px; }
-a.tag-link { color: #5a6e8c; background: #eef1f6; padding: 0 5px; border-radius: 8px; font-size: 0.85em; text-decoration: none; white-space: nowrap; }
-a.tag-link:hover { background: #dde3ee; }
-.hp-comment { display: inline-block; color: #2563eb; opacity: 0.75; cursor: pointer; user-select: none; }
-.preview-comment-balloon { display: inline-block; color: #2563eb; opacity: 0.75; user-select: none; }
-.preview-comment-balloon:hover { opacity: 1; }
-section.footnotes { margin-top: 2em; border-top: 1px solid #ddd; padding-top: 1em; font-size: 0.9em; }
-section.footnotes ol { padding-left: 1.5em; }
-section.footnotes li { margin: 0.25em 0; }
-@media (prefers-color-scheme: dark) {
-  body { background-color: #1e1e1e; color: #e0e0e0; }
-  a { color: #6da3f5; }
-  code { background: #2d2d2d; }
-  mark { background-color: #7a6a00; color: #fff176; }
-  dd { color: #aaa; }
-  th { background: #2a2a2a; }
-  tr:nth-child(even) { background: #242424; }
-  th, td { border-color: #444; }
-  section.footnotes { border-color: #444; }
-  a.tag-link { color: #9bb3d4; background: #2a3344; }
-  a.tag-link:hover { background: #34405680; }
-}
 ${userCss}
 </style>
 </head>
