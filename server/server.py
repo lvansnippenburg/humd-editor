@@ -272,7 +272,9 @@ def extract_yaml_tags(content: str) -> list:
     return []
 
 
-_INLINE_TAG_RE = re.compile(r"(?<![\w&#])#([A-Za-z][\w/-]*)")
+# A `#` right after `(` is a link/anchor target — `[text](#links)` or "(#links)" —
+# not a tag, so exclude it (matches the preview renderer's behaviour).
+_INLINE_TAG_RE = re.compile(r"(?<![\w&#(])#([A-Za-z][\w/-]*)")
 
 
 def extract_inline_tags(content: str) -> list:

@@ -310,6 +310,7 @@ function setupEventListeners() {
   editor.addEventListener("blur", onEditorBlurCommit);
   editor.addEventListener("scroll", closeAutocomplete, { passive: true });
   editor.addEventListener("mouseup", closeAutocomplete);
+  editor.addEventListener("click", onEditorModifierClick);
 
   document.getElementById("preview-toggle-btn").addEventListener("click", togglePreview);
 
@@ -438,23 +439,7 @@ function setupEventListeners() {
   // Messages from preview iframe
   window.addEventListener("message", async (msg) => {
     if (msg.data.type === "open-url") {
-      const href = msg.data.href || "";
-      // In the packaged native window, links can't spawn a browser tab — hand
-      // them to the OS via the pywebview bridge. In a real browser, fall back.
-      if (window.pywebview?.api?.open_external) {
-        window.pywebview.api.open_external(href);
-      } else if (/^(https?:|mailto:)/i.test(href)) {
-        window.open(href, "_blank", "noopener");
-      } else {
-        // App/custom protocols (zotero://, file://, obsidian://, …): trigger the
-        // OS handler via an anchor click — avoids leaving a blank tab behind.
-        const a = document.createElement("a");
-        a.href = href;
-        a.style.display = "none";
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-      }
+      openExternalUrl(msg.data.href || "");
       return;
     }
     if (msg.data.type === "wikilink") {
@@ -3832,6 +3817,60 @@ function editorReplaceAll() {
 }
 
 // ===== UI HELPERS =====
+
+// Ctrl/Cmd-click on a token in the editor: if it's a URL, open it. The click
+// has already moved the caret, so editor.selectionStart marks where the user
+// clicked; we grow out to the surrounding whitespace-delimited token. (On macOS
+// Ctrl-click is intercepted by the OS as a right-click, so Cmd-click is the
+// reliable gesture there.)
+function onEditorModifierClick(e) {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const editor = e.currentTarget;
+  const value = editor.value;
+  const pos = editor.selectionStart;
+  let start = pos;
+  let end = pos;
+  while (start > 0 && !/\s/.test(value[start - 1])) start--;
+  while (end < value.length && !/\s/.test(value[end])) end++;
+  const url = extractUrlFromToken(value.slice(start, end));
+  if (url) {
+    e.preventDefault();
+    openExternalUrl(url);
+  }
+}
+
+// Pull a URL out of a whitespace-delimited token, returning it or null. Handles
+// a markdown link `[text](url)` and a URL wrapped in (), [] or <> (e.g. an
+// autolink or a parenthesised aside), plus trailing sentence punctuation.
+function extractUrlFromToken(token) {
+  let s = token.trim();
+  if (!s) return null;
+  const md = s.match(/\]\(([^()\s]+)\)/); // [text](url)
+  if (md) s = md[1];
+  s = s.replace(/^[<([]+/, "").replace(/[>)\].,;:!?'"]+$/, "");
+  return /^(https?:\/\/|mailto:)\S+$/i.test(s) ? s : null;
+}
+
+// Open a URL/app-protocol link with the OS. In the packaged native window links
+// can't spawn a browser tab, so hand them to the pywebview bridge; in a real
+// browser, fall back to window.open / an anchor click for custom schemes.
+function openExternalUrl(href) {
+  if (!href) return;
+  if (window.pywebview?.api?.open_external) {
+    window.pywebview.api.open_external(href);
+  } else if (/^(https?:|mailto:)/i.test(href)) {
+    window.open(href, "_blank", "noopener");
+  } else {
+    // App/custom protocols (zotero://, file://, obsidian://, …): trigger the
+    // OS handler via an anchor click — avoids leaving a blank tab behind.
+    const a = document.createElement("a");
+    a.href = href;
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+}
 
 function showStatus(message, isError = false) {
   const statusBar = document.getElementById("status-bar");
