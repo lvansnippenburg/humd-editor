@@ -815,6 +815,12 @@ body.dragging-file #trash-btn {
     margin: 6px 0;
 }
 
+#suggest-tags-btn {
+    flex-shrink: 0;
+    align-self: center;
+    margin: 6px 0;
+}
+
 #export-docx-btn {
     flex-shrink: 0;
     align-self: center;
