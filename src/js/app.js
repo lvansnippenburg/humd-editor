@@ -3848,7 +3848,10 @@ function extractUrlFromToken(token) {
   const md = s.match(/\]\(([^()\s]+)\)/); // [text](url)
   if (md) s = md[1];
   s = s.replace(/^[<([]+/, "").replace(/[>)\].,;:!?'"]+$/, "");
-  return /^(https?:\/\/|mailto:)\S+$/i.test(s) ? s : null;
+  // Undo markdown backslash-escapes (e.g. a Zotero link's "page=7\&annotation").
+  s = s.replace(/\\(.)/g, "$1");
+  // Accept any scheme://… (http, zotero, file, obsidian, …) or mailto:.
+  return /^([a-z][a-z0-9+.-]*:\/\/|mailto:)\S+$/i.test(s) ? s : null;
 }
 
 // Open a URL/app-protocol link with the OS. In the packaged native window links
