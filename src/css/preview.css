@@ -1,5 +1,6 @@
 @page {
     size: A4 portrait;
+    margin: 25mm;
 }
 
 body {
@@ -110,17 +111,20 @@ sub {
 }
 
 a.footnote-ref {
-    font-size: 0.6em;
+    font-size: 0.8em;
     vertical-align: super;
     text-decoration: none;
 }
 
 sup.footnote-ref {
-    font-size: 0.75em;
+    font-size: 0.8em;
 }
+
 sup.footnote-ref a {
+    font-size: 0.8em;
     text-decoration: none;
 }
+
 a.footnote-back {
     text-decoration: none;
     margin-left: 4px;
@@ -153,12 +157,13 @@ a.tag-link:hover {
 .preview-comment-balloon:hover {
     opacity: 1;
 }
+
 section.footnotes {
     margin-top: 2em;
     border-top: 1px solid #ddd;
     padding-top: 1em;
     font-size: 0.8em;
-    color: #333;
+    color: #888;
 }
 
 section.footnotes ol {
@@ -167,6 +172,11 @@ section.footnotes ol {
 
 section.footnotes li {
     margin: 0.25em 0;
+}
+
+section.footnotes ol li::marker {
+    vertical-align: super;
+    font-size: 0.8em;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -197,9 +207,15 @@ section.footnotes li {
     td {
         border-color: #444;
     }
+
     section.footnotes {
         border-color: #444;
     }
+
+    section.footnotes ol li::marker {
+        font-size: 0.6em;
+    }
+
     a.tag-link {
         color: #9bb3d4;
         background: #2a3344;

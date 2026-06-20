@@ -28,6 +28,13 @@ let currentPandocRefDocPath = null;
 let currentUserNickname = "";
 let currentGeminiKey = "";
 let currentGeminiModel = "";
+let currentProofreadProvider = "gemini"; // "gemini" | "ollama"
+let currentOllamaUrl = "";
+let currentOllamaModel = "";
+let vaultIsGitRepo = false; // is the current vault a git working tree?
+let gitCommitInFlight = false; // serialise commit triggers (blur + timer)
+let gitAuthErrorShown = false; // only nag about credentials once per session
+let gitAutoCommitTimer = null; // 60-min periodic commit interval handle
 let proofreadRange = null; // { start, end } in the editor that proofreading targets
 let previewVisible = true;
 let previewStale = false; // edits happened while preview was hidden; refresh on show
@@ -102,12 +109,7 @@ async function startInlineRename(nameEl, oldPath) {
     try {
       const result = await apiPost("/api/rename-file", { old_path: oldPath, new_name: newName });
       const newPath = result.path;
-      tabs.forEach((t) => {
-        if (t.path === oldPath) {
-          t.path = newPath;
-          if (t.id === activeTabId) currentFilePath = newPath;
-        }
-      });
+      remapTabPaths(oldPath, newPath);
       renderTabBar();
       await refreshFileTree();
       if (currentFilePath === newPath) await revealFileInTree(newPath);
@@ -116,6 +118,7 @@ async function startInlineRename(nameEl, oldPath) {
       await buildLinkIndex();
       await reloadCleanTabsFromDisk();
       showStatus(`Renamed to "${newName}"`);
+      handleGitResult(result.git);
     } catch (err) {
       input.replaceWith(nameEl);
       showStatus(`Rename failed: ${err}`, true);
@@ -194,6 +197,9 @@ async function initialize() {
     currentUserNickname = settings.userNickname || "";
     currentGeminiKey = settings.geminiApiKey || "";
     currentGeminiModel = settings.geminiModel || "gemini-3-flash-preview";
+    currentProofreadProvider = settings.proofreadProvider || "gemini";
+    currentOllamaUrl = settings.ollamaUrl || "";
+    currentOllamaModel = settings.ollamaModel || "";
     document.getElementById("editor").spellcheck = currentSpellCheck;
 
     let vaultPath = settings.vaultPath;
@@ -232,6 +238,7 @@ async function initialize() {
         : Promise.resolve([]),
     ]);
     initializeFileWatcher();
+    checkGitRepo();
 
     isInitialized = true;
 
@@ -300,6 +307,7 @@ function setupEventListeners() {
   editor.addEventListener("keydown", onEditorKeydown);
   editor.addEventListener("scroll", onEditorScroll, { passive: true });
   editor.addEventListener("blur", () => setTimeout(closeAutocomplete, 100));
+  editor.addEventListener("blur", onEditorBlurCommit);
   editor.addEventListener("scroll", closeAutocomplete, { passive: true });
   editor.addEventListener("mouseup", closeAutocomplete);
 
@@ -318,7 +326,7 @@ function setupEventListeners() {
     }
     if ((e.metaKey || e.ctrlKey) && e.key === "s") {
       e.preventDefault();
-      saveCurrentFile();
+      saveCurrentFile(true);
     }
     if ((e.metaKey || e.ctrlKey) && e.key === "f") {
       e.preventDefault();
@@ -343,12 +351,17 @@ function setupEventListeners() {
   document.getElementById("search-input").addEventListener("input", onSearchInput);
 
   document.getElementById("new-file-btn").addEventListener("click", promptNewFile);
+  document.getElementById("new-folder-btn").addEventListener("click", promptNewFolder);
   document.getElementById("graph-btn").addEventListener("click", openGraphTab);
   document.getElementById("change-vault-btn").addEventListener("click", changeVaultFolder);
   document.getElementById("settings-btn").addEventListener("click", openSettingsDialog);
+  document
+    .getElementById("proofread-provider-select")
+    .addEventListener("change", updateProofreadProviderVisibility);
   document.getElementById("help-btn").addEventListener("click", openHelpDialog);
   document.getElementById("close-help").addEventListener("click", closeHelpDialog);
   document.getElementById("proofread-btn").addEventListener("click", runProofread);
+  document.getElementById("suggest-tags-btn").addEventListener("click", runSuggestTags);
   document.getElementById("export-docx-btn").addEventListener("click", exportToWord);
   document.getElementById("close-proofread").addEventListener("click", closeProofreadPanel);
   // Delegated: the Apply button replaces the passage; clicking elsewhere on a
@@ -383,9 +396,7 @@ function setupEventListeners() {
   document.getElementById("close-settings").addEventListener("click", cancelSettings);
   document.getElementById("cancel-settings-btn").addEventListener("click", cancelSettings);
   document.getElementById("save-settings-btn").addEventListener("click", saveSettings);
-  document.getElementById("auto-save-toggle").addEventListener("change", (e) => {
-    document.getElementById("auto-save-warning").style.display = e.target.checked ? "" : "none";
-  });
+
   document.getElementById("pick-vault-btn")?.addEventListener("click", pickVaultFolder);
   document
     .getElementById("pick-bib-btn")
@@ -534,7 +545,22 @@ function setupEventListeners() {
 
 // ===== FILE DRAG =====
 
-function addFileMouseDrag(li, filePath, fileName) {
+// Repoint open tabs after a file/folder is renamed or moved. Handles a moved
+// folder by remapping every open tab whose path sits under the old folder path.
+function remapTabPaths(oldPath, newPath) {
+  tabs.forEach((t) => {
+    if (t.path === oldPath) {
+      t.path = newPath;
+    } else if (t.path && t.path.startsWith(oldPath + "/")) {
+      t.path = newPath + t.path.slice(oldPath.length);
+    } else {
+      return;
+    }
+    if (t.id === activeTabId) currentFilePath = t.path;
+  });
+}
+
+function addFileMouseDrag(li, filePath, fileName, isDir = false) {
   li.addEventListener("mousedown", (e) => {
     if (e.button !== 0) return;
     if (e.target.tagName === "INPUT") return;
@@ -584,7 +610,7 @@ function addFileMouseDrag(li, filePath, fileName) {
         started = true;
         ghost = document.createElement("div");
         ghost.className = "drag-ghost";
-        ghost.innerHTML = getFileIcon(fileName);
+        ghost.innerHTML = isDir ? ICON_FOLDER_CLOSED : getFileIcon(fileName);
         ghost.appendChild(document.createTextNode(" " + fileName));
         document.body.appendChild(ghost);
         document.body.style.userSelect = "none";
@@ -616,12 +642,16 @@ function addFileMouseDrag(li, filePath, fileName) {
       if (trash) {
         try {
           await apiPost("/api/trash-file", { path: filePath });
-          // Close any open tabs for the trashed file without trying to save it.
-          for (const t of tabs.filter((t) => t.path === filePath)) {
+          // Close any open tabs for the trashed file/folder (folders: every tab
+          // under that path) without trying to save them.
+          for (const t of tabs.filter(
+            (t) => t.path === filePath || t.path.startsWith(filePath + "/"),
+          )) {
             await closeTab(t.id, true);
           }
           await refreshFileTree();
           await buildLinkIndex();
+          maybeGitCommit();
           showStatus(`Moved "${fileName}" to Trash`);
         } catch (err) {
           showStatus(`Trash failed: ${err}`, true);
@@ -630,6 +660,7 @@ function addFileMouseDrag(li, filePath, fileName) {
       }
 
       if (overEditor) {
+        if (isDir) return; // dropping a folder into the editor is meaningless
         const editor = document.getElementById("editor");
         editor.focus();
         const pos = editor.selectionStart;
@@ -641,22 +672,22 @@ function addFileMouseDrag(li, filePath, fileName) {
       if (!destDir) return;
       const srcParent = filePath.split("/").slice(0, -1).join("/");
       if (srcParent === destDir) {
-        showStatus("File is already in this folder");
+        showStatus(`"${fileName}" is already in this folder`);
+        return;
+      }
+      if (isDir && (destDir === filePath || destDir.startsWith(filePath + "/"))) {
+        showStatus("Cannot move a folder into itself", true);
         return;
       }
 
       try {
         const result = await apiPost("/api/move-file", { src_path: filePath, dest_dir: destDir });
         const newPath = result.path;
-        tabs.forEach((t) => {
-          if (t.path === filePath) {
-            t.path = newPath;
-            if (t.id === activeTabId) currentFilePath = newPath;
-          }
-        });
+        remapTabPaths(filePath, newPath);
         renderTabBar();
         await refreshFileTree();
         showStatus(`Moved to ${destDir.split("/").pop()}/`);
+        handleGitResult(result.git);
       } catch (err) {
         showStatus(`Move failed: ${err}`, true);
       }
@@ -831,6 +862,12 @@ function renderFileTree(nodes, container = null) {
       nested.dataset.path = node.path;
       label.addEventListener("click", async (e) => {
         e.stopPropagation();
+        // A drag just ended on this label — swallow the click so it doesn't
+        // also toggle the folder open/closed.
+        if (dragDidOccur) {
+          dragDidOccur = false;
+          return;
+        }
         const isCollapsed = li.classList.contains("collapsed");
         li.classList.toggle("collapsed");
         if (isCollapsed && !nested.dataset.loaded) {
@@ -844,6 +881,7 @@ function renderFileTree(nodes, container = null) {
         startInlineRename(nameSpan, node.path);
       });
       addHoverRename(nameSpan, node.path);
+      addFileMouseDrag(label, node.path, node.name, true);
       li.appendChild(label);
       li.appendChild(nested);
     } else {
@@ -1021,6 +1059,9 @@ async function switchToTab(tabId) {
     if (graphContainer) graphContainer.style.display = "none";
 
     editor.value = tab.content;
+    // Re-read the bibliography from disk in case it changed externally (e.g.
+    // re-exported from Zotero) since it was last loaded.
+    await loadCitations();
     await updatePreview();
     renderEditorCommentGutter();
     await revealFileInTree(tab.path);
@@ -1157,6 +1198,9 @@ async function loadFile(path) {
     redoStack = [];
 
     document.getElementById("editor").value = content;
+    // Re-read the bibliography from disk in case it changed externally (e.g.
+    // re-exported from Zotero) since it was last loaded.
+    await loadCitations();
     await updatePreview();
     renderEditorCommentGutter();
     await revealFileInTree(path);
@@ -1204,6 +1248,51 @@ async function promptNewFile() {
       await loadFile(result.path);
       await buildLinkIndex();
       showStatus(`Created: ${fullName}`);
+    } catch (error) {
+      showStatus(`Error: ${error.message || error}`);
+    }
+  };
+
+  input.addEventListener("keydown", async (e) => {
+    if (e.key === "Enter") await handleSave();
+    else if (e.key === "Escape") li.remove();
+  });
+  input.addEventListener("blur", () =>
+    setTimeout(() => {
+      if (li.parentNode) li.remove();
+    }, 100),
+  );
+  li.appendChild(input);
+  fileTree.insertBefore(li, fileTree.firstChild);
+  input.focus();
+}
+
+async function promptNewFolder() {
+  let input = document.getElementById("new-folder-input");
+  if (input) {
+    input.focus();
+    return;
+  }
+  const fileTree = document.getElementById("file-tree");
+  const li = document.createElement("li");
+  input = document.createElement("input");
+  input.id = "new-folder-input";
+  input.className = "file-input-inline";
+  input.type = "text";
+  input.placeholder = "New folder name...";
+  input.spellcheck = false;
+
+  const handleSave = async () => {
+    const name = input.value.trim();
+    li.remove();
+    if (!name) return;
+    try {
+      await apiPost("/api/create-folder", {
+        vault_path: currentVaultPath,
+        name,
+      });
+      await refreshFileTree();
+      showStatus(`Created folder: ${name}`);
     } catch (error) {
       showStatus(`Error: ${error.message || error}`);
     }
@@ -2123,7 +2212,10 @@ async function updatePreview() {
 
 // ===== FILE SAVE =====
 
-async function saveCurrentFile() {
+// `reloadCites` re-reads the bibliography from disk and refreshes the preview so
+// external changes to the citation file are picked up. Skipped for auto-save
+// (which calls this on a typing debounce) to avoid re-parsing it constantly.
+async function saveCurrentFile(reloadCites = false) {
   if (!currentFilePath || !isDirty) return;
   try {
     const content = getEditorContent();
@@ -2137,6 +2229,10 @@ async function saveCurrentFile() {
     renderTabBar();
     await buildLinkIndex();
     await updateTagsBar(currentFilePath);
+    if (reloadCites && currentBibPath) {
+      await loadCitations();
+      await updatePreview();
+    }
     showStatus("Saved");
   } catch (error) {
     showStatus(`Error saving: ${error.message || error}`);
@@ -2273,6 +2369,7 @@ function switchSidebarTab(tab) {
   document.getElementById("tags-container").style.display = tab === "tags" ? "block" : "none";
   document.getElementById("search-container").style.display = tab === "search" ? "flex" : "none";
   document.getElementById("new-file-btn").style.display = tab === "files" ? "" : "none";
+  document.getElementById("new-folder-btn").style.display = tab === "files" ? "" : "none";
   if (tab === "outline") buildOutline();
   if (tab === "links") buildLinksPanel();
   if (tab === "tags") buildTagsPanel();
@@ -3006,13 +3103,15 @@ function openSettingsDialog() {
     bibPath: currentBibPath,
     cslPath: currentCslPath,
     pandocRefDocPath: currentPandocRefDocPath,
+    proofreadProvider: currentProofreadProvider,
+    ollamaUrl: currentOllamaUrl,
+    ollamaModel: currentOllamaModel,
   };
   document.getElementById("vault-path-display").textContent = currentVaultPath;
   document.getElementById("css-editor").value = currentUserCss;
   document.getElementById("spell-check-toggle").checked = currentSpellCheck;
   document.getElementById("use-pandoc-toggle").checked = currentUsePandoc;
   document.getElementById("auto-save-toggle").checked = currentAutoSave;
-  document.getElementById("auto-save-warning").style.display = currentAutoSave ? "" : "none";
   document.getElementById("bib-path-display").textContent = currentBibPath || "None selected";
   document.getElementById("csl-path-display").textContent =
     currentCslPath || "None selected (defaults to APA)";
@@ -3021,7 +3120,20 @@ function openSettingsDialog() {
   document.getElementById("nickname-input").value = currentUserNickname;
   document.getElementById("gemini-key-input").value = currentGeminiKey;
   document.getElementById("gemini-model-input").value = currentGeminiModel;
+  document.getElementById("proofread-provider-select").value = currentProofreadProvider;
+  document.getElementById("ollama-url-input").value = currentOllamaUrl;
+  document.getElementById("ollama-model-input").value = currentOllamaModel;
+  updateProofreadProviderVisibility();
   document.getElementById("settings-dialog").showModal();
+}
+
+// Show only the fields relevant to the selected proofreading provider.
+function updateProofreadProviderVisibility() {
+  const provider = document.getElementById("proofread-provider-select").value;
+  document.getElementById("gemini-settings-group").style.display =
+    provider === "gemini" ? "" : "none";
+  document.getElementById("ollama-settings-group").style.display =
+    provider === "ollama" ? "" : "none";
 }
 
 function closeSettingsDialog() {
@@ -3048,6 +3160,9 @@ async function saveSettings() {
     const newNickname = document.getElementById("nickname-input").value.trim();
     const newGeminiKey = document.getElementById("gemini-key-input").value.trim();
     const newGeminiModel = document.getElementById("gemini-model-input").value.trim();
+    const newProofreadProvider = document.getElementById("proofread-provider-select").value;
+    const newOllamaUrl = document.getElementById("ollama-url-input").value.trim();
+    const newOllamaModel = document.getElementById("ollama-model-input").value.trim();
 
     // Validate vault path
     try {
@@ -3069,6 +3184,9 @@ async function saveSettings() {
       userNickname: newNickname,
       geminiApiKey: newGeminiKey,
       geminiModel: newGeminiModel,
+      proofreadProvider: newProofreadProvider,
+      ollamaUrl: newOllamaUrl,
+      ollamaModel: newOllamaModel,
     });
 
     currentUserCss = newCss;
@@ -3078,6 +3196,9 @@ async function saveSettings() {
     currentUserNickname = newNickname;
     currentGeminiKey = newGeminiKey;
     currentGeminiModel = newGeminiModel;
+    currentProofreadProvider = newProofreadProvider;
+    currentOllamaUrl = newOllamaUrl;
+    currentOllamaModel = newOllamaModel;
     document.getElementById("editor").spellcheck = newSpellCheck;
 
     const bibChanged = newBibPath !== currentBibPath;
@@ -3093,6 +3214,7 @@ async function saveSettings() {
       closeFile();
       await refreshFileTree();
       await buildLinkIndex();
+      await checkGitRepo();
       showStatus(`Vault changed to: ${newVaultPath}`);
     } else {
       if (currentFilePath) await updatePreview();
@@ -3110,14 +3232,70 @@ function cancelSettings() {
   document.getElementById("spell-check-toggle").checked = settingsBeforeEdit.spellCheck;
   document.getElementById("use-pandoc-toggle").checked = settingsBeforeEdit.usePandoc;
   document.getElementById("auto-save-toggle").checked = settingsBeforeEdit.autoSave;
-  document.getElementById("auto-save-warning").style.display = settingsBeforeEdit.autoSave
-    ? ""
-    : "none";
+
   document.getElementById("bib-path-display").textContent =
     settingsBeforeEdit.bibPath || "None selected";
   document.getElementById("csl-path-display").textContent =
     settingsBeforeEdit.cslPath || "None selected (defaults to APA)";
   closeSettingsDialog();
+}
+
+// ===== SUGGEST TAGS =====
+
+// Ask the AI provider which existing vault tags fit the open document, then
+// append the new ones (as #tags) on a fresh line at the bottom of the document.
+async function runSuggestTags() {
+  if (!currentFilePath) {
+    showStatus("Open a file to suggest tags", true);
+    return;
+  }
+  const editor = document.getElementById("editor");
+  const text = editor.value;
+  if (!text.trim()) {
+    showStatus("Nothing to analyse", true);
+    return;
+  }
+
+  // Existing tags across the vault (canonical spellings from the link index).
+  const existingTags = Object.values(tagIndexCache).map((t) => t.name);
+  if (existingTags.length === 0) {
+    showStatus("No existing tags in the vault to choose from", true);
+    return;
+  }
+
+  const btn = document.getElementById("suggest-tags-btn");
+  btn.disabled = true;
+  showStatus("Suggesting tags…");
+  try {
+    const res = await apiPost("/api/suggest-tags", { text, existing_tags: existingTags });
+    if (res.warning) showStatus(res.warning);
+
+    // Skip tags already present in the document.
+    const lower = text.toLowerCase();
+    const newTags = (res.tags || []).filter(
+      (t) => !new RegExp(`(^|[^\\w&#])#${escapeRegExp(t)}\\b`, "i").test(lower),
+    );
+
+    if (newTags.length === 0) {
+      showStatus("No new tag suggestions");
+      return;
+    }
+
+    const line = newTags.map((t) => `#${t}`).join(" ");
+    const needsBlank = text.length > 0 && !text.endsWith("\n");
+    const insert = (needsBlank ? "\n\n" : text.endsWith("\n\n") ? "" : "\n") + line + "\n";
+    const pos = editor.value.length;
+    editorReplace(editor, pos, pos, insert); // undoable; triggers preview/dirty
+    showStatus(`Added tags: ${newTags.map((t) => `#${t}`).join(" ")}`);
+  } catch (err) {
+    showStatus(`Suggest tags failed: ${err.message || err}`, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // ===== PROOFREADING (Gemini) =====
@@ -3159,6 +3337,10 @@ async function runProofread() {
 
   try {
     const res = await apiPost("/api/proofread", { text });
+
+    // Non-fatal notice (e.g. Ollama not running → fell back to Gemini). Shown
+    // unobtrusively in the status bar; the suggestions still render normally.
+    if (res.warning) showStatus(res.warning);
 
     // Preferred path: structured suggestions ({ original, suggestion, comment }).
     // Each item is clickable and highlights its source passage in the editor.
@@ -3430,6 +3612,79 @@ async function pickVaultFolder() {
   } catch (error) {
     showStatus(`Error: ${error.message || error}`);
   }
+}
+
+// ===== GIT AUTO-SYNC =====
+
+// Detect whether the current vault is a git repo and (re)arm the periodic
+// commit timer. Called at startup and whenever the vault changes.
+async function checkGitRepo() {
+  if (gitAutoCommitTimer) {
+    clearInterval(gitAutoCommitTimer);
+    gitAutoCommitTimer = null;
+  }
+  vaultIsGitRepo = false;
+  gitAuthErrorShown = false;
+  try {
+    const info = await apiFetch("/api/git-info");
+    vaultIsGitRepo = !!info.is_repo;
+  } catch {
+    vaultIsGitRepo = false;
+  }
+  if (vaultIsGitRepo) {
+    // Commit any changes once an hour as well as on focus loss.
+    gitAutoCommitTimer = setInterval(maybeGitCommit, 60 * 60 * 1000);
+  }
+}
+
+// When the editor loses focus, persist any pending edit first, then commit so
+// the just-finished change is captured per "commit when a file loses focus".
+async function onEditorBlurCommit() {
+  if (!vaultIsGitRepo) return;
+  if (isDirty) {
+    clearTimeout(autoSaveDebounceTimer);
+    await saveCurrentFile();
+  }
+  maybeGitCommit();
+}
+
+// Commit + push all vault changes. Safe to call freely: it no-ops when the
+// vault isn't a repo, nothing changed, or a commit is already running.
+async function maybeGitCommit() {
+  if (!vaultIsGitRepo || gitCommitInFlight) return;
+  gitCommitInFlight = true;
+  try {
+    const res = await apiPost("/api/git-commit", {});
+    handleGitResult(res);
+  } catch (err) {
+    console.warn("Git commit failed:", err);
+  } finally {
+    gitCommitInFlight = false;
+  }
+}
+
+// Act on a git result returned by /api/git-commit or by rename/move endpoints.
+function handleGitResult(res) {
+  if (!res || !res.is_repo) return;
+  if (res.committed && res.pushed) {
+    showStatus(`Git: ${res.message || "changes pushed"}`);
+  } else if (res.committed && res.needs_auth) {
+    promptGitAuth(res.error);
+  } else if (res.committed && res.reason === "no-remote") {
+    showStatus("Git: committed locally (no remote configured)");
+  }
+}
+
+// Push failed — almost always missing credentials. Tell the user to fix it in a
+// terminal, but only once per session so we don't nag on every commit.
+function promptGitAuth(error) {
+  console.warn("Git push failed:", error);
+  if (gitAuthErrorShown) return;
+  gitAuthErrorShown = true;
+  showStatus(
+    "Git push failed — set up your remote/credentials in a terminal (try `git push`).",
+    true,
+  );
 }
 
 async function pickFileForSetting(displayId, extensions, title) {

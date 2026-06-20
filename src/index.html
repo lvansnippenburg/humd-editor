@@ -159,6 +159,29 @@
                             />
                         </svg>
                     </button>
+                    <button
+                        id="new-folder-btn"
+                        class="icon-btn"
+                        aria-label="Create new folder"
+                        title="New folder"
+                    >
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 15 15"
+                            fill="none"
+                            xmlns="http://www.w3.org/2000/svg"
+                        >
+                            <path
+                                d="M1.5 3C1.22386 3 1 3.22386 1 3.5V11.5C1 11.7761 1.22386 12 1.5 12H13.5C13.7761 12 14 11.7761 14 11.5V5C14 4.72386 13.7761 4.5 13.5 4.5H7.70711L6.35355 3.14645C6.25979 3.05268 6.13261 3 6 3H1.5ZM2 4H5.79289L7.14645 5.35355C7.24021 5.44732 7.36739 5.5 7.5 5.5H13V11H2V4Z"
+                                fill="currentColor"
+                            />
+                            <path
+                                d="M7.5 6.75C7.77614 6.75 8 6.97386 8 7.25V8H8.75C9.02614 8 9.25 8.22386 9.25 8.5C9.25 8.77614 9.02614 9 8.75 9H8V9.75C8 10.0261 7.77614 10.25 7.5 10.25C7.22386 10.25 7 10.0261 7 9.75V9H6.25C5.97386 9 5.75 8.77614 5.75 8.5C5.75 8.22386 5.97386 8 6.25 8H7V7.25C7 6.97386 7.22386 6.75 7.5 6.75Z"
+                                fill="currentColor"
+                            />
+                        </svg>
+                    </button>
                 </div>
                 <div id="file-tree-container">
                     <ul id="file-tree"></ul>
@@ -244,14 +267,7 @@
                             />
                         </svg>
                     </button>
-                    <button
-                        id="help-btn"
-                        class="icon-btn"
-                        aria-label="Help"
-                        title="Help"
-                    >
-                        ?
-                    </button>
+                    <button id="help-btn" class="icon-btn" aria-label="Help" title="Help">?</button>
                 </div>
             </aside>
 
@@ -310,7 +326,7 @@
                     <button
                         id="proofread-btn"
                         class="icon-btn"
-                        title="Proofread with Gemini (selection or whole document)"
+                        title="Proofread (selection or whole document)"
                         aria-label="Proofread"
                     >
                         <svg
@@ -322,6 +338,25 @@
                         >
                             <path
                                 d="M9.5 2.5l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2zM4 8l.7 1.3L6 10l-1.3.7L4 12l-.7-1.3L2 10l1.3-.7L4 8zM11 9l.5 1 1 .5-1 .5-.5 1-.5-1-1-.5 1-.5.5-1z"
+                                fill="currentColor"
+                            />
+                        </svg>
+                    </button>
+                    <button
+                        id="suggest-tags-btn"
+                        class="icon-btn"
+                        title="Suggest tags from the vault for this document"
+                        aria-label="Suggest tags"
+                    >
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            xmlns="http://www.w3.org/2000/svg"
+                        >
+                            <path
+                                d="M7.6 1.5H3a1.5 1.5 0 0 0-1.5 1.5v4.6c0 .4.16.78.44 1.06l5.4 5.4a1.5 1.5 0 0 0 2.12 0l4.6-4.6a1.5 1.5 0 0 0 0-2.12l-5.4-5.4A1.5 1.5 0 0 0 7.6 1.5zM4.75 5.5a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5z"
                                 fill="currentColor"
                             />
                         </svg>
@@ -483,7 +518,16 @@
             </header>
 
             <div class="settings-section">
-                <h3>Vault Location</h3>
+                <label class="settings-label" style="margin-top: 10px">Comment nickname</label>
+                <input
+                    type="text"
+                    id="nickname-input"
+                    class="settings-input"
+                    placeholder="Your name or initials"
+                    autocomplete="off"
+                />
+                <p class="settings-hint">Used to sign comments inserted with ⌘⇧M.</p>
+                <label class="settings-label" style="margin-top: 10px">Vault Location</label>
                 <div class="vault-path-container">
                     <code id="vault-path-display">None selected</code>
                     <button id="pick-vault-btn" title="Choose a different folder">
@@ -498,30 +542,32 @@
                     <input type="checkbox" id="spell-check-toggle" checked />
                     <span>Enable spell check</span>
                 </label>
+                <p class="settings-hint">Use MacOS built in spell check.</p>
                 <label class="settings-toggle" style="margin-top: 8px">
                     <input type="checkbox" id="auto-save-toggle" />
                     <span>Auto-save</span>
                 </label>
-                <p id="auto-save-warning" class="settings-warning" style="display: none">
+                <p class="settings-hint">
                     Auto-save clears undo history after each save. Undo/redo will not work across
                     save boundaries.
                 </p>
-                <label class="settings-label" style="margin-top: 10px">Comment nickname</label>
-                <input
-                    type="text"
-                    id="nickname-input"
-                    class="settings-input"
-                    placeholder="Your name or initials"
-                    autocomplete="off"
-                />
-                <p class="settings-hint">Used to sign comments inserted with ⌘⇧M.</p>
+                <label class="settings-toggle" style="margin-top: 8px">
+                    <input type="checkbox" id="use-pandoc-toggle" />
+                    <span>Use Pandoc for rendering preview</span>
+                </label>
+                <p class="settings-hint">
+                    Renders the preview using the system Pandoc installation instead of the built-in
+                    renderer. Pandoc produces more accurate output for complex documents but
+                    requires Pandoc to be installed.
+                </p>
             </div>
 
             <div class="settings-section">
                 <h3>Citations</h3>
                 <p class="settings-hint">
                     Bibliography file (CSL JSON or BibTeX) and CSL style for formatting citations.
-                    Use <code>[@key]</code> in your text to cite a reference.
+                    Use <code>\@</code> in your text to cite a reference. Requires Zotero and the
+                    Better Bibtex extension for Zotero.
                 </p>
                 <label class="settings-label">Bibliography file</label>
                 <div class="file-path-container">
@@ -560,27 +606,64 @@
             <div class="settings-section">
                 <h3>Proofreading</h3>
                 <p class="settings-hint">
-                    Proofread the document (or a selection) with Google Gemini. Get a free API key
-                    at <code>aistudio.google.com/apikey</code>. The key is stored locally in your
-                    settings file and sent only to Google when you proofread.
+                    Proofread the document (or a selection) with Google Gemini (remote) or a
+                    local Ollama service. Settings are stored locally; with Ollama your text
+                    never leaves your machine.
                 </p>
-                <label class="settings-label">Gemini API key</label>
-                <input
-                    type="password"
-                    id="gemini-key-input"
-                    class="settings-input"
-                    placeholder="Paste your Gemini API key"
-                    autocomplete="off"
-                />
-                <label class="settings-label" style="margin-top: 10px">Model (optional)</label>
-                <input
-                    type="text"
-                    id="gemini-model-input"
-                    class="settings-input"
-                    placeholder="gemini-2.0-flash"
-                    autocomplete="off"
-                    spellcheck="false"
-                />
+                <label class="settings-label">Provider</label>
+                <select id="proofread-provider-select" class="settings-input">
+                    <option value="gemini">Google Gemini (remote)</option>
+                    <option value="ollama">Ollama (local)</option>
+                </select>
+
+                <div id="gemini-settings-group">
+                    <p class="settings-hint" style="margin-top: 10px">
+                        Get a free API key at <code>aistudio.google.com/apikey</code>. The key is
+                        sent only to Google when you proofread.
+                    </p>
+                    <label class="settings-label">Gemini API key</label>
+                    <input
+                        type="password"
+                        id="gemini-key-input"
+                        class="settings-input"
+                        placeholder="Paste your Gemini API key"
+                        autocomplete="off"
+                    />
+                    <label class="settings-label" style="margin-top: 10px">Model (optional)</label>
+                    <input
+                        type="text"
+                        id="gemini-model-input"
+                        class="settings-input"
+                        placeholder="gemini-2.5-flash-lite"
+                        autocomplete="off"
+                        spellcheck="false"
+                    />
+                </div>
+
+                <div id="ollama-settings-group">
+                    <p class="settings-hint" style="margin-top: 10px">
+                        Requires <code>ollama serve</code> running locally and a pulled model
+                        (e.g. <code>ollama pull llama3.1</code>).
+                    </p>
+                    <label class="settings-label">Ollama URL</label>
+                    <input
+                        type="text"
+                        id="ollama-url-input"
+                        class="settings-input"
+                        placeholder="http://localhost:11434"
+                        autocomplete="off"
+                        spellcheck="false"
+                    />
+                    <label class="settings-label" style="margin-top: 10px">Model</label>
+                    <input
+                        type="text"
+                        id="ollama-model-input"
+                        class="settings-input"
+                        placeholder="llama3.1"
+                        autocomplete="off"
+                        spellcheck="false"
+                    />
+                </div>
             </div>
 
             <div class="settings-section">
@@ -591,27 +674,9 @@
                 <textarea
                     id="css-editor"
                     placeholder="/* Example: */
-body { font-family: Palatino; }
-h1 { color: #2c3e50; }
-H1, H2, H3 {padding-top: 1em; }
-code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }
-a { color: #3498db; text-decoration: none; }
-a:hover { text-decoration: underline; }
-.footnote-ref a { Font-size: 0.6em; }"
+* { font-family: Palatino; }
+"
                 ></textarea>
-            </div>
-
-            <div class="settings-section">
-                <h3>Preview <span class="settings-experimental-badge">Experimental</span></h3>
-                <label class="settings-toggle">
-                    <input type="checkbox" id="use-pandoc-toggle" />
-                    <span>Use Pandoc for rendering</span>
-                </label>
-                <p class="settings-hint">
-                    Renders the preview using the system Pandoc installation instead of the built-in
-                    renderer. Pandoc produces more accurate output for complex documents but
-                    requires Pandoc to be installed.
-                </p>
             </div>
 
             <footer>
@@ -626,12 +691,7 @@ a:hover { text-decoration: underline; }
         <dialog id="help-dialog" class="help-dialog">
             <header>
                 <h2>Help</h2>
-                <button
-                    id="close-help"
-                    class="icon-btn"
-                    title="Close"
-                    aria-label="Close help"
-                >
+                <button id="close-help" class="icon-btn" title="Close" aria-label="Close help">
                     ✕
                 </button>
             </header>

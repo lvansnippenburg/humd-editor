@@ -644,16 +644,55 @@ PROOFREAD_SCHEMA = {
         "required": ["original", "suggestion", "comment"],
     },
 }
+
+# Same schema in standard (lowercase) JSON Schema for Ollama's `format` field.
+PROOFREAD_JSON_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "original": {"type": "string"},
+            "suggestion": {"type": "string"},
+            "comment": {"type": "string"},
+        },
+        "required": ["original", "suggestion", "comment"],
+    },
+}
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_OLLAMA_URL = "http://localhost:11434"
 
 
-def proofread_text(text: str) -> str:
-    """Send `text` to Google Gemini for proofreading and return the response.
+class OllamaUnavailable(RuntimeError):
+    """Raised when the local Ollama service can't be reached (not running)."""
 
-    The API key (and optional model override) come from settings. Uses the REST
-    API directly so the server stays dependency-free.
-    """
-    settings = load_settings()
+
+# --- Generic provider plumbing (shared by proofreading and tag suggestion) ----
+
+
+def _ai_complete(
+    system: str, user: str, gemini_schema: dict, json_schema: dict, settings: dict
+) -> tuple[str, str | None]:
+    """Run one structured AI completion with the configured provider. Returns
+    (raw_response, warning); raw_response is a JSON string matching the schema.
+    When Ollama is selected but not running, transparently falls back to
+    Gemini and reports it via the warning."""
+    provider = settings.get("proofreadProvider") or "gemini"
+    if provider == "ollama":
+        try:
+            return _ollama_complete(system, user, json_schema, settings), None
+        except OllamaUnavailable:
+            try:
+                result = _gemini_complete(system, user, gemini_schema, settings)
+            except Exception as ge:
+                raise RuntimeError(
+                    f"Ollama is not running, and the Gemini fallback failed: {ge}"
+                )
+            return result, "Ollama not running — used Gemini instead."
+    return _gemini_complete(system, user, gemini_schema, settings), None
+
+
+def _gemini_complete(system: str, user: str, schema: dict, settings: dict) -> str:
+    """One structured completion via the Google Gemini REST API."""
     api_key = settings.get("geminiApiKey")
     if not api_key:
         raise RuntimeError(
@@ -666,11 +705,11 @@ def proofread_text(text: str) -> str:
     )
     payload = json.dumps(
         {
-            "system_instruction": {"parts": [{"text": PROOFREAD_SYSTEM}]},
-            "contents": [{"role": "user", "parts": [{"text": text}]}],
+            "system_instruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
             "generationConfig": {
                 "responseMimeType": "application/json",
-                "responseSchema": PROOFREAD_SCHEMA,
+                "responseSchema": schema,
             },
         }
     ).encode("utf-8")
@@ -698,6 +737,196 @@ def proofread_text(text: str) -> str:
     if not out:
         raise RuntimeError("Gemini returned an empty response.")
     return out
+
+
+def _ollama_complete(system: str, user: str, json_schema: dict, settings: dict) -> str:
+    """One structured completion via a local Ollama /api/chat call."""
+    model = settings.get("ollamaModel")
+    if not model:
+        raise RuntimeError(
+            "No Ollama model set. Add one under Settings → Proofreading."
+        )
+    base = (settings.get("ollamaUrl") or DEFAULT_OLLAMA_URL).rstrip("/")
+    url = f"{base}/api/chat"
+    payload = json.dumps(
+        {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "stream": False,
+            "format": json_schema,
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")
+        raise RuntimeError(f"Ollama API error {e.code}: {detail[:500]}")
+    except urllib.error.URLError as e:
+        raise OllamaUnavailable(
+            f"Could not reach Ollama at {base} — is `ollama serve` running? ({e.reason})"
+        )
+
+    out = (data.get("message", {}).get("content") or "").strip()
+    if not out:
+        raise RuntimeError("Ollama returned an empty response.")
+    return out
+
+
+def proofread_text(text: str) -> tuple[str, str | None]:
+    """Proofread `text` with the configured provider. Returns (raw, warning);
+    raw is the JSON-array string the /api/proofread handler parses."""
+    return _ai_complete(
+        PROOFREAD_SYSTEM, text, PROOFREAD_SCHEMA, PROOFREAD_JSON_SCHEMA, load_settings()
+    )
+
+
+SUGGEST_TAGS_SYSTEM = (
+    "You are a librarian tagging an article for a personal notes vault. You are "
+    "given the document text and a list of tags already used elsewhere in the "
+    "vault. Choose the tags from that list that best describe this document. "
+    "Only return tags that appear verbatim in the provided list — never invent "
+    "new tags. Return a JSON array of tag strings (without a leading '#'), most "
+    "relevant first, at most 3. If none of the existing tags fit, return an "
+    "empty array."
+)
+TAGS_SCHEMA = {"type": "ARRAY", "items": {"type": "STRING"}}
+TAGS_JSON_SCHEMA = {"type": "array", "items": {"type": "string"}}
+
+
+def suggest_tags_text(text: str, existing_tags: list) -> tuple[str, str | None]:
+    """Ask the configured provider which existing tags fit `text`. Returns
+    (raw, warning); raw is a JSON array of tag strings."""
+    tag_list = ", ".join(existing_tags) if existing_tags else "(none)"
+    user = f"Existing tags:\n{tag_list}\n\n---\n\nDocument:\n{text}"
+    return _ai_complete(
+        SUGGEST_TAGS_SYSTEM, user, TAGS_SCHEMA, TAGS_JSON_SCHEMA, load_settings()
+    )
+
+
+# ---------------------------------------------------------------------------
+# Git integration
+# ---------------------------------------------------------------------------
+#
+# When the vault is a git working tree we keep it synced: changes are committed
+# and pushed on focus loss, on a timer, and after renames/moves (which use
+# `git mv` so history is preserved). All git invocations go through `_git`, which
+# runs against the vault with a timeout and never raises for a non-zero exit —
+# callers inspect returncode/stderr so auth failures can be surfaced to the user.
+
+
+def _find_git() -> str | None:
+    """Locate the git executable, checking common install dirs beyond PATH
+    (a Finder-launched .app inherits a minimal PATH). None if not installed."""
+    search = os.environ.get("PATH", "")
+    for d in _PANDOC_DIRS:
+        if d not in search.split(os.pathsep):
+            search += os.pathsep + d
+    return shutil.which("git", path=search)
+
+
+def _git(args: list, vault: Path, timeout: int = 60) -> subprocess.CompletedProcess:
+    """Run `git <args>` inside `vault`. Returns the completed process (text mode);
+    a fake returncode-127 result if git isn't installed."""
+    git = _find_git()
+    if not git:
+        return subprocess.CompletedProcess(args, 127, "", "git not found")
+    return subprocess.run(
+        [git, "-C", str(vault), *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def is_git_repo(vault: Path) -> bool:
+    r = _git(["rev-parse", "--is-inside-work-tree"], vault, timeout=10)
+    return r.returncode == 0 and r.stdout.strip() == "true"
+
+
+def git_has_remote(vault: Path) -> bool:
+    r = _git(["remote"], vault, timeout=10)
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
+def _commit_message(vault: Path) -> str:
+    """Build a concise commit message from the staged changes."""
+    r = _git(["diff", "--cached", "--name-status"], vault, timeout=30)
+    entries = []  # (code, path, old_path|None)
+    for line in r.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        code = parts[0][0]  # first letter: A/M/D/R/C/...
+        if code == "R" and len(parts) >= 3:
+            entries.append((code, parts[2], parts[1]))
+        else:
+            entries.append((code, parts[1], None))
+
+    verb = {"A": "Add", "M": "Update", "D": "Delete", "R": "Rename", "C": "Copy"}
+    if not entries:
+        return "Update vault"
+    if len(entries) == 1:
+        code, path, old = entries[0]
+        if code == "R":
+            return f"Rename {old} → {path}"
+        return f"{verb.get(code, 'Update')} {path}"
+    # Multiple files: one-line summary + a short body listing each change.
+    header = f"Update {len(entries)} files"
+    body = "\n".join(
+        (f"R {old} → {path}" if code == "R" else f"{code} {path}")
+        for code, path, old in entries
+    )
+    return f"{header}\n\n{body}"
+
+
+def git_commit_all(vault: Path, message: str | None = None) -> dict:
+    """Stage everything, commit (if there is anything to commit), and push.
+
+    Returns a dict the client can act on. Never raises for git-level failures;
+    push errors (typically missing credentials) come back as needs_auth so the
+    user can be told to fix them in a terminal.
+    """
+    if not is_git_repo(vault):
+        return {"is_repo": False}
+
+    add = _git(["add", "-A"], vault)
+    if add.returncode != 0:
+        return {"is_repo": True, "committed": False, "error": add.stderr.strip()}
+
+    # Anything staged? `diff --cached --quiet` exits 1 when there are changes.
+    if _git(["diff", "--cached", "--quiet"], vault).returncode == 0:
+        return {"is_repo": True, "committed": False, "reason": "clean"}
+
+    msg = message or _commit_message(vault)
+    commit = _git(["commit", "-m", msg], vault)
+    if commit.returncode != 0:
+        return {"is_repo": True, "committed": False, "error": commit.stderr.strip()}
+
+    result = {"is_repo": True, "committed": True, "message": msg.splitlines()[0]}
+
+    if not git_has_remote(vault):
+        result["pushed"] = False
+        result["reason"] = "no-remote"
+        return result
+
+    push = _git(["push"], vault, timeout=120)
+    if push.returncode != 0:
+        result["pushed"] = False
+        result["error"] = push.stderr.strip() or push.stdout.strip()
+        result["needs_auth"] = True
+    else:
+        result["pushed"] = True
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -893,6 +1122,18 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_error_json("path required")
                 return
             self.send_json({"hash": get_vault_hash(vault_path)})
+        elif path == "/api/git-info":
+            # Whether the current vault is a git working tree (and has a remote).
+            try:
+                root = vault_root()
+                if root is None or not is_git_repo(root):
+                    self.send_json({"is_repo": False})
+                else:
+                    self.send_json(
+                        {"is_repo": True, "has_remote": git_has_remote(root)}
+                    )
+            except Exception as e:
+                self.send_error_json(str(e))
         elif path == "/api/tags":
             vault_path = qs.get("vault_path", [None])[0]
             note_path = qs.get("note_path", [None])[0]
@@ -974,6 +1215,35 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:
                 self.send_error_json(str(e))
 
+        elif path == "/api/create-folder":
+            try:
+                data = self.read_body()
+                name = data["name"]
+                if "/" in name or "\\" in name:
+                    raise ValueError("Name cannot contain path separators")
+                parent = data.get("parent_path") or data["vault_path"]
+                dir_path = safe_path(str(Path(parent) / name))
+                if dir_path.exists():
+                    raise ValueError(f"'{name}' already exists")
+                dir_path.mkdir(parents=False)
+                self.send_json({"path": str(dir_path)})
+            except Exception as e:
+                self.send_error_json(str(e))
+
+        elif path == "/api/git-commit":
+            # Commit all changes in the vault and push. No-op (committed:false)
+            # when not a repo or nothing changed. Serialised so overlapping
+            # triggers (blur + timer) can't run git concurrently.
+            try:
+                root = vault_root()
+                if root is None:
+                    self.send_json({"is_repo": False})
+                else:
+                    with _lock:
+                        self.send_json(git_commit_all(root))
+            except Exception as e:
+                self.send_error_json(str(e))
+
         elif path == "/api/rename-file":
             try:
                 data = self.read_body()
@@ -984,13 +1254,26 @@ class Handler(SimpleHTTPRequestHandler):
                 new_path = safe_path(str(old_path.parent / new_name))
                 if new_path.exists():
                     raise ValueError(f"'{new_name}' already exists")
-                old_path.rename(new_path)
-                # Keep [[wikilinks]] pointing at the renamed note valid.
                 root = vault_root()
-                if root is not None:
+                repo = root is not None and is_git_repo(root)
+                if repo:
+                    # `git mv` keeps history; fall back to a plain rename when the
+                    # file isn't tracked yet (git mv refuses untracked files).
+                    if _git(["mv", str(old_path), str(new_path)], root).returncode != 0:
+                        old_path.rename(new_path)
+                else:
+                    old_path.rename(new_path)
+                # Keep [[wikilinks]] pointing at the renamed note valid. Only for
+                # markdown files — a folder's name isn't a wikilink target.
+                if root is not None and new_path.is_file() and new_path.suffix == ".md":
                     with _lock:
                         rename_wikilink_targets(str(root), old_path.stem, new_path.stem)
-                self.send_json({"path": str(new_path)})
+                resp = {"path": str(new_path)}
+                if repo:
+                    resp["git"] = git_commit_all(
+                        root, f"Rename {old_path.name} → {new_path.name}"
+                    )
+                self.send_json(resp)
             except Exception as e:
                 self.send_error_json(str(e))
 
@@ -1001,8 +1284,22 @@ class Handler(SimpleHTTPRequestHandler):
                 dest = safe_path(str(Path(data["dest_dir"]) / src.name))
                 if dest.exists():
                     raise ValueError(f"'{src.name}' already exists in destination")
-                src.rename(dest)
-                self.send_json({"path": str(dest)})
+                # Moving a folder into itself or one of its descendants is invalid.
+                if src.is_dir() and (dest == src or src in dest.parents):
+                    raise ValueError("Cannot move a folder into itself")
+                root = vault_root()
+                repo = root is not None and is_git_repo(root)
+                if repo:
+                    if _git(["mv", str(src), str(dest)], root).returncode != 0:
+                        src.rename(dest)
+                else:
+                    src.rename(dest)
+                resp = {"path": str(dest)}
+                if repo:
+                    resp["git"] = git_commit_all(
+                        root, f"Move {src.name} to {dest.parent.name}/"
+                    )
+                self.send_json(resp)
             except Exception as e:
                 self.send_error_json(str(e))
 
@@ -1105,7 +1402,7 @@ class Handler(SimpleHTTPRequestHandler):
                 text = (data.get("text") or "").strip()
                 if not text:
                     raise ValueError("Nothing to proofread")
-                raw = proofread_text(text)
+                raw, warning = proofread_text(text)
                 # The model is asked for a JSON array of suggestions. Parse it so
                 # the client gets structured data; fall back to the raw string if
                 # the response isn't valid JSON (so something is still shown).
@@ -1118,9 +1415,49 @@ class Handler(SimpleHTTPRequestHandler):
                     suggestions = json.loads(stripped)
                     if not isinstance(suggestions, list):
                         raise ValueError("not a list")
-                    self.send_json({"suggestions": suggestions})
+                    resp = {"suggestions": suggestions}
                 except (json.JSONDecodeError, ValueError):
-                    self.send_json({"result": raw})
+                    resp = {"result": raw}
+                if warning:
+                    resp["warning"] = warning
+                self.send_json(resp)
+            except Exception as e:
+                self.send_error_json(str(e))
+
+        elif path == "/api/suggest-tags":
+            try:
+                data = self.read_body()
+                text = (data.get("text") or "").strip()
+                if not text:
+                    raise ValueError("Nothing to analyse")
+                existing = data.get("existing_tags") or []
+                raw, warning = suggest_tags_text(text, existing)
+                stripped = raw.strip()
+                if stripped.startswith("```"):
+                    stripped = re.sub(r"^```[a-zA-Z]*\n?", "", stripped)
+                    stripped = re.sub(r"\n?```$", "", stripped).strip()
+                try:
+                    parsed = json.loads(stripped)
+                    if not isinstance(parsed, list):
+                        raise ValueError("not a list")
+                except (json.JSONDecodeError, ValueError):
+                    parsed = []
+                # Constrain to the existing tags (case-insensitive) so a model
+                # can't introduce new ones, and return their canonical spelling.
+                canon = {
+                    str(t).lstrip("#").lower(): str(t).lstrip("#") for t in existing
+                }
+                seen = set()
+                tags = []
+                for t in parsed:
+                    key = str(t).lstrip("#").lower()
+                    if key in canon and key not in seen:
+                        seen.add(key)
+                        tags.append(canon[key])
+                resp = {"tags": tags}
+                if warning:
+                    resp["warning"] = warning
+                self.send_json(resp)
             except Exception as e:
                 self.send_error_json(str(e))
 

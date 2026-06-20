@@ -97,6 +97,19 @@ function applyInlineSpans(line) {
   let result = "";
   let i = 0;
   while (i < line.length) {
+    // Backslash escape: pass "\X" through untouched so the escaped char isn't
+    // matched by the span rules below. marked then strips the backslash and
+    // renders the literal char (the same way \* already works).
+    if (line[i] === "\\") {
+      if (i + 1 < line.length) {
+        result += line[i] + line[i + 1];
+        i += 2;
+      } else {
+        result += line[i];
+        i += 1;
+      }
+      continue;
+    }
     // Skip inline code spans
     if (line[i] === "`") {
       let j = i + 1;
