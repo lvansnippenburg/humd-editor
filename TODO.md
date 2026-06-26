@@ -1,1 +1,0 @@
-- Codeberg/Git integration to create some sort of correction mechanism
