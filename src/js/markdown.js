@@ -488,20 +488,45 @@ export function renderMarkdownBody(content) {
 // Store citations so they can be restored in the DOM after rendering.
 window._citationsToRestore = [];
 
+// Parse a Pandoc heading-attribute block from the end of a heading's raw text:
+// `{-}` / `{.unnumbered}` mark it unnumbered, `{#id}` sets the anchor. Returns
+// the cleaned text plus those attributes. Without a trailing `{…}` the text is
+// returned unchanged.
+export function parseHeadingAttrs(raw) {
+  const m = raw.match(/\s*\{([^}]*)\}\s*$/);
+  if (!m) return { text: raw.trim(), id: null, unnumbered: false };
+  const attrs = m[1];
+  const idMatch = attrs.match(/#(\S+)/);
+  const unnumbered = /(^|\s)-(\s|$)/.test(attrs) || /\.unnumbered\b/.test(attrs);
+  return {
+    text: raw.slice(0, m.index).trim(),
+    id: idMatch ? idMatch[1] : null,
+    unnumbered,
+  };
+}
+
 export function configureMarked() {
   if (typeof marked === "undefined") return;
 
   const renderer = new marked.Renderer();
 
-  // Give headings slug IDs for scroll sync
+  // Give headings slug IDs for scroll sync. Also honour Pandoc heading
+  // attributes — a trailing `{…}` block such as `{-}` or `{.unnumbered}` (mark
+  // the heading unnumbered) or `{#id}` (use it as the anchor) — instead of
+  // rendering them as literal text.
   renderer.heading = function (text, level, raw) {
-    const slug = raw
-      .toLowerCase()
-      .replace(/[^\w\s-]/g, "")
-      .replace(/\s+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-+|-+$/g, "");
-    return `<h${level} id="${slug}">${text}</h${level}>\n`;
+    const attr = parseHeadingAttrs(raw);
+    const displayText = text.replace(/\s*\{[^}]*\}\s*$/, "");
+    const slug =
+      attr.id ||
+      attr.text
+        .toLowerCase()
+        .replace(/[^\w\s-]/g, "")
+        .replace(/\s+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    const cls = attr.unnumbered ? ' class="unnumbered"' : "";
+    return `<h${level} id="${slug}"${cls}>${displayText}</h${level}>\n`;
   };
 
   // Checkbox tasks

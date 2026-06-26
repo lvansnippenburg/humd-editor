@@ -560,6 +560,7 @@ def render_pandoc(markdown: str, file_path: str | None) -> str:
             "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables+lists_without_preceding_blankline+hard_line_breaks",
             "--to=html5",
             "--standalone=false",
+            "--number-sections",  # 1, 1.1, … (respects {-}/{.unnumbered})
         ],
         input=markdown.encode(),
         capture_output=True,

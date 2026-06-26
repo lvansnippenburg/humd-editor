@@ -9,6 +9,7 @@ import {
   rewriteImageSources,
   extractComments,
   restoreComments,
+  parseHeadingAttrs,
   COMMENT_BALLOON_SVG,
 } from "/js/markdown.js";
 import { renderGraph } from "/js/graph.js";
@@ -2051,8 +2052,7 @@ function updatePreviewStats(html) {
   const chars = text.replace(/\s/g, "").length;
   const charsWithSpaces = text.trim().length;
   const el = document.getElementById("preview-stats");
-  if (el)
-    el.textContent = `${lines} lines, ${words} words, ${charsWithSpaces} (${chars}) characters`;
+  if (el) el.textContent = `${words} words, ${charsWithSpaces} (${chars}) characters`;
 }
 
 // Reset to the empty state. Replacing srcdoc tears down the persistent shell,
@@ -2140,6 +2140,9 @@ async function updatePreview() {
     if (!bodyEl) return; // shell not ready (e.g. mid-reload); next edit retries
 
     bodyEl.innerHTML = bodyHtml;
+    // Pandoc numbers sections itself; flag the body so the CSS section-numbering
+    // counters (for the built-in renderer) don't double up.
+    bodyEl.classList.toggle("pandoc", currentUsePandoc);
 
     // Restore citations in the DOM by walking text nodes and replacing placeholders.
     const walker = doc.createTreeWalker(bodyEl, NodeFilter.SHOW_TEXT);
@@ -2475,7 +2478,16 @@ function buildOutline() {
   const headers = [];
   lines.forEach((line, lineIndex) => {
     const match = line.match(/^(#{1,6})\s+(.+)/);
-    if (match) headers.push({ level: match[1].length, text: match[2].trim(), lineIndex });
+    // Drop any trailing Pandoc heading attributes ({-}, {.unnumbered}, {#id}).
+    if (match) {
+      const attr = parseHeadingAttrs(match[2].trim());
+      headers.push({
+        level: match[1].length,
+        text: attr.text,
+        unnumbered: attr.unnumbered,
+        lineIndex,
+      });
+    }
   });
   if (headers.length === 0) {
     const li = document.createElement("li");
@@ -2484,12 +2496,26 @@ function buildOutline() {
     list.appendChild(li);
     return;
   }
-  headers.forEach(({ level, text, lineIndex }) => {
+  // Hierarchical section numbers (1, 1.1, …) matching the preview; unnumbered
+  // headings ({-}/{.unnumbered}) are skipped and don't affect the count.
+  const counters = [0, 0, 0, 0, 0, 0];
+  headers.forEach((h) => {
+    if (h.unnumbered) {
+      h.number = "";
+      return;
+    }
+    counters[h.level - 1]++;
+    for (let i = h.level; i < 6; i++) counters[i] = 0;
+    h.number = counters.slice(0, h.level).join(".");
+  });
+
+  headers.forEach(({ level, text, lineIndex, number }) => {
     const display = stripMarkdown(text);
+    const label = number ? `${number}  ${display}` : display;
     const li = document.createElement("li");
     li.className = `outline-item h${level}`;
-    li.textContent = display;
-    li.title = display;
+    li.textContent = label;
+    li.title = label;
     li.addEventListener("click", () => {
       scrollEditorToLine(lineIndex);
       setTimeout(() => scrollPreviewToHeader(display), 500);
