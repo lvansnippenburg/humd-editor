@@ -23,6 +23,7 @@ let currentUserCss = "";
 let currentSpellCheck = true;
 let currentUsePandoc = false;
 let currentAutoSave = false;
+let currentSmartQuotes = false;
 let currentBibPath = null;
 let currentCslPath = null;
 let currentPandocRefDocPath = null;
@@ -192,6 +193,7 @@ async function initialize() {
     currentSpellCheck = settings.spellCheck ?? true;
     currentUsePandoc = settings.usePandoc ?? false;
     currentAutoSave = settings.useAutoSave ?? false;
+    currentSmartQuotes = settings.smartQuotes ?? false;
     currentBibPath = settings.cslJsonPath || null;
     currentCslPath = settings.cslStylePath || null;
     currentPandocRefDocPath = settings.pandocRefDocPath || null;
@@ -1348,6 +1350,50 @@ function onEditorKeydown(e) {
 
   // Autocomplete navigation takes priority over everything else.
   if (handleAutocompleteKeydown(e)) return;
+
+  // Quotes: insert them ourselves so the app's smart-quotes setting is the sole
+  // authority — this also prevents the macOS system-wide "Smart Quotes" text
+  // substitution from sneaking curly quotes in when the setting is off (or
+  // double-converting when it's on). We intercept only when the key truly
+  // produces a quote: dead keys report e.key === "Dead", so accent input on
+  // international layouts is unaffected.
+  if (!isMeta && (e.key === "'" || e.key === '"')) {
+    const start = editor.selectionStart;
+    const end = editor.selectionEnd;
+    const value = editor.value;
+    const smart = currentSmartQuotes && !isCursorInCode(value, start);
+    const before = start > 0 ? value[start - 1] : "";
+    // A backslash before the quote keeps it straight (drop the backslash).
+    if (smart && before === "\\" && start === end) {
+      e.preventDefault();
+      editorReplace(editor, start - 1, end, e.key);
+      return;
+    }
+    let ch = e.key; // straight by default — defeats the OS substitution
+    if (smart) {
+      // Opening quote after a space/bracket/quote or at the start; else closing
+      // (this also gives the apostrophe ’ inside contractions like it's).
+      const open = !before || /[\s(\[{'"‘“]/.test(before);
+      ch = e.key === '"' ? (open ? "“" : "”") : open ? "‘" : "’";
+    }
+    e.preventDefault();
+    editorReplace(editor, start, end, ch);
+    return;
+  }
+
+  // Hyphens: insert a second consecutive hyphen ourselves so the macOS system
+  // "Smart Dashes" substitution can't turn "--" into an em dash — that would
+  // corrupt HTML comment markers (<!-- … -->). Always on, independent of the
+  // smart-quotes setting.
+  if (!isMeta && e.key === "-") {
+    const start = editor.selectionStart;
+    const end = editor.selectionEnd;
+    if (start === end && start > 0 && editor.value[start - 1] === "-") {
+      e.preventDefault();
+      editorReplace(editor, start, end, "-");
+      return;
+    }
+  }
 
   // Zotero Better BibTeX CAYW: \@ triggers citation picker
   if (e.key === "@" && !isMeta && !e.altKey) {
@@ -3111,6 +3157,7 @@ function openSettingsDialog() {
     spellCheck: currentSpellCheck,
     usePandoc: currentUsePandoc,
     autoSave: currentAutoSave,
+    smartQuotes: currentSmartQuotes,
     bibPath: currentBibPath,
     cslPath: currentCslPath,
     pandocRefDocPath: currentPandocRefDocPath,
@@ -3123,6 +3170,7 @@ function openSettingsDialog() {
   document.getElementById("spell-check-toggle").checked = currentSpellCheck;
   document.getElementById("use-pandoc-toggle").checked = currentUsePandoc;
   document.getElementById("auto-save-toggle").checked = currentAutoSave;
+  document.getElementById("smart-quotes-toggle").checked = currentSmartQuotes;
   document.getElementById("bib-path-display").textContent = currentBibPath || "None selected";
   document.getElementById("csl-path-display").textContent =
     currentCslPath || "None selected (defaults to APA)";
@@ -3157,6 +3205,7 @@ async function saveSettings() {
     const newSpellCheck = document.getElementById("spell-check-toggle").checked;
     const newUsePandoc = document.getElementById("use-pandoc-toggle").checked;
     const newAutoSave = document.getElementById("auto-save-toggle").checked;
+    const newSmartQuotes = document.getElementById("smart-quotes-toggle").checked;
     const displayedPath = document.getElementById("vault-path-display").textContent;
     const newVaultPath = displayedPath !== currentVaultPath ? displayedPath : currentVaultPath;
 
@@ -3189,6 +3238,7 @@ async function saveSettings() {
       spellCheck: newSpellCheck,
       usePandoc: newUsePandoc,
       useAutoSave: newAutoSave,
+      smartQuotes: newSmartQuotes,
       cslJsonPath: newBibPath,
       cslStylePath: newCslPath,
       pandocRefDocPath: newPandocRefDocPath,
@@ -3204,6 +3254,7 @@ async function saveSettings() {
     currentSpellCheck = newSpellCheck;
     currentUsePandoc = newUsePandoc;
     currentAutoSave = newAutoSave;
+    currentSmartQuotes = newSmartQuotes;
     currentUserNickname = newNickname;
     currentGeminiKey = newGeminiKey;
     currentGeminiModel = newGeminiModel;
@@ -3243,6 +3294,7 @@ function cancelSettings() {
   document.getElementById("spell-check-toggle").checked = settingsBeforeEdit.spellCheck;
   document.getElementById("use-pandoc-toggle").checked = settingsBeforeEdit.usePandoc;
   document.getElementById("auto-save-toggle").checked = settingsBeforeEdit.autoSave;
+  document.getElementById("smart-quotes-toggle").checked = settingsBeforeEdit.smartQuotes;
 
   document.getElementById("bib-path-display").textContent =
     settingsBeforeEdit.bibPath || "None selected";
