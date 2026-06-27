@@ -2545,17 +2545,13 @@ function buildOutline() {
   // Hierarchical section numbers (1, 1.1, …) matching the preview; unnumbered
   // headings ({-}/{.unnumbered}) are skipped and don't affect the count.
   const counters = [0, 0, 0, 0, 0, 0];
-  headers.forEach((h) => {
-    if (h.unnumbered) {
-      h.number = "";
-      return;
+  headers.forEach(({ level, text, lineIndex, unnumbered }) => {
+    let number = "";
+    if (!unnumbered) {
+      counters[level - 1]++;
+      for (let i = level; i < 6; i++) counters[i] = 0;
+      number = counters.slice(0, level).join(".");
     }
-    counters[h.level - 1]++;
-    for (let i = h.level; i < 6; i++) counters[i] = 0;
-    h.number = counters.slice(0, h.level).join(".");
-  });
-
-  headers.forEach(({ level, text, lineIndex, number }) => {
     const display = stripMarkdown(text);
     const label = number ? `${number}  ${display}` : display;
     const li = document.createElement("li");

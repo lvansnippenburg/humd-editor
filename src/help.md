@@ -37,6 +37,7 @@
 ## Markdown
 
 A single return (one press of the enter key) starts a new line in the preview. To start a new *paragraph* — with a little space above it — leave a blank line by hitting the enter key twice.
+It is also possible to add a \\ before the return to add a blank line without breaking the paragraph flow.
 
 ### Formatting
 
