@@ -154,6 +154,10 @@ def save_settings(data: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Non-markdown files that can be opened and viewed (images + PDF).
+_VIEWABLE_EXTS = (".md", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf")
+
+
 def list_dir_internal(dir_path: str, is_root: bool) -> list:
     p = Path(dir_path)
     if not p.is_dir():
@@ -166,7 +170,7 @@ def list_dir_internal(dir_path: str, is_root: bool) -> list:
             if name.startswith("."):
                 continue
             is_dir = child.is_dir()
-            if is_root and not is_dir and not name.endswith(".md"):
+            if is_root and not is_dir and not name.lower().endswith(_VIEWABLE_EXTS):
                 continue
             entries.append(
                 {

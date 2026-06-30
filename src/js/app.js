@@ -246,12 +246,25 @@ async function initialize() {
     isInitialized = true;
 
     if (openFiles.length > 0) {
-      results.forEach((result, i) => {
-        if (result.status === "fulfilled") {
-          const tabId = `tab-${++tabCounter}`;
+      openFiles.forEach((path, i) => {
+        const mediaType = mediaTypeForPath(path);
+        if (mediaType) {
+          // Image/PDF: reopen as a viewer tab (its read-file fetch was rejected).
           tabs.push({
-            id: tabId,
-            path: openFiles[i],
+            id: `tab-${++tabCounter}`,
+            path,
+            isMedia: true,
+            mediaType,
+            isDirty: false,
+            content: "",
+          });
+          return;
+        }
+        const result = results[i];
+        if (result && result.status === "fulfilled") {
+          tabs.push({
+            id: `tab-${++tabCounter}`,
+            path,
             isDirty: false,
             content: result.value.content,
             undoStack: [],
@@ -979,7 +992,7 @@ async function switchToTab(tabId) {
 
   if (activeTabId !== null) {
     const cur = getActiveTab();
-    if (cur && !cur.isGraph) {
+    if (cur && !cur.isGraph && !cur.isMedia) {
       clearTimeout(autoSaveDebounceTimer);
       clearTimeout(undoDebounceTimer);
       cur.content = getEditorContent();
@@ -1005,16 +1018,32 @@ async function switchToTab(tabId) {
   const tabBar = document.getElementById("editor-tab-bar");
 
   const graphContainer = document.getElementById("graph-container");
+  const mediaContainer = document.getElementById("media-container");
 
-  if (tab.isGraph) {
+  if (tab.isMedia) {
+    // Show an image/PDF in the read-only viewer; hide editor, preview, graph.
+    currentFilePath = null;
+    isDirty = false;
+    editor.style.display = "none";
+    preview.style.display = "none";
+    if (graphContainer) graphContainer.style.display = "none";
+    renderEditorCommentGutter(); // clear comment balloons from the previous doc
+    showMediaContainer(tab);
+    await revealFileInTree(tab.path);
+    document.querySelectorAll(".file-item").forEach((item) => {
+      item.classList.toggle("active", item.dataset.path === tab.path);
+    });
+  } else if (tab.isGraph) {
     // Show graph tab
     editor.style.display = "none";
+    if (mediaContainer) mediaContainer.style.display = "none";
     if (graphContainer) {
       graphContainer.style.display = "flex";
       graphContainer.innerHTML = ""; // Clear old graph
     }
     currentFilePath = null;
     isDirty = false;
+    renderEditorCommentGutter(); // clear comment balloons from the previous doc
 
     // Render the graph (show preview if it was visible, hide otherwise)
     // Actually, hide both editor and preview when showing graph to give it full space
@@ -1045,6 +1074,7 @@ async function switchToTab(tabId) {
     editor.style.display = "block";
     preview.style.display = previewVisible ? "flex" : "none";
     if (graphContainer) graphContainer.style.display = "none";
+    if (mediaContainer) mediaContainer.style.display = "none";
 
     editor.value = tab.content;
     // Re-read the bibliography from disk in case it changed externally (e.g.
@@ -1076,7 +1106,7 @@ async function closeTab(tabId, skipSave = false) {
     graphCleanup = null;
   }
 
-  if (!skipSave && !tab.isGraph) {
+  if (!skipSave && !tab.isGraph && !tab.isMedia) {
     if (tabId === activeTabId && isDirty) {
       await saveCurrentFile();
     } else if (tab.isDirty) {
@@ -1100,6 +1130,10 @@ async function closeTab(tabId, skipSave = false) {
       isDirty = false;
       document.getElementById("note-tags").innerHTML = "";
       document.getElementById("editor").value = "";
+      // Restore the editor view in case the closed tab was a media/graph viewer.
+      document.getElementById("editor").style.display = "block";
+      const mediaContainer = document.getElementById("media-container");
+      if (mediaContainer) mediaContainer.style.display = "none";
       resetPreview();
       renderEditorCommentGutter();
       buildOutline();
@@ -1127,6 +1161,48 @@ function closeFile() {
   saveUiState();
 }
 
+// Non-markdown files we can display in a read-only viewer tab.
+const MEDIA_TYPES = {
+  png: "image",
+  jpg: "image",
+  jpeg: "image",
+  gif: "image",
+  webp: "image",
+  pdf: "pdf",
+};
+
+function mediaTypeForPath(path) {
+  return MEDIA_TYPES[path.split(".").pop().toLowerCase()] || null;
+}
+
+// Open an image/PDF in a read-only viewer tab (no text content, not editable).
+async function openMediaTab(path) {
+  const tab = {
+    id: `tab-${++tabCounter}`,
+    path,
+    isMedia: true,
+    mediaType: mediaTypeForPath(path),
+    isDirty: false,
+    content: "",
+  };
+  tabs.push(tab);
+  await switchToTab(tab.id);
+  showStatus(`Opened: ${path.split("/").pop()}`);
+}
+
+// Fill the media container with the current image/PDF (served by /api/image,
+// which returns the file bytes with the right MIME type).
+function showMediaContainer(tab) {
+  const c = document.getElementById("media-container");
+  if (!c) return;
+  const url = `/api/image?path=${encodeURIComponent(tab.path)}`;
+  c.innerHTML =
+    tab.mediaType === "pdf"
+      ? `<iframe class="media-frame" src="${url}" title="PDF preview"></iframe>`
+      : `<img class="media-image" src="${url}" alt="">`;
+  c.style.display = "flex";
+}
+
 async function openGraphTab() {
   // Check if graph tab already exists
   let graphTab = tabs.find((t) => t.path === "__graph__");
@@ -1149,6 +1225,12 @@ async function loadFile(path) {
     const existing = tabs.find((t) => t.path === path);
     if (existing) {
       await switchToTab(existing.id);
+      return;
+    }
+
+    // Images and PDFs open in a read-only viewer rather than the text editor.
+    if (mediaTypeForPath(path)) {
+      await openMediaTab(path);
       return;
     }
 
