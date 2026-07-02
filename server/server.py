@@ -616,27 +616,25 @@ def export_docx(markdown: str) -> bytes:
 # AI proofreading (Google Gemini)
 # ---------------------------------------------------------------------------
 
-PROOFREAD_SYSTEM = (
-    "You are the editor of an academic historical magazine. Review the text for "
-    "grammar, punctuation, clarity, and British spelling. Preserve the author's "
-    "voice, long sentences when they work, and any deliberate archaic or "
-    "period-appropriate terminology. "
-    "The text is written in Markdown. Treat all Markdown syntax as correct "
-    "formatting, not as errors: do NOT flag or comment on link syntax such as "
-    "[text](url) or [[wikilinks]], footnote markers such as [^1] (including a "
-    "footnote marker placed directly after a period or other punctuation), "
-    "headings (#), emphasis (* or _), inline code or code fences, HTML comments, "
-    "citations such as [@key], images, or list markers. Ignore the punctuation "
-    "and spacing of the Markdown markup itself and review only the prose. "
-    "Return a JSON array of specific, actionable "
-    "suggestions. Each element is an object with three string fields: "
-    "'original' — the exact passage to change, copied verbatim character-for-"
-    "character from the input text (no paraphrasing, no added quotes or ellipses, "
-    "and short enough to locate unambiguously); 'suggestion' — the corrected "
-    "replacement for that passage; and 'comment' — a brief explanation of the "
-    "issue. Do not include opinions, praise, or any text outside the JSON array. "
-    "If the text needs no changes, return an empty array."
+# The proofreading system prompt lives in src/PROOFREAD_SYSTEM.md so it can be
+# edited without touching code. It's read once at startup (restart to pick up
+# edits); the fallback keeps proofreading working if the file is missing.
+_PROOFREAD_FALLBACK = (
+    "Proofread the following Markdown text for grammar, punctuation, clarity and "
+    "British spelling, ignoring Markdown syntax. Return a JSON array of objects "
+    "with string fields 'original', 'suggestion' and 'comment' (an empty array if "
+    "there are no changes)."
 )
+
+
+def _read_prompt_file(name: str) -> str | None:
+    try:
+        return (SRC_DIR / name).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+PROOFREAD_SYSTEM = _read_prompt_file("PROOFREAD_SYSTEM.md") or _PROOFREAD_FALLBACK
 
 # Schema forcing Gemini to emit the structured suggestion list the client expects.
 PROOFREAD_SCHEMA = {
