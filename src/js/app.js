@@ -561,6 +561,24 @@ function remapTabPaths(oldPath, newPath) {
   });
 }
 
+// Express `toFile` as a path relative to `fromFile`'s directory (both absolute
+// vault paths), e.g. /v/a/note.md + /v/images/x.png -> ../images/x.png. Used to
+// build Markdown image/link paths when dropping a file into the editor. With no
+// open document, fall back to the vault-relative path.
+function relativeVaultPath(fromFile, toFile) {
+  if (!fromFile) {
+    return currentVaultPath && toFile.startsWith(currentVaultPath + "/")
+      ? toFile.slice(currentVaultPath.length + 1)
+      : toFile;
+  }
+  const fromDir = fromFile.split("/").slice(0, -1);
+  const to = toFile.split("/");
+  let i = 0;
+  while (i < fromDir.length && i < to.length - 1 && fromDir[i] === to[i]) i++;
+  const up = fromDir.slice(i).map(() => "..");
+  return up.concat(to.slice(i)).join("/");
+}
+
 function addFileMouseDrag(li, filePath, fileName, isDir = false) {
   li.addEventListener("mousedown", (e) => {
     if (e.button !== 0) return;
@@ -665,8 +683,19 @@ function addFileMouseDrag(li, filePath, fileName, isDir = false) {
         const editor = document.getElementById("editor");
         editor.focus();
         const pos = editor.selectionStart;
-        const stem = fileName.replace(/\.md$/i, "");
-        editorReplace(editor, pos, pos, `[[${stem}]]`);
+        const ext = fileName.split(".").pop().toLowerCase();
+        let snippet;
+        if (mediaTypeForPath(filePath) === "image") {
+          // Images embed as a Markdown image, relative to the current document.
+          snippet = `![](${relativeVaultPath(currentFilePath, filePath)})`;
+        } else if (ext === "md" || ext === "html" || ext === "htm") {
+          // Notes/pages link as a wikilink (resolved elsewhere in the app).
+          snippet = `[[${fileName.replace(/\.(md|html?)$/i, "")}]]`;
+        } else {
+          // Everything else (pdf, …): a plain relative link.
+          snippet = `[${fileName}](${relativeVaultPath(currentFilePath, filePath)})`;
+        }
+        editorReplace(editor, pos, pos, snippet);
         return;
       }
 
