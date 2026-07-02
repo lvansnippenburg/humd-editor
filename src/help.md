@@ -22,6 +22,7 @@
 | `Ctrl 3` | Make the line a level-3 heading (`### `) |
 | `\@` | Open the Zotero (Better BibTeX) citation picker |
 | `⌘⇧M` | Insert a comment |
+| `⌘⇧T` | Insert a table (choose rows, columns and column alignment) |
 | `⌘F` | Search |
 | `⌘H` | Search and replace |
 | `[[` | Suggests note names (for linking) |

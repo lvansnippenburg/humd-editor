@@ -127,8 +127,16 @@ function applyInlineSpans(line) {
         continue;
       }
     }
-    // ~subscript~ (not ~~strikethrough~~)
-    if (line[i] === "~" && line[i + 1] !== "~") {
+    // ~~strikethrough~~: leave both tildes untouched so marked's GFM
+    // strikethrough handles it (and so the ~subscript~ rule below never fires
+    // on the second tilde of a pair).
+    if (line[i] === "~" && line[i + 1] === "~") {
+      result += "~~";
+      i += 2;
+      continue;
+    }
+    // ~subscript~
+    if (line[i] === "~") {
       let j = i + 1;
       while (j < line.length && line[j] !== "~") j++;
       if (j < line.length) {

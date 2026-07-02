@@ -710,6 +710,32 @@
             <div id="help-content" class="help-content"></div>
         </dialog>
 
+        <!-- Table Generator Dialog -->
+        <dialog id="table-dialog">
+            <header>
+                <h2>Insert table</h2>
+                <button id="close-table" class="icon-btn" aria-label="Close" title="Close">
+                    ✕
+                </button>
+            </header>
+            <div class="settings-section">
+                <div class="table-size-row">
+                    <label class="settings-label" for="table-rows">Rows</label>
+                    <input type="number" id="table-rows" class="settings-input" min="1" max="50" value="3" />
+                    <label class="settings-label" for="table-cols">Columns</label>
+                    <input type="number" id="table-cols" class="settings-input" min="1" max="20" value="3" />
+                </div>
+                <label class="settings-label" style="margin-top: 12px">Column alignment</label>
+                <div id="table-align-row"></div>
+            </div>
+            <footer>
+                <button id="table-insert-btn" class="primary" title="Insert table at the cursor">
+                    Insert
+                </button>
+                <button id="table-cancel-btn" title="Cancel">Cancel</button>
+            </footer>
+        </dialog>
+
         <div id="proofread-panel" class="proofread-panel" style="display: none">
             <header>
                 <h3>Suggestions</h3>

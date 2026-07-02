@@ -359,7 +359,16 @@ function setupEventListeners() {
       e.preventDefault();
       insertComment();
     }
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "t" || e.key === "T")) {
+      e.preventDefault();
+      openTableDialog();
+    }
   });
+
+  document.getElementById("close-table").addEventListener("click", closeTableDialog);
+  document.getElementById("table-cancel-btn").addEventListener("click", closeTableDialog);
+  document.getElementById("table-insert-btn").addEventListener("click", insertTableFromDialog);
+  document.getElementById("table-cols").addEventListener("input", () => renderTableAlignControls());
 
   document.querySelectorAll(".sidebar-tab").forEach((btn) => {
     btn.addEventListener("click", () => switchSidebarTab(btn.dataset.tab));
@@ -1581,6 +1590,102 @@ function editorReplace(editor, start, end, text) {
   editor.focus();
   editor.setSelectionRange(start, end);
   document.execCommand("insertText", false, text);
+}
+
+// ===== TABLE GENERATOR (⌘⇧T) =====
+
+let tableInsertPos = 0; // editor caret captured when the dialog opened
+
+function openTableDialog() {
+  if (!currentFilePath) {
+    showStatus("Open a document to insert a table", true);
+    return;
+  }
+  tableInsertPos = document.getElementById("editor").selectionStart;
+  renderTableAlignControls();
+  document.getElementById("table-dialog").showModal();
+}
+
+function closeTableDialog() {
+  document.getElementById("table-dialog").close();
+}
+
+// One alignment <select> per column (Left/Center/Right), rebuilt whenever the
+// column count changes. Existing choices are preserved where possible.
+function renderTableAlignControls() {
+  const cols = Math.max(
+    1,
+    Math.min(20, parseInt(document.getElementById("table-cols").value, 10) || 1),
+  );
+  const row = document.getElementById("table-align-row");
+  const prev = Array.from(row.querySelectorAll("select")).map((s) => s.value);
+  row.innerHTML = "";
+  for (let c = 0; c < cols; c++) {
+    const wrap = document.createElement("label");
+    wrap.className = "table-align-item";
+    wrap.textContent = `Col ${c + 1}`;
+    const sel = document.createElement("select");
+    sel.className = "settings-input";
+    for (const [val, label] of [
+      ["left", "Left"],
+      ["center", "Center"],
+      ["right", "Right"],
+    ]) {
+      const opt = document.createElement("option");
+      opt.value = val;
+      opt.textContent = label;
+      sel.appendChild(opt);
+    }
+    sel.value = prev[c] || "left";
+    wrap.appendChild(sel);
+    row.appendChild(wrap);
+  }
+}
+
+function insertTableFromDialog() {
+  const rows = Math.max(
+    1,
+    Math.min(50, parseInt(document.getElementById("table-rows").value, 10) || 1),
+  );
+  const aligns = Array.from(
+    document.getElementById("table-align-row").querySelectorAll("select"),
+  ).map((s) => s.value);
+  const md = buildTableMarkdown(rows, aligns);
+
+  const editor = document.getElementById("editor");
+  const value = editor.value;
+  const before = value.slice(0, tableInsertPos);
+  const after = value.slice(tableInsertPos);
+  // A Markdown table must be separated from surrounding text by a blank line
+  // (required by Pandoc's pipe_tables), so pad to a blank line on each side.
+  let lead = "";
+  if (before.length && !before.endsWith("\n\n")) lead = before.endsWith("\n") ? "\n" : "\n\n";
+  let trail = "\n";
+  if (after.length && !after.startsWith("\n")) trail = "\n\n";
+  const insert = lead + md + trail;
+
+  closeTableDialog();
+  // Set the value directly rather than via execCommand("insertText"): the
+  // latter is subject to the macOS Smart Dashes substitution, which mangles the
+  // "---" separators into en/em dashes and breaks the table.
+  snapshotForUndo();
+  editor.value = before + insert + after;
+  const caret = before.length + insert.length;
+  editor.focus();
+  editor.setSelectionRange(caret, caret);
+  onEditorInput();
+}
+
+// Build a GFM table: a header row, an alignment separator, and `rows-1` empty
+// body rows (rows counts the header). Alignment: left `:--`, center `:-:`, right `--:`.
+function buildTableMarkdown(rows, aligns) {
+  const cols = aligns.length;
+  const header = aligns.map((_, c) => `Column ${c + 1}`);
+  const sep = aligns.map((a) => (a === "center" ? ":---:" : a === "right" ? "---:" : ":---"));
+  const emptyCells = Array(cols).fill("   ");
+  const lines = [`| ${header.join(" | ")} |`, `| ${sep.join(" | ")} |`];
+  for (let r = 1; r < rows; r++) lines.push(`| ${emptyCells.join(" | ")} |`);
+  return lines.join("\n");
 }
 
 // ===== AUTOCOMPLETE ([[wikilinks]] and #tags) =====
