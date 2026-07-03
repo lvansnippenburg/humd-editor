@@ -40,23 +40,39 @@ class Api:
 def _screen_signature() -> str:
     """A stable fingerprint of the current display layout (sorted resolutions)."""
     try:
-        return ";".join(sorted(f"{int(s.width)}x{int(s.height)}" for s in webview.screens))
+        return ";".join(
+            sorted(f"{int(s.width)}x{int(s.height)}" for s in webview.screens)
+        )
     except Exception:
         return ""
 
 
+_save_timer = None
+_save_timer_lock = threading.Lock()
+
+
 def _load_window_geometry(signature: str):
-    """Saved (x, y, width, height) if the display layout still matches, else None."""
+    """Saved (x, y, width, height) if the display layout still matches, else (None, None, width, height)."""
     try:
         win = server.load_settings().get("window")
     except Exception:
         win = None
-    if not win or win.get("screens") != signature or not signature:
+    if not win:
         return None
+
     try:
-        return int(win["x"]), int(win["y"]), int(win["width"]), int(win["height"])
+        w = int(win["width"])
+        h = int(win["height"])
     except (KeyError, TypeError, ValueError):
-        return None
+        w, h = DEFAULT_W, DEFAULT_H
+
+    if win.get("screens") != signature or not signature:
+        return None, None, w, h
+
+    try:
+        return int(win["x"]), int(win["y"]), w, h
+    except (KeyError, TypeError, ValueError):
+        return None, None, w, h
 
 
 def _save_window_geometry(state: dict, signature: str) -> None:
@@ -79,6 +95,18 @@ def _save_window_geometry(state: dict, signature: str) -> None:
         pass
 
 
+def _debounced_save_geometry(state: dict, signature: str) -> None:
+    global _save_timer
+    with _save_timer_lock:
+        if _save_timer is not None:
+            _save_timer.cancel()
+        # Debounce for 1 second before writing to file
+        _save_timer = threading.Timer(
+            1.0, _save_window_geometry, args=[state, signature]
+        )
+        _save_timer.start()
+
+
 def main():
     # Reuse an identical running instance, but take over a stale one (different
     # code version) instead of attaching to its old server.
@@ -93,8 +121,12 @@ def main():
     kwargs = dict(width=DEFAULT_W, height=DEFAULT_H, min_size=(840, 600), js_api=Api())
     if saved:
         x, y, w, h = saved
-        kwargs.update(x=x, y=y, width=w, height=h)
-        state.update(x=x, y=y, width=w, height=h)
+        if x is not None and y is not None:
+            kwargs.update(x=x, y=y, width=w, height=h)
+            state.update(x=x, y=y, width=w, height=h)
+        else:
+            kwargs.update(width=w, height=h)
+            state.update(width=w, height=h)
     else:
         state.update(width=DEFAULT_W, height=DEFAULT_H)
 
@@ -107,18 +139,29 @@ def main():
     # save the tracked values rather than reading the dead window's attributes.
     def on_shown():
         try:
-            state.update(x=int(window.x), y=int(window.y),
-                         width=int(window.width), height=int(window.height))
+            state.update(
+                x=int(window.x),
+                y=int(window.y),
+                width=int(window.width),
+                height=int(window.height),
+            )
         except Exception:
             pass
 
     def on_moved(x, y):
         state["x"], state["y"] = int(x), int(y)
+        _debounced_save_geometry(state, signature)
 
     def on_resized(w, h):
         state["width"], state["height"] = int(w), int(h)
+        _debounced_save_geometry(state, signature)
 
     def on_closed():
+        global _save_timer
+        with _save_timer_lock:
+            if _save_timer is not None:
+                _save_timer.cancel()
+                _save_timer = None
         _save_window_geometry(state, signature)
 
     window.events.shown += on_shown
