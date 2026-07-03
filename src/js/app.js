@@ -222,6 +222,55 @@ function updateSplitPaneButtons() {
   });
 }
 
+function renderPaneTabBar(pane) {
+  const bar = pane.tabBarEl;
+  bar.innerHTML = "";
+  const paneActiveTabId = pane.id === activePaneId ? activeTabId : pane.activeTabId;
+  const paneTabs = pane.id === activePaneId ? tabs : pane.tabs;
+
+  paneTabs.forEach((tab) => {
+    const el = document.createElement("div");
+    el.className = "editor-tab" + (tab.id === paneActiveTabId ? " active" : "");
+    el.dataset.tabId = tab.id;
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "tab-filename" + (tab.isDirty ? " tab-dirty" : "");
+    nameEl.textContent = tab.isGraph ? "Graph" : tab.path.split("/").pop();
+    nameEl.title = tab.isGraph ? "Graph visualization" : tab.path;
+    el.appendChild(nameEl);
+
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "tab-close";
+    closeBtn.title = "Close tab";
+    closeBtn.textContent = "×";
+    closeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      switchActivePane(pane.id);
+      closeTab(tab.id);
+    });
+    el.appendChild(closeBtn);
+
+    el.addEventListener("click", () => {
+      switchActivePane(pane.id);
+      switchToTab(tab.id);
+    });
+    bar.appendChild(el);
+  });
+
+  bar.querySelector(".editor-tab.active")?.scrollIntoView({ inline: "nearest", block: "nearest" });
+}
+
+function showMediaContainerForPane(pane, tab) {
+  const c = pane.mediaContainerEl;
+  if (!c) return;
+  const url = `/api/image?path=${encodeURIComponent(tab.path)}`;
+  c.innerHTML =
+    tab.mediaType === "pdf"
+      ? `<iframe class="media-frame" src="${url}" title="PDF preview"></iframe>`
+      : `<img class="media-image" src="${url}" alt="">`;
+  c.style.display = "flex";
+}
+
 function createPane() {
   const template = document.getElementById("pane-template");
   const clone = template.content.cloneNode(true);
@@ -652,6 +701,23 @@ async function initialize() {
         if (!pane.activeTabId && pane.tabs.length > 0) {
           pane.activeTabId = pane.tabs[pane.tabs.length - 1].id;
           pane.currentFilePath = pane.tabs[pane.tabs.length - 1].path;
+        }
+
+        // Force render this pane's UI immediately on load so it displays correctly before any clicks!
+        renderPaneTabBar(pane);
+
+        const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
+        if (activeTab) {
+          if (activeTab.isMedia) {
+            pane.editorEl.style.display = "none";
+            showMediaContainerForPane(pane, activeTab);
+          } else {
+            pane.editorEl.value = activeTab.content;
+            pane.editorEl.style.display = "block";
+            if (pane.mediaContainerEl) pane.mediaContainerEl.style.display = "none";
+          }
+        } else {
+          pane.editorEl.value = "";
         }
       });
 
