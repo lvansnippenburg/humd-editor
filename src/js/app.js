@@ -57,6 +57,31 @@ let undoStack = [];
 let redoStack = [];
 let undoDebounceTimer = null;
 let activeTabId = null;
+
+// Multi-pane state
+let panes = [];
+let activePaneId = null;
+let paneCounter = 0;
+
+class Pane {
+  constructor(id, containerEl) {
+    this.id = id;
+    this.containerEl = containerEl;
+    this.tabs = [];
+    this.activeTabId = null;
+    this.currentFilePath = null;
+    this.isDirty = false;
+    this.undoStack = [];
+    this.redoStack = [];
+    this.editorEl = containerEl.querySelector(".editor-textarea");
+    this.tabBarEl = containerEl.querySelector(".editor-tab-bar");
+    this.toolbarEl = containerEl.querySelector(".editor-toolbar");
+    this.noteTagsEl = containerEl.querySelector(".note-tags");
+    this.commentGutterEl = containerEl.querySelector(".editor-comment-gutter");
+    this.graphContainerEl = containerEl.querySelector(".graph-container");
+    this.mediaContainerEl = containerEl.querySelector(".media-container");
+  }
+}
 let tabCounter = 0;
 let fileTreeCache = [];
 let vaultHashCache = "";
@@ -181,6 +206,267 @@ function addHoverRename(nameEl, path) {
   nameEl.addEventListener("mousedown", clear);
 }
 
+// ===== MULTI-PANE MANAGEMENT =====
+
+function updateSplitPaneButtons() {
+  const isSplitActive = panes.length >= 2;
+  panes.forEach((p) => {
+    const splitBtn = p.containerEl.querySelector(".split-pane-btn");
+    const closeBtn = p.containerEl.querySelector(".close-pane-btn");
+    if (splitBtn) {
+      splitBtn.style.display = isSplitActive ? "none" : "";
+    }
+    if (closeBtn) {
+      closeBtn.style.display = isSplitActive ? "" : "none";
+    }
+  });
+}
+
+function createPane() {
+  const template = document.getElementById("pane-template");
+  const clone = template.content.cloneNode(true);
+  const container = document.getElementById("editor-pane");
+
+  const paneEl = clone.querySelector(".editor-pane-instance");
+  const id = `pane-${paneCounter++}`;
+  paneEl.dataset.paneId = id;
+
+  const searchPanel = document.getElementById("editor-search-panel");
+  container.insertBefore(paneEl, searchPanel);
+
+  const pane = new Pane(id, paneEl);
+  panes.push(pane);
+
+  setupPaneEventListeners(pane);
+  updateSplitPaneButtons();
+
+  if (panes.length === 1) {
+    activePaneId = id;
+    pane.editorEl.id = "editor";
+    pane.tabBarEl.id = "editor-tab-bar";
+    pane.toolbarEl.id = "editor-toolbar";
+    pane.noteTagsEl.id = "note-tags";
+    pane.commentGutterEl.id = "editor-comment-gutter";
+    pane.graphContainerEl.id = "graph-container";
+    pane.mediaContainerEl.id = "media-container";
+    pane.containerEl.classList.add("active");
+  }
+
+  return pane;
+}
+
+function setupPaneEventListeners(pane) {
+  const editor = pane.editorEl;
+  editor.addEventListener("input", onEditorInput);
+  editor.addEventListener("keydown", onEditorKeydown);
+  editor.addEventListener("scroll", onEditorScroll, { passive: true });
+  editor.addEventListener("blur", () => setTimeout(closeAutocomplete, 100));
+  editor.addEventListener("blur", onEditorBlurCommit);
+  editor.addEventListener("scroll", closeAutocomplete, { passive: true });
+  editor.addEventListener("mouseup", closeAutocomplete);
+  editor.addEventListener("click", onEditorModifierClick);
+
+  editor.addEventListener("focus", () => {
+    switchActivePane(pane.id);
+  });
+  pane.containerEl.addEventListener("mousedown", () => {
+    switchActivePane(pane.id);
+  });
+
+  pane.containerEl.querySelector(".preview-toggle-btn").addEventListener("click", togglePreview);
+  pane.containerEl.querySelector(".proofread-btn").addEventListener("click", runProofread);
+  pane.containerEl.querySelector(".suggest-tags-btn").addEventListener("click", runSuggestTags);
+  pane.containerEl.querySelector(".export-docx-btn").addEventListener("click", exportToWord);
+
+  pane.containerEl
+    .querySelector(".tab-scroll-left")
+    .addEventListener("click", () => scrollTabBar(-1));
+  pane.containerEl
+    .querySelector(".tab-scroll-right")
+    .addEventListener("click", () => scrollTabBar(1));
+
+  pane.tabBarEl.addEventListener("scroll", updateTabScrollButtons, { passive: true });
+
+  pane.containerEl.querySelector(".split-pane-btn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    splitPaneHorizontal(pane);
+  });
+
+  pane.containerEl.querySelector(".close-pane-btn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    closePane(pane);
+  });
+}
+
+function saveActivePaneState() {
+  const activePane = panes.find((p) => p.id === activePaneId);
+  if (activePane) {
+    activePane.tabs = tabs;
+    activePane.activeTabId = activeTabId;
+    activePane.currentFilePath = currentFilePath;
+    activePane.isDirty = isDirty;
+    activePane.undoStack = undoStack;
+    activePane.redoStack = redoStack;
+  }
+}
+
+function switchActivePane(paneId) {
+  if (activePaneId === paneId) return;
+
+  const prevPane = panes.find((p) => p.id === activePaneId);
+  const nextPane = panes.find((p) => p.id === paneId);
+  if (!nextPane) return;
+
+  if (prevPane) {
+    prevPane.tabs = tabs;
+    prevPane.activeTabId = activeTabId;
+    prevPane.currentFilePath = currentFilePath;
+    prevPane.isDirty = isDirty;
+    prevPane.undoStack = undoStack;
+    prevPane.redoStack = redoStack;
+
+    prevPane.editorEl.id = "";
+    prevPane.tabBarEl.id = "";
+    prevPane.toolbarEl.id = "";
+    prevPane.noteTagsEl.id = "";
+    prevPane.commentGutterEl.id = "";
+    prevPane.graphContainerEl.id = "";
+    prevPane.mediaContainerEl.id = "";
+
+    prevPane.containerEl.classList.remove("active");
+  }
+
+  activePaneId = paneId;
+  tabs = nextPane.tabs;
+  activeTabId = null; // Set to null temporarily to force switchToTab to execute rendering logic
+  currentFilePath = nextPane.currentFilePath;
+  isDirty = nextPane.isDirty;
+  undoStack = nextPane.undoStack;
+  redoStack = nextPane.redoStack;
+
+  nextPane.editorEl.id = "editor";
+  nextPane.tabBarEl.id = "editor-tab-bar";
+  nextPane.toolbarEl.id = "editor-toolbar";
+  nextPane.noteTagsEl.id = "note-tags";
+  nextPane.commentGutterEl.id = "editor-comment-gutter";
+  nextPane.graphContainerEl.id = "graph-container";
+  nextPane.mediaContainerEl.id = "media-container";
+
+  nextPane.containerEl.classList.add("active");
+
+  const searchPanel = document.getElementById("editor-search-panel");
+  if (searchPanel) {
+    nextPane.containerEl.appendChild(searchPanel);
+  }
+
+  renderTabBar();
+  updateTabScrollButtons();
+
+  if (nextPane.activeTabId) {
+    switchToTab(nextPane.activeTabId);
+  } else {
+    resetPreview();
+    const stats = document.getElementById("preview-stats");
+    if (stats) stats.textContent = "";
+    document.getElementById("editor").value = "";
+  }
+
+  nextPane.editorEl.focus();
+}
+
+function splitPaneHorizontal(pane) {
+  if (panes.length >= 2) {
+    showStatus("Maximum 2 split panes allowed.");
+    return;
+  }
+
+  saveActivePaneState();
+
+  const resizer = document.createElement("div");
+  resizer.className = "pane-resize-handle";
+  const container = document.getElementById("editor-pane");
+  const searchPanel = document.getElementById("editor-search-panel");
+  container.insertBefore(resizer, searchPanel);
+
+  const newPane = createPane();
+
+  initPaneResizeHandle(resizer, pane.containerEl, newPane.containerEl);
+
+  updateSplitPaneButtons();
+
+  switchActivePane(newPane.id);
+
+  if (pane.currentFilePath) {
+    loadFile(pane.currentFilePath);
+  }
+}
+
+function closePane(pane) {
+  if (panes.length <= 1) return;
+
+  saveActivePaneState();
+
+  const idx = panes.indexOf(pane);
+  if (idx === -1) return;
+
+  const remainingPane = panes.find((p) => p.id !== pane.id);
+
+  pane.containerEl.remove();
+
+  const resizer = document.querySelector(".pane-resize-handle");
+  if (resizer) resizer.remove();
+
+  panes.splice(idx, 1);
+
+  panes.forEach((p) => {
+    p.containerEl.style.flex = "1";
+  });
+  updateSplitPaneButtons();
+
+  activePaneId = null;
+  switchActivePane(remainingPane.id);
+
+  saveUiState();
+}
+
+function initPaneResizeHandle(resizer, topPaneEl, bottomPaneEl) {
+  let startY, startTopHeight, startBottomHeight;
+
+  function onMouseDown(e) {
+    e.preventDefault();
+    startY = e.clientY;
+    startTopHeight = topPaneEl.getBoundingClientRect().height;
+    startBottomHeight = bottomPaneEl.getBoundingClientRect().height;
+
+    resizer.classList.add("dragging");
+    document.body.classList.add("dragging-pane");
+
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  }
+
+  function onMouseMove(e) {
+    const dy = e.clientY - startY;
+    const newTopHeight = Math.max(100, startTopHeight + dy);
+    const newBottomHeight = Math.max(100, startBottomHeight - dy);
+
+    topPaneEl.style.flex = `0 0 ${newTopHeight}px`;
+    bottomPaneEl.style.flex = `0 0 ${newBottomHeight}px`;
+  }
+
+  function onMouseUp() {
+    resizer.classList.remove("dragging");
+    document.body.classList.remove("dragging-pane");
+
+    document.removeEventListener("mousemove", onMouseMove);
+    document.removeEventListener("mouseup", onMouseUp);
+
+    saveUiState();
+  }
+
+  resizer.addEventListener("mousedown", onMouseDown);
+}
+
 // ===== INITIALIZATION =====
 
 async function initialize() {
@@ -189,6 +475,10 @@ async function initialize() {
     configureMarked();
 
     const settings = await apiFetch("/api/settings");
+
+    // Create the initial pane before any other operations attempt to access the editor DOM node!
+    createPane();
+
     currentUserCss = settings.userCss || "";
     currentSpellCheck = settings.spellCheck ?? true;
     currentUsePandoc = settings.usePandoc ?? false;
@@ -225,8 +515,49 @@ async function initialize() {
     setupEventListeners();
     restoreUiState(settings);
 
-    const lastOpenFile = settings.lastOpenFile;
-    const openFiles = settings.openFiles || (lastOpenFile ? [lastOpenFile] : []);
+    const panesLayout = settings.panesLayout || [];
+    const isSplitActive =
+      panes.length >= 2 ||
+      (settings.openFiles && settings.openFiles.length > 0 && settings.panesLayout); // Wait, we will save split layout under settings.panes
+    // Let's use settings.panes which will contain full layout details!
+    const savedPanes = settings.panes || [];
+    const isSplitSaved = savedPanes && savedPanes.length >= 2;
+
+    const openFiles = [];
+    if (isSplitActive || savedEditorFlexBasis) {
+      // Let's gather open files across all saved panes if present
+    }
+
+    // Let's support full settings restoration for multi-pane.
+    // If settings has a "panes" field, we can load it.
+    // Let's design settings.panes:
+    // "panes": [
+    //   { "id": "pane-0", "activeTabId": "...", "currentFilePath": "...", "openFiles": [...] },
+    //   ...
+    // ]
+    //
+    // For extreme simplicity, backwards compatibility, and robustness, let's design it so:
+    // settings.panes = [
+    //   { tabs: ["file1.md", "file2.md"], activeTab: "file1.md", height: 350 },
+    //   { tabs: ["file3.md"], activeTab: "file3.md", height: 350 }
+    // ]
+    // This is incredibly clean!
+    const layoutPanes = settings.panes || [];
+    const openFilesToPrefetch = [];
+    if (layoutPanes.length > 0) {
+      layoutPanes.forEach((lp) => {
+        if (lp.tabs) {
+          lp.tabs.forEach((path) => {
+            if (!openFilesToPrefetch.includes(path)) {
+              openFilesToPrefetch.push(path);
+            }
+          });
+        }
+      });
+    } else {
+      const lastOpenFile = settings.lastOpenFile;
+      openFilesToPrefetch.push(...(settings.openFiles || (lastOpenFile ? [lastOpenFile] : [])));
+    }
 
     // These startup steps are independent — run them concurrently instead of
     // awaiting each in turn. The open files are prefetched in the same batch.
@@ -234,9 +565,11 @@ async function initialize() {
       refreshFileTree(),
       buildLinkIndex(),
       loadCitations(),
-      openFiles.length > 0
+      openFilesToPrefetch.length > 0
         ? Promise.allSettled(
-            openFiles.map((path) => apiFetch(`/api/read-file?path=${encodeURIComponent(path)}`)),
+            openFilesToPrefetch.map((path) =>
+              apiFetch(`/api/read-file?path=${encodeURIComponent(path)}`),
+            ),
           )
         : Promise.resolve([]),
     ]);
@@ -245,12 +578,98 @@ async function initialize() {
 
     isInitialized = true;
 
-    if (openFiles.length > 0) {
-      openFiles.forEach((path, i) => {
+    // Map fetched contents by file path
+    const fileContents = {};
+    if (openFilesToPrefetch.length > 0) {
+      openFilesToPrefetch.forEach((path, i) => {
+        const res = results[i];
+        if (res && res.status === "fulfilled") {
+          fileContents[path] = res.value.content;
+        } else {
+          fileContents[path] = "";
+        }
+      });
+    }
+
+    if (layoutPanes.length >= 2) {
+      // Restore split pane layout!
+      const resizer = document.createElement("div");
+      resizer.className = "pane-resize-handle";
+      const container = document.getElementById("editor-pane");
+      const searchPanel = document.getElementById("editor-search-panel");
+      container.insertBefore(resizer, searchPanel);
+
+      const pane0 = panes[0];
+      const pane1 = createPane();
+
+      initPaneResizeHandle(resizer, pane0.containerEl, pane1.containerEl);
+
+      // Restore sizes
+      if (layoutPanes[0].height) {
+        pane0.containerEl.style.flex = `0 0 ${layoutPanes[0].height}px`;
+      }
+      if (layoutPanes[1].height) {
+        pane1.containerEl.style.flex = `0 0 ${layoutPanes[1].height}px`;
+      }
+
+      // Populate tabs for both panes
+      [pane0, pane1].forEach((pane, idx) => {
+        const lp = layoutPanes[idx];
+        pane.tabs = [];
+        if (lp.tabs) {
+          lp.tabs.forEach((path) => {
+            const mediaType = mediaTypeForPath(path);
+            if (mediaType) {
+              pane.tabs.push({
+                id: `tab-${++tabCounter}`,
+                path,
+                isMedia: true,
+                mediaType,
+                isDirty: false,
+                content: "",
+              });
+            } else {
+              const content = fileContents[path] || "";
+              pane.tabs.push({
+                id: `tab-${++tabCounter}`,
+                path,
+                isDirty: false,
+                content,
+                undoStack: [{ value: content, start: 0, end: 0 }],
+                redoStack: [],
+              });
+            }
+          });
+        }
+
+        if (lp.activeTabPath) {
+          const matchingTab = pane.tabs.find((t) => t.path === lp.activeTabPath);
+          if (matchingTab) {
+            pane.activeTabId = matchingTab.id;
+            pane.currentFilePath = lp.activeTabPath;
+          }
+        }
+        if (!pane.activeTabId && pane.tabs.length > 0) {
+          pane.activeTabId = pane.tabs[pane.tabs.length - 1].id;
+          pane.currentFilePath = pane.tabs[pane.tabs.length - 1].path;
+        }
+      });
+
+      updateSplitPaneButtons();
+      const savedActiveId = settings.activePaneId === "pane-1" ? "pane-1" : "pane-0";
+      // Force loading active pane state to globals
+      activePaneId = null;
+      switchActivePane(savedActiveId);
+    } else {
+      // Single pane restore (falls back to old logic)
+      const lastOpenFile = settings.lastOpenFile;
+      const pane = panes[0];
+      pane.tabs = [];
+
+      openFilesToPrefetch.forEach((path) => {
         const mediaType = mediaTypeForPath(path);
         if (mediaType) {
-          // Image/PDF: reopen as a viewer tab (its read-file fetch was rejected).
-          tabs.push({
+          pane.tabs.push({
             id: `tab-${++tabCounter}`,
             path,
             isMedia: true,
@@ -258,23 +677,47 @@ async function initialize() {
             isDirty: false,
             content: "",
           });
-          return;
-        }
-        const result = results[i];
-        if (result && result.status === "fulfilled") {
-          tabs.push({
+        } else {
+          const content = fileContents[path] || "";
+          pane.tabs.push({
             id: `tab-${++tabCounter}`,
             path,
             isDirty: false,
-            content: result.value.content,
-            undoStack: [],
+            content,
+            undoStack: [{ value: content, start: 0, end: 0 }],
             redoStack: [],
           });
         }
       });
-      if (tabs.length > 0) {
-        const activeTab = tabs.find((t) => t.path === lastOpenFile) || tabs[tabs.length - 1];
-        await switchToTab(activeTab.id);
+
+      if (pane.tabs.length > 0) {
+        const activeTab =
+          pane.tabs.find((t) => t.path === lastOpenFile) || pane.tabs[pane.tabs.length - 1];
+        pane.activeTabId = activeTab.id;
+        pane.currentFilePath = activeTab.path;
+      }
+
+      // Load into globals
+      tabs = pane.tabs;
+      activeTabId = null; // Set to null temporarily to force switchToTab rendering logic
+      currentFilePath = pane.currentFilePath;
+      isDirty = pane.isDirty;
+      undoStack = pane.activeTabId
+        ? pane.tabs.find((t) => t.id === pane.activeTabId)?.undoStack || []
+        : [];
+      redoStack = [];
+
+      updateSplitPaneButtons();
+      renderTabBar();
+      updateTabScrollButtons();
+
+      if (pane.activeTabId) {
+        switchToTab(pane.activeTabId);
+      } else {
+        resetPreview();
+        const stats = document.getElementById("preview-stats");
+        if (stats) stats.textContent = "";
+        document.getElementById("editor").value = "";
       }
     }
 
@@ -318,22 +761,6 @@ async function changeVaultFolder() {
 function setupEventListeners() {
   initResizableHandles();
 
-  const editor = document.getElementById("editor");
-  editor.addEventListener("input", onEditorInput);
-  editor.addEventListener("keydown", onEditorKeydown);
-  editor.addEventListener("scroll", onEditorScroll, { passive: true });
-  editor.addEventListener("blur", () => setTimeout(closeAutocomplete, 100));
-  editor.addEventListener("blur", onEditorBlurCommit);
-  editor.addEventListener("scroll", closeAutocomplete, { passive: true });
-  editor.addEventListener("mouseup", closeAutocomplete);
-  editor.addEventListener("click", onEditorModifierClick);
-
-  document.getElementById("preview-toggle-btn").addEventListener("click", togglePreview);
-
-  document.getElementById("tab-scroll-left").addEventListener("click", () => scrollTabBar(-1));
-  document.getElementById("tab-scroll-right").addEventListener("click", () => scrollTabBar(1));
-  const tabBar = document.getElementById("editor-tab-bar");
-  tabBar.addEventListener("scroll", updateTabScrollButtons, { passive: true });
   window.addEventListener("resize", updateTabScrollButtons, { passive: true });
 
   document.addEventListener("keydown", (e) => {
@@ -386,9 +813,6 @@ function setupEventListeners() {
     .addEventListener("change", updateProofreadProviderVisibility);
   document.getElementById("help-btn").addEventListener("click", openHelpDialog);
   document.getElementById("close-help").addEventListener("click", closeHelpDialog);
-  document.getElementById("proofread-btn").addEventListener("click", runProofread);
-  document.getElementById("suggest-tags-btn").addEventListener("click", runSuggestTags);
-  document.getElementById("export-docx-btn").addEventListener("click", exportToWord);
   document.getElementById("close-proofread").addEventListener("click", closeProofreadPanel);
   // Delegated: the Apply button replaces the passage; clicking elsewhere on a
   // suggestion highlights its source passage in the editor.
@@ -1181,6 +1605,13 @@ async function closeTab(tabId, skipSave = false) {
     }
   } else {
     renderTabBar();
+  }
+
+  if (tabs.length === 0 && panes.length > 1) {
+    const pane = panes.find((p) => p.id === activePaneId);
+    if (pane) {
+      closePane(pane);
+    }
   }
 }
 
@@ -3184,12 +3615,27 @@ async function saveUiState() {
     const editorWidth = previewVisible
       ? document.getElementById("editor-pane").getBoundingClientRect().width
       : null;
+
+    // Synchronize active globals into the active pane object
+    saveActivePaneState();
+
+    const savedPanes = panes.map((p) => {
+      return {
+        id: p.id,
+        tabs: p.tabs.map((t) => t.path),
+        activeTabPath: p.tabs.find((t) => t.id === p.activeTabId)?.path || null,
+        height: panes.length >= 2 ? p.containerEl.getBoundingClientRect().height : null,
+      };
+    });
+
     await apiPost("/api/settings", {
       sidebarWidth: sidebarWidth > 0 ? sidebarWidth : null,
       editorWidth: editorWidth && editorWidth > 0 ? editorWidth : null,
       previewVisible,
       lastOpenFile: currentFilePath,
       openFiles: tabs.map((t) => t.path),
+      panes: savedPanes,
+      activePaneId,
     });
   } catch (_) {}
 }

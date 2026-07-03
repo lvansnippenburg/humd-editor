@@ -750,9 +750,61 @@ body.dragging-file #trash-btn {
     position: relative;
 }
 
+.editor-pane-instance {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--bg-primary);
+    position: relative;
+    border-bottom: 1px solid var(--border);
+}
+
+.editor-pane-instance:last-child {
+    border-bottom: none;
+}
+
+.editor-pane-instance.active {
+    box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* Resize handle for horizontal pane splits */
+.pane-resize-handle {
+    flex: 0 0 5px;
+    height: 5px;
+    position: relative;
+    cursor: row-resize;
+    z-index: 20;
+    background: transparent;
+}
+
+.pane-resize-handle::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 2px;
+    height: 1px;
+    background: var(--border);
+    transition:
+        background var(--t-normal),
+        height var(--t-normal),
+        top var(--t-normal);
+}
+
+.pane-resize-handle:hover::after,
+.pane-resize-handle.dragging::after {
+    top: 1px;
+    height: 3px;
+    background: var(--accent);
+    opacity: 0.5;
+}
+
 /* Comment balloons aligned to the editor's right margin. The gutter overlays
    the pane; balloons are positioned per-line in JS (see renderEditorCommentGutter). */
-#editor-comment-gutter {
+#editor-comment-gutter,
+.editor-comment-gutter {
     position: absolute;
     top: 0;
     left: 0;
@@ -779,7 +831,8 @@ body.dragging-file #trash-btn {
     opacity: 1;
 }
 
-#editor-toolbar {
+#editor-toolbar,
+.editor-toolbar {
     display: flex;
     align-items: stretch;
     background: var(--bg-secondary);
@@ -787,7 +840,8 @@ body.dragging-file #trash-btn {
     flex-shrink: 0;
 }
 
-#editor-tab-bar {
+#editor-tab-bar,
+.editor-tab-bar {
     flex: 1;
     min-width: 0;
     display: flex;
@@ -800,7 +854,8 @@ body.dragging-file #trash-btn {
     scrollbar-width: none;
 }
 
-#editor-tab-bar::-webkit-scrollbar {
+#editor-tab-bar::-webkit-scrollbar,
+.editor-tab-bar::-webkit-scrollbar {
     display: none;
 }
 
@@ -919,7 +974,8 @@ body.dragging-file #trash-btn {
     color: var(--text-primary);
 }
 
-#note-tags {
+#note-tags,
+.note-tags {
     display: flex;
     flex-wrap: wrap;
     gap: 5px;
@@ -928,7 +984,8 @@ body.dragging-file #trash-btn {
     background: var(--bg-primary);
 }
 
-#note-tags:empty {
+#note-tags:empty,
+.note-tags:empty {
     display: none;
 }
 
@@ -943,7 +1000,8 @@ body.dragging-file #trash-btn {
 }
 
 /* ===== EDITOR TEXTAREA ===== */
-#editor {
+#editor,
+.editor-textarea {
     flex: 1;
     width: 100%;
     border: none;
@@ -959,7 +1017,8 @@ body.dragging-file #trash-btn {
 }
 
 /* ===== MEDIA VIEWER (images / PDF) ===== */
-#media-container {
+#media-container,
+.media-container {
     display: none;
     flex: 1;
     min-height: 0;
