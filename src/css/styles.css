@@ -14,6 +14,7 @@
     --accent-hover: #4f46e5;
 
     --border: #e5e5e5;
+    --border-strong: #a3a3a3; /* higher-contrast border for the focused pane/tab */
 
     --hover-bg: rgba(28, 28, 28, 0.06);
     --active-file-bg: rgba(99, 102, 241, 0.12);
@@ -47,6 +48,7 @@
         --accent-hover: #6366f1;
 
         --border: #383838;
+        --border-strong: #616161; /* higher-contrast border for the focused pane/tab */
 
         --hover-bg: rgba(232, 232, 232, 0.07);
         --active-file-bg: rgba(129, 140, 248, 0.16);
@@ -765,8 +767,10 @@ body.dragging-file #trash-btn {
     border-bottom: none;
 }
 
-.editor-pane-instance.active {
-    box-shadow: inset 0 0 0 1px var(--accent);
+/* Ring the focused pane only while the editor is actually split (the resize
+   handle exists only then); a single pane is always "active" and needs no ring. */
+#editor-pane:has(.pane-resize-handle) .editor-pane-instance.active {
+    box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 
 /* Resize handle for horizontal pane splits */
@@ -927,6 +931,13 @@ body.dragging-file #trash-btn {
     color: var(--text-primary);
     background: var(--bg-primary);
     border-color: var(--border);
+    border-bottom-color: var(--bg-primary);
+}
+
+/* When split, give the focused pane's active tab a darker border so it's clear
+   which document has focus. Scoped to :has() so a lone pane's tab is unaffected. */
+#editor-pane:has(.pane-resize-handle) .editor-pane-instance.active .editor-tab.active {
+    border-color: var(--border-strong);
     border-bottom-color: var(--bg-primary);
 }
 
