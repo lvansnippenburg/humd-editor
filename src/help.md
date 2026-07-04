@@ -23,6 +23,9 @@
 | `\@` | Open the Zotero (Better BibTeX) citation picker |
 | `⌘⇧M` | Insert a comment |
 | `⌘⇧T` | Insert a table (choose rows, columns and column alignment) |
+| `⌘⇧P` | Proofread (selection or whole document) |
+| `⌘⇧L` | Translate (selection or whole document) |
+| `⌘⇧G` | Suggest tags from the vault |
 | `⌘F` | Search |
 | `⌘H` | Search and replace |
 | `[[` | Suggests note names (for linking) |
@@ -103,15 +106,19 @@ This will render as:
 
 ## AI assistance
 
-Two buttons in the toolbar use an AI model to help with the document you have open. The provider is configured under **Settings → Proofreading** — choose either **Google Gemini** (remote; needs a free API key) or **Ollama** (local; needs `ollama serve` running and a model pulled, so your text never leaves your machine). If Ollama is selected but not running, the app quietly falls back to Gemini and tells you so.
+Three buttons in the toolbar use an AI model to help with the document you have open. The provider is configured under **Settings → Proofreading & translation** — choose either **Google Gemini** (remote; needs a free API key) or **Ollama** (local; needs `ollama serve` running and a model pulled, so your text never leaves your machine). If Ollama is selected but not running, the app quietly falls back to Gemini and tells you so.
 
 ### Proofread
 
-Click the **Proofread** button to review the whole document, or select some text first to review just that part. Suggestions appear in a side panel. Click a suggestion to highlight the passage it refers to in the editor, and click **Apply** to replace the original text with the correction. Markdown syntax (links, footnotes, citations, etc.) is left alone.
+Click the **Proofread** button (or press `⌘⇧P`) to review the whole document, or select some text first to review just that part. Suggestions appear in a side panel. Click a suggestion to highlight the passage it refers to in the editor, and click **Apply** to replace the original text with the correction. Markdown syntax (links, footnotes, citations, etc.) is left alone.
+
+### Translate
+
+Click the **Translate** button (or press `⌘⇧L`) to translate the whole document, or select some text first to translate just that part. The target language is set under **Settings → Proofreading & translation** (default English). Translations appear in the same side panel as proofread suggestions; click **Apply** to replace a passage with its translation, which closes the panel. Markdown syntax is left untranslated.
 
 ### Suggest tags
 
-Click the **Suggest tags** button to have the model pick, from the tags already used elsewhere in your vault, the ones that best fit the current document. The chosen tags are added (as `#tags`) on a new line at the bottom of the document. Tags that are already present are skipped, and no new tags are invented.
+Click the **Suggest tags** button (or press `⌘⇧G`) to have the model pick, from the tags already used elsewhere in your vault, the ones that best fit the current document. The chosen tags are added (as `#tags`) on a new line at the bottom of the document. Tags that are already present are skipped, and no new tags are invented.
 
 ## Version control
 

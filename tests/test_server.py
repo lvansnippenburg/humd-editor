@@ -203,6 +203,45 @@ class InlineWikilinkTests(unittest.TestCase):
         self.assertEqual(server.inline_wikilinks("[[#intro]]", self.vault), "[[#intro]]")
 
 
+class TranslateTests(unittest.TestCase):
+    """translate_text should inject the target language into the system prompt
+    and reuse the proofread suggestion schema. We stub _ai_complete so no
+    network/model is needed."""
+
+    def setUp(self):
+        self._orig = server._ai_complete
+        self.captured = {}
+
+        def fake(system, user, gemini_schema, json_schema, settings):
+            self.captured.update(
+                system=system,
+                user=user,
+                gemini_schema=gemini_schema,
+                json_schema=json_schema,
+            )
+            return "[]", None
+
+        server._ai_complete = fake
+
+    def tearDown(self):
+        server._ai_complete = self._orig
+
+    def test_target_language_injected(self):
+        server.translate_text("Bonjour le monde", "Dutch")
+        self.assertIn("Dutch", self.captured["system"])
+        self.assertNotIn("{{TARGET_LANGUAGE}}", self.captured["system"])
+        self.assertEqual(self.captured["user"], "Bonjour le monde")
+
+    def test_defaults_to_english(self):
+        server.translate_text("texto", "")
+        self.assertIn("English", self.captured["system"])
+
+    def test_reuses_proofread_schema(self):
+        server.translate_text("x", "German")
+        self.assertIs(self.captured["gemini_schema"], server.PROOFREAD_SCHEMA)
+        self.assertIs(self.captured["json_schema"], server.PROOFREAD_JSON_SCHEMA)
+
+
 class PathConfinementTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

@@ -33,11 +33,13 @@ let currentGeminiModel = "";
 let currentProofreadProvider = "gemini"; // "gemini" | "ollama"
 let currentOllamaUrl = "";
 let currentOllamaModel = "";
+let currentDocumentLanguage = "English"; // target language for translation (vault-wide setting)
 let vaultIsGitRepo = false; // is the current vault a git working tree?
 let gitCommitInFlight = false; // serialise commit triggers (blur + timer)
 let gitAuthErrorShown = false; // only nag about credentials once per session
 let gitAutoCommitTimer = null; // 60-min periodic commit interval handle
 let proofreadRange = null; // { start, end } in the editor that proofreading targets
+let suggestionPanelMode = "proofread"; // "proofread" | "translate" — which feature owns the shared panel
 let previewVisible = true;
 let previewStale = false; // edits happened while preview was hidden; refresh on show
 let savedEditorFlexBasis = null;
@@ -324,6 +326,7 @@ function setupPaneEventListeners(pane) {
 
   pane.containerEl.querySelector(".preview-toggle-btn").addEventListener("click", togglePreview);
   pane.containerEl.querySelector(".proofread-btn").addEventListener("click", runProofread);
+  pane.containerEl.querySelector(".translate-btn").addEventListener("click", runTranslate);
   pane.containerEl.querySelector(".suggest-tags-btn").addEventListener("click", runSuggestTags);
   pane.containerEl.querySelector(".export-docx-btn").addEventListener("click", exportToWord);
 
@@ -350,6 +353,17 @@ function setupPaneEventListeners(pane) {
 function saveActivePaneState() {
   const activePane = panes.find((p) => p.id === activePaneId);
   if (activePane) {
+    // Flush the live editor text into its tab first. The editor DOM (id="editor")
+    // holds edits that haven't been copied back into the tab model yet; without
+    // this, saving the pane persists a stale tab.content and the latest edits are
+    // lost when the pane is shown again. Mirrors the flush switchToTab does.
+    const cur = getActiveTab();
+    if (cur && !cur.isGraph && !cur.isMedia) {
+      cur.content = getEditorContent();
+      cur.isDirty = isDirty;
+      cur.undoStack = undoStack.slice();
+      cur.redoStack = redoStack.slice();
+    }
     activePane.tabs = tabs;
     activePane.activeTabId = activeTabId;
     activePane.currentFilePath = currentFilePath;
@@ -359,7 +373,7 @@ function saveActivePaneState() {
   }
 }
 
-function switchActivePane(paneId) {
+async function switchActivePane(paneId) {
   if (activePaneId === paneId) return;
 
   const prevPane = panes.find((p) => p.id === activePaneId);
@@ -367,12 +381,22 @@ function switchActivePane(paneId) {
   if (!nextPane) return;
 
   if (prevPane) {
-    prevPane.tabs = tabs;
-    prevPane.activeTabId = activeTabId;
-    prevPane.currentFilePath = currentFilePath;
-    prevPane.isDirty = isDirty;
-    prevPane.undoStack = undoStack;
-    prevPane.redoStack = redoStack;
+    // The editor DOM is about to be handed to the other pane, so commit the
+    // outgoing pane's live edits now. A pending debounce would otherwise fire
+    // against the wrong pane's editor, so cancel those timers first.
+    clearTimeout(autoSaveDebounceTimer);
+    clearTimeout(undoDebounceTimer);
+    const outgoingTab = getActiveTab();
+    saveActivePaneState(); // flushes the live editor text into outgoingTab
+    if (outgoingTab && !outgoingTab.isGraph && !outgoingTab.isMedia && outgoingTab.isDirty) {
+      try {
+        await apiPost("/api/write-file", { path: outgoingTab.path, content: outgoingTab.content });
+        outgoingTab.isDirty = false;
+        prevPane.isDirty = false;
+      } catch (e) {
+        console.error("Auto-save on pane switch failed:", e);
+      }
+    }
 
     prevPane.editorEl.id = "";
     prevPane.tabBarEl.id = "";
@@ -423,7 +447,7 @@ function switchActivePane(paneId) {
   nextPane.editorEl.focus();
 }
 
-function splitPaneHorizontal(pane) {
+async function splitPaneHorizontal(pane) {
   if (panes.length >= 2) {
     showStatus("Maximum 2 split panes allowed.");
     return;
@@ -443,14 +467,14 @@ function splitPaneHorizontal(pane) {
 
   updateSplitPaneButtons();
 
-  switchActivePane(newPane.id);
+  await switchActivePane(newPane.id);
 
   if (pane.currentFilePath) {
     loadFile(pane.currentFilePath);
   }
 }
 
-function closePane(pane) {
+async function closePane(pane) {
   if (panes.length <= 1) return;
 
   saveActivePaneState();
@@ -473,7 +497,7 @@ function closePane(pane) {
   updateSplitPaneButtons();
 
   activePaneId = null;
-  switchActivePane(remainingPane.id);
+  await switchActivePane(remainingPane.id);
 
   saveUiState();
 }
@@ -542,6 +566,7 @@ async function initialize() {
     currentProofreadProvider = settings.proofreadProvider || "gemini";
     currentOllamaUrl = settings.ollamaUrl || "";
     currentOllamaModel = settings.ollamaModel || "";
+    currentDocumentLanguage = settings.documentLanguage || "English";
     document.getElementById("editor").spellcheck = currentSpellCheck;
 
     let vaultPath = settings.vaultPath;
@@ -855,6 +880,19 @@ function setupEventListeners() {
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "t" || e.key === "T")) {
       e.preventDefault();
       openTableDialog();
+    }
+    // AI assist actions, grouped under Cmd/Ctrl+Shift.
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "p" || e.key === "P")) {
+      e.preventDefault();
+      runProofread();
+    }
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "l" || e.key === "L")) {
+      e.preventDefault();
+      runTranslate();
+    }
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "g" || e.key === "G")) {
+      e.preventDefault();
+      runSuggestTags();
     }
   });
 
@@ -3906,6 +3944,7 @@ function openSettingsDialog() {
   document.getElementById("proofread-provider-select").value = currentProofreadProvider;
   document.getElementById("ollama-url-input").value = currentOllamaUrl;
   document.getElementById("ollama-model-input").value = currentOllamaModel;
+  document.getElementById("document-language-input").value = currentDocumentLanguage;
   updateProofreadProviderVisibility();
   document.getElementById("settings-dialog").showModal();
 }
@@ -3947,6 +3986,8 @@ async function saveSettings() {
     const newProofreadProvider = document.getElementById("proofread-provider-select").value;
     const newOllamaUrl = document.getElementById("ollama-url-input").value.trim();
     const newOllamaModel = document.getElementById("ollama-model-input").value.trim();
+    const newDocumentLanguage =
+      document.getElementById("document-language-input").value.trim() || "English";
 
     // Validate vault path
     try {
@@ -3972,6 +4013,7 @@ async function saveSettings() {
       proofreadProvider: newProofreadProvider,
       ollamaUrl: newOllamaUrl,
       ollamaModel: newOllamaModel,
+      documentLanguage: newDocumentLanguage,
     });
 
     currentUserCss = newCss;
@@ -3985,6 +4027,7 @@ async function saveSettings() {
     currentProofreadProvider = newProofreadProvider;
     currentOllamaUrl = newOllamaUrl;
     currentOllamaModel = newOllamaModel;
+    currentDocumentLanguage = newDocumentLanguage;
     document.getElementById("editor").spellcheck = newSpellCheck;
 
     const bibChanged = newBibPath !== currentBibPath;
@@ -4115,6 +4158,11 @@ async function runProofread() {
   const sidebarWidth = sidebar.offsetWidth;
   panel.style.width = sidebarWidth + "px";
 
+  suggestionPanelMode = "proofread";
+  // The panel is shared with Translate, so reset its header/label each run.
+  // innerHTML reset also clears any error markup left by a previous failed run.
+  document.querySelector("#proofread-panel h3").textContent = "Suggestions";
+  loading.innerHTML = "<p>Proofreading…</p>";
   document.getElementById("proofread-scope").textContent =
     `${isSelection ? "Selected text" : "Whole document"} (${text.length} chars)`;
   loading.style.display = "";
@@ -4184,6 +4232,75 @@ async function runProofread() {
           }
         }
       }
+    }
+    loading.style.display = "none";
+    suggestions.style.display = "";
+  } catch (err) {
+    loading.innerHTML = `<p style="color: var(--text-secondary); margin: 0; padding: 12px 16px; font-size: 12px;">Error: ${escapeHtml(err.message || err)}</p>`;
+  }
+}
+
+// Translate the selection (or whole document) into the document language and
+// show the results in the proofread panel. Reuses the proofread suggestion
+// machinery: each returned item is an Apply-able original → translation pair.
+async function runTranslate() {
+  if (!currentFilePath) {
+    showStatus("Open a file to translate", true);
+    return;
+  }
+  const editor = document.getElementById("editor");
+  const isSelection = editor.selectionStart !== editor.selectionEnd;
+  const start = isSelection ? editor.selectionStart : 0;
+  const end = isSelection ? editor.selectionEnd : editor.value.length;
+  const text = editor.value.slice(start, end);
+  if (!text.trim()) {
+    showStatus("Nothing to translate", true);
+    return;
+  }
+  proofreadRange = { start, end };
+  const targetLang = currentDocumentLanguage || "English";
+
+  const panel = document.getElementById("proofread-panel");
+  const loading = document.getElementById("proofread-loading");
+  const suggestions = document.getElementById("proofread-suggestions");
+  const list = document.getElementById("proofread-list");
+
+  // Sync panel width to the sidebar (which may have been resized).
+  panel.style.width = document.getElementById("sidebar").offsetWidth + "px";
+
+  suggestionPanelMode = "translate";
+  // The panel is shared with Proofread, so set its header/label for this run.
+  document.querySelector("#proofread-panel h3").textContent = "Translation";
+  loading.innerHTML = `<p>Translating to ${escapeHtml(targetLang)}…</p>`;
+  document.getElementById("proofread-scope").textContent =
+    `${isSelection ? "Selected text" : "Whole document"} → ${targetLang} (${text.length} chars)`;
+  loading.style.display = "";
+  suggestions.style.display = "none";
+  list.innerHTML = "";
+  panel.style.display = "";
+
+  try {
+    const res = await apiPost("/api/translate", { text, target_lang: targetLang });
+
+    // Non-fatal notice (e.g. Ollama not running → fell back to Gemini).
+    if (res.warning) showStatus(res.warning);
+
+    // Structured path: an array of { original, suggestion, comment } items,
+    // rendered and applied exactly like proofread suggestions.
+    if (Array.isArray(res.suggestions)) {
+      if (res.suggestions.length === 0) {
+        list.innerHTML =
+          `<li style='color: var(--text-secondary); padding: 16px;'>Nothing to translate — the text is already in ${escapeHtml(targetLang)}.</li>`;
+      } else {
+        for (const item of res.suggestions) {
+          list.appendChild(buildSuggestionItem(item));
+        }
+      }
+    } else {
+      // The model didn't return the expected array; show whatever came back.
+      list.innerHTML = `<li style='color: var(--text-secondary); padding: 16px;'>${escapeHtml(
+        res.result || "No translation returned."
+      )}</li>`;
     }
     loading.style.display = "none";
     suggestions.style.display = "";
@@ -4290,6 +4407,13 @@ function applyProofreadSuggestion(li) {
   // Keep the new text selected and visible.
   editor.setSelectionRange(r.start, r.start + suggestion.length);
   editor.scrollTop = editor.scrollHeight * (r.start / Math.max(1, editor.value.length));
+
+  // A translation replaces the whole passage in one go, so close the panel once
+  // one is applied. Proofreading leaves it open to work through the rest.
+  if (suggestionPanelMode === "translate") {
+    closeProofreadPanel();
+    return;
+  }
 
   // Mark this suggestion as applied so it's clearly done and can't double-apply.
   li.classList.add("applied");

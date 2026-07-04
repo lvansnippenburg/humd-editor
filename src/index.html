@@ -446,7 +446,7 @@
 
                         <button
                             class="icon-btn proofread-btn"
-                            title="Proofread (selection or whole document)"
+                            title="Proofread (selection or whole document) — ⌘/Ctrl+Shift+P"
                             aria-label="Proofread"
                         >
                             <svg
@@ -462,9 +462,31 @@
                                 />
                             </svg>
                         </button>
+
+                        <button
+                            class="icon-btn translate-btn"
+                            title="Translate (selection or whole document) — ⌘/Ctrl+Shift+L"
+                            aria-label="Translate"
+                        >
+                            <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 16 16"
+                                fill="none"
+                                xmlns="http://www.w3.org/2000/svg"
+                            >
+                                <path
+                                    d="M1.5 3h6M4.5 2v1M6 3c0 2.5-1.8 4.5-4 5.5M3 5.5c.4 1.3 1.8 2.4 3.2 2.8M8.5 14l3-7 3 7M9.6 11.6h3.8"
+                                    stroke="currentColor"
+                                    stroke-width="1.2"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                />
+                            </svg>
+                        </button>
                         <button
                             class="icon-btn suggest-tags-btn"
-                            title="Suggest tags from the vault for this document"
+                            title="Suggest tags from the vault for this document — ⌘/Ctrl+Shift+G"
                             aria-label="Suggest tags"
                         >
                             <svg
@@ -667,11 +689,11 @@
             </div>
 
             <div class="settings-section">
-                <h3>Proofreading</h3>
+                <h3>Proofreading &amp; translation</h3>
                 <p class="settings-hint">
-                    Proofread the document (or a selection) with Google Gemini (remote) or a local
-                    Ollama service. Settings are stored locally; with Ollama your text never leaves
-                    your machine.
+                    Proofread or translate the document (or a selection) with Google Gemini (remote)
+                    or a local Ollama service. Settings are stored locally; with Ollama your text
+                    never leaves your machine.
                 </p>
                 <label class="settings-label">Provider</label>
                 <select id="proofread-provider-select" class="settings-input">
@@ -679,10 +701,23 @@
                     <option value="ollama">Ollama (local)</option>
                 </select>
 
+                <label class="settings-label" style="margin-top: 10px">Translation language</label>
+                <input
+                    type="text"
+                    id="document-language-input"
+                    class="settings-input"
+                    placeholder="English"
+                    autocomplete="off"
+                    spellcheck="false"
+                />
+                <p class="settings-hint" style="margin-top: 4px">
+                    Target language the Translate button renders into (default English).
+                </p>
+
                 <div id="gemini-settings-group">
                     <p class="settings-hint" style="margin-top: 10px">
                         Get a free API key at <code>aistudio.google.com/apikey</code>. The key is
-                        sent only to Google when you proofread.
+                        sent only to Google when you proofread or translate.
                     </p>
                     <label class="settings-label">Gemini API key</label>
                     <input

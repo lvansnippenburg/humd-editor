@@ -857,6 +857,35 @@ def proofread_text(text: str) -> tuple[str, str | None]:
     )
 
 
+# The translation system prompt lives in src/TRANSLATE_SYSTEM.md so it can be
+# edited without touching code. It carries a {{TARGET_LANGUAGE}} placeholder the
+# server fills in per request. Translations reuse the proofread suggestion schema
+# (original / suggestion / comment) so the client renders them the same way.
+_TRANSLATE_FALLBACK = (
+    "You are a scholarly translator. Translate the supplied Markdown text into "
+    "{{TARGET_LANGUAGE}} using a formal, academic register, leaving Markdown "
+    "syntax, wikilinks, footnote markers, citation keys and frontmatter "
+    "unchanged. Break the text into natural units and return a JSON array of "
+    "objects with string fields 'original' (the source passage, verbatim), "
+    "'suggestion' (its academic {{TARGET_LANGUAGE}} translation) and 'comment' "
+    "(an alternative phrasing or note, or an empty string). Return an empty "
+    "array if the text is already in {{TARGET_LANGUAGE}}."
+)
+
+TRANSLATE_SYSTEM = _read_prompt_file("TRANSLATE_SYSTEM.md") or _TRANSLATE_FALLBACK
+
+
+def translate_text(text: str, target_lang: str) -> tuple[str, str | None]:
+    """Translate `text` into `target_lang` with the configured provider. Returns
+    (raw, warning); raw is the JSON-array string the /api/translate handler
+    parses (same shape as proofreading)."""
+    target = (target_lang or "").strip() or "English"
+    system = TRANSLATE_SYSTEM.replace("{{TARGET_LANGUAGE}}", target)
+    return _ai_complete(
+        system, text, PROOFREAD_SCHEMA, PROOFREAD_JSON_SCHEMA, load_settings()
+    )
+
+
 SUGGEST_TAGS_SYSTEM = (
     "You are a librarian tagging an article for a personal notes vault. You are "
     "given the document text and a list of tags already used elsewhere in the "
@@ -1476,6 +1505,39 @@ class Handler(SimpleHTTPRequestHandler):
                 stripped = raw.strip()
                 if stripped.startswith("```"):
                     # Strip a ```json … ``` fence the model occasionally adds.
+                    stripped = re.sub(r"^```[a-zA-Z]*\n?", "", stripped)
+                    stripped = re.sub(r"\n?```$", "", stripped).strip()
+                try:
+                    suggestions = json.loads(stripped)
+                    if not isinstance(suggestions, list):
+                        raise ValueError("not a list")
+                    resp = {"suggestions": suggestions}
+                except (json.JSONDecodeError, ValueError):
+                    resp = {"result": raw}
+                if warning:
+                    resp["warning"] = warning
+                self.send_json(resp)
+            except Exception as e:
+                self.send_error_json(str(e))
+
+        elif path == "/api/translate":
+            try:
+                data = self.read_body()
+                text = (data.get("text") or "").strip()
+                if not text:
+                    raise ValueError("Nothing to translate")
+                # Target language is a vault setting; the client passes it, but
+                # fall back to the stored setting (then English) if it doesn't.
+                target_lang = (
+                    data.get("target_lang")
+                    or load_settings().get("documentLanguage")
+                    or "English"
+                ).strip()
+                raw, warning = translate_text(text, target_lang)
+                # Same JSON-array contract as proofreading: parse it into
+                # structured suggestions, falling back to the raw string.
+                stripped = raw.strip()
+                if stripped.startswith("```"):
                     stripped = re.sub(r"^```[a-zA-Z]*\n?", "", stripped)
                     stripped = re.sub(r"\n?```$", "", stripped).strip()
                 try:
