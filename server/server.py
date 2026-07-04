@@ -574,11 +574,69 @@ def render_pandoc(markdown: str, file_path: str | None) -> str:
     return result.stdout.decode()
 
 
-def export_docx(markdown: str) -> bytes:
+# Code regions skipped during wikilink inlining, so an example [[link]] inside
+# a fence or inline code span isn't replaced with a note body.
+_CODE_SPAN_RE = re.compile(r"```.*?```|~~~.*?~~~|`[^`\n]+`", re.DOTALL)
+
+_FRONTMATTER_RE = re.compile(r"\A---\n.*?\n(?:---|\.\.\.)[ \t]*\n?", re.DOTALL)
+
+
+def inline_wikilinks(markdown: str, vault_path: str, source_path: str | None = None) -> str:
+    """Replace each [[note]] / [[note|alias]] with the linked note's content.
+
+    Used when exporting to DOCX so the output is self-contained; only the
+    markdown string is transformed, notes on disk are never modified.
+    Expansion is recursive (an imported note's own wikilinks are imported
+    too); a link back to a note already being expanded is left as-is to break
+    cycles, as are unresolvable links and links inside code. Front matter of
+    imported notes is dropped. `source_path` is the note being exported, so a
+    self-link doesn't import the document into itself.
+    """
+    # Note name (lowercased stem) -> path, first match wins on duplicates —
+    # same resolution rule as the link index.
+    notes: dict = {}
+    for f in collect_md_files(vault_path):
+        notes.setdefault(Path(f).stem.lower(), f)
+
+    def expand(text: str, stack: frozenset) -> str:
+        out = []
+        pos = 0
+        for m in _CODE_SPAN_RE.finditer(text):
+            out.append(expand_segment(text[pos : m.start()], stack))
+            out.append(m.group(0))
+            pos = m.end()
+        out.append(expand_segment(text[pos:], stack))
+        return "".join(out)
+
+    def expand_segment(segment: str, stack: frozenset) -> str:
+        def repl(m):
+            # An anchor ([[note#heading]]) imports the whole note; a pure
+            # self-anchor ([[#heading]]) has no note to import.
+            name = m.group(1).split("#")[0].strip().lower()
+            fpath = notes.get(name)
+            if not fpath or name in stack:
+                return m.group(0)
+            try:
+                content = Path(fpath).read_text(encoding="utf-8")
+            except OSError:
+                return m.group(0)
+            content = _FRONTMATTER_RE.sub("", content).strip()
+            return expand(content, stack | {name})
+
+        return _WIKILINK_RE.sub(repl, segment)
+
+    stack = frozenset()
+    if source_path:
+        stack |= {Path(source_path).stem.lower()}
+    return expand(markdown, stack)
+
+
+def export_docx(markdown: str, source_path: str | None = None) -> bytes:
     """Export markdown to DOCX via Pandoc with bibliography and reference doc.
 
     Uses settings for bibliography, CSL style, and reference document paths.
-    Returns the binary DOCX file content.
+    Wikilinked notes are inlined first (see inline_wikilinks) so the document
+    is self-contained. Returns the binary DOCX file content.
     """
     settings = load_settings()
     bib_path = settings.get("cslJsonPath")
@@ -589,6 +647,10 @@ def export_docx(markdown: str) -> bytes:
         raise ValueError("Bibliography path not configured in settings")
     if not csl_path:
         raise ValueError("CSL style path not configured in settings")
+
+    vault = settings.get("vaultPath")
+    if vault:
+        markdown = inline_wikilinks(markdown, vault, source_path)
 
     cmd = [
         _find_pandoc(),
@@ -1385,7 +1447,7 @@ class Handler(SimpleHTTPRequestHandler):
                 markdown = data.get("markdown", "")
                 if not markdown:
                     raise ValueError("No markdown content provided")
-                docx_bytes = export_docx(markdown)
+                docx_bytes = export_docx(markdown, data.get("file_path"))
                 # Send as binary attachment
                 self.send_response(200)
                 self.send_header(

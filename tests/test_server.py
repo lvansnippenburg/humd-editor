@@ -141,6 +141,68 @@ class VaultTests(unittest.TestCase):
         self.assertIn("history", entry["content"])
 
 
+class InlineWikilinkTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.vault = self.tmp.name
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write(self, rel, text):
+        (Path(self.vault) / rel).write_text(text, encoding="utf-8")
+
+    def test_basic_and_alias(self):
+        self._write("b.md", "body of b")
+        out = server.inline_wikilinks("See [[b]] and [[b|alias]].", self.vault)
+        self.assertEqual(out, "See body of b and body of b.")
+
+    def test_case_insensitive_resolution(self):
+        self._write("Note Name.md", "content")
+        out = server.inline_wikilinks("[[note name]]", self.vault)
+        self.assertEqual(out, "content")
+
+    def test_frontmatter_stripped(self):
+        self._write("b.md", "---\ntags:\n  - x\n---\nplain body")
+        out = server.inline_wikilinks("[[b]]", self.vault)
+        self.assertEqual(out, "plain body")
+
+    def test_recursive_import(self):
+        self._write("a.md", "a says [[b]]")
+        self._write("b.md", "b body")
+        out = server.inline_wikilinks("start [[a]] end", self.vault)
+        self.assertEqual(out, "start a says b body end")
+
+    def test_cycle_left_as_link(self):
+        self._write("a.md", "a links [[b]]")
+        self._write("b.md", "b links [[a]]")
+        out = server.inline_wikilinks("[[a]]", self.vault)
+        self.assertEqual(out, "a links b links [[a]]")
+
+    def test_self_link_via_source_path(self):
+        self._write("a.md", "whole of a")
+        out = server.inline_wikilinks(
+            "see [[a]]", self.vault, str(Path(self.vault) / "a.md")
+        )
+        self.assertEqual(out, "see [[a]]")
+
+    def test_unresolved_left_untouched(self):
+        out = server.inline_wikilinks("see [[missing]]", self.vault)
+        self.assertEqual(out, "see [[missing]]")
+
+    def test_code_not_expanded(self):
+        self._write("b.md", "body")
+        src = "```\n[[b]]\n```\nand `[[b]]` but [[b]]"
+        out = server.inline_wikilinks(src, self.vault)
+        self.assertEqual(out, "```\n[[b]]\n```\nand `[[b]]` but body")
+
+    def test_heading_anchor_imports_note(self):
+        self._write("b.md", "body")
+        self.assertEqual(server.inline_wikilinks("[[b#intro]]", self.vault), "body")
+        # A pure self-anchor has no note to import.
+        self.assertEqual(server.inline_wikilinks("[[#intro]]", self.vault), "[[#intro]]")
+
+
 class PathConfinementTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

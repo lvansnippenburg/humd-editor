@@ -4359,7 +4359,7 @@ async function exportToWord() {
     const response = await fetch("/api/export-docx", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ markdown: content }),
+      body: JSON.stringify({ markdown: content, file_path: currentFilePath }),
     });
 
     if (!response.ok) {

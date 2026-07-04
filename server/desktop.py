@@ -169,6 +169,12 @@ def main():
     window.events.resized += on_resized
     window.events.closed += on_closed
 
+    # Allow file downloads (e.g. "Export to Word"): WKWebView drops blob/
+    # download-attribute clicks unless this is enabled, so exporting would
+    # otherwise silently do nothing. With it on, the webview shows a native
+    # save dialog. Harmless in the browser build, which never runs this file.
+    webview.settings["ALLOW_DOWNLOADS"] = True
+
     # Blocks on the GUI loop (main thread, required on macOS); returns when the
     # window is closed, at which point the daemon server thread exits with us.
     webview.start()
