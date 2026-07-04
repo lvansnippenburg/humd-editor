@@ -14,7 +14,7 @@
     --accent-hover: #4f46e5;
 
     --border: #e5e5e5;
-    --border-strong: #a3a3a3; /* higher-contrast border for the focused pane/tab */
+    --border-strong: #6366f1; /* higher-contrast border for the focused pane/tab */
 
     --hover-bg: rgba(28, 28, 28, 0.06);
     --active-file-bg: rgba(99, 102, 241, 0.12);
@@ -48,7 +48,7 @@
         --accent-hover: #6366f1;
 
         --border: #383838;
-        --border-strong: #616161; /* higher-contrast border for the focused pane/tab */
+        --border-strong: #6366f1; /* higher-contrast border for the focused pane/tab */
 
         --hover-bg: rgba(232, 232, 232, 0.07);
         --active-file-bg: rgba(129, 140, 248, 0.16);
