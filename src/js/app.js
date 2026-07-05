@@ -65,6 +65,28 @@ let panes = [];
 let activePaneId = null;
 let paneCounter = 0;
 
+// Auto-saves during tab/pane switches run in the background (awaiting them
+// mid-switch opens a reentrancy window — see switchActivePane). Chain writes
+// per path so a quick A→B→A bounce can't land an older write after a newer one.
+const pendingWrites = new Map(); // path -> tail of that file's write chain
+function queueWriteFile(path, content) {
+  const prev = pendingWrites.get(path) || Promise.resolve();
+  const next = prev.catch(() => {}).then(() => apiPost("/api/write-file", { path, content }));
+  pendingWrites.set(path, next);
+  return next;
+}
+
+// Bumped on every tab switch / preview render; async continuations compare
+// their captured value after each await and bail if a newer run superseded them.
+let tabSwitchGen = 0;
+let previewGen = 0;
+
+// Rendered-preview cache (path -> {content, usePandoc, bodyHtml}), so switching
+// between unchanged documents (split panes, tab bouncing) skips the Pandoc
+// round-trip / markdown re-parse. Insertion-ordered; oldest entry is evicted.
+const previewRenderCache = new Map();
+const PREVIEW_CACHE_MAX = 4;
+
 class Pane {
   constructor(id, containerEl) {
     this.id = id;
@@ -373,7 +395,11 @@ function saveActivePaneState() {
   }
 }
 
-async function switchActivePane(paneId) {
+// Deliberately synchronous: the whole handoff (flush, id swap, global swap)
+// must commit before any other event handler can run. An await in here lets a
+// second switch interleave — duplicate renders, stolen focus, and keystrokes
+// landing in the wrong pane's textarea. Disk writes go through queueWriteFile.
+function switchActivePane(paneId) {
   if (activePaneId === paneId) return;
 
   const prevPane = panes.find((p) => p.id === activePaneId);
@@ -389,13 +415,17 @@ async function switchActivePane(paneId) {
     const outgoingTab = getActiveTab();
     saveActivePaneState(); // flushes the live editor text into outgoingTab
     if (outgoingTab && !outgoingTab.isGraph && !outgoingTab.isMedia && outgoingTab.isDirty) {
-      try {
-        await apiPost("/api/write-file", { path: outgoingTab.path, content: outgoingTab.content });
-        outgoingTab.isDirty = false;
-        prevPane.isDirty = false;
-      } catch (e) {
-        console.error("Auto-save on pane switch failed:", e);
-      }
+      const written = outgoingTab.content;
+      queueWriteFile(outgoingTab.path, written)
+        .then(() => {
+          // Only mark clean if nothing was typed since this write was queued.
+          if (outgoingTab.content === written) {
+            outgoingTab.isDirty = false;
+            if (prevPane.currentFilePath === outgoingTab.path) prevPane.isDirty = false;
+            renderPaneTabBar(prevPane); // drop the dirty dot from its tab bar
+          }
+        })
+        .catch((e) => console.error("Auto-save on pane switch failed:", e));
     }
 
     prevPane.editorEl.id = "";
@@ -432,19 +462,26 @@ async function switchActivePane(paneId) {
     nextPane.containerEl.appendChild(searchPanel);
   }
 
-  renderTabBar();
   updateTabScrollButtons();
 
   if (nextPane.activeTabId) {
+    // switchToTab ends with renderTabBar(); rendering here too would flash a
+    // bar with no active tab (activeTabId is still null at this point).
     switchToTab(nextPane.activeTabId);
   } else {
+    renderTabBar();
     resetPreview();
     const stats = document.getElementById("preview-stats");
     if (stats) stats.textContent = "";
     document.getElementById("editor").value = "";
   }
 
-  nextPane.editorEl.focus();
+  // Focus the pane's editor only if focus isn't already inside the pane —
+  // when the user clicked straight into the textarea, yanking focus would
+  // move their caret (and mid-interleave it used to steal focus entirely).
+  if (!nextPane.containerEl.contains(document.activeElement)) {
+    nextPane.editorEl.focus();
+  }
 }
 
 async function splitPaneHorizontal(pane) {
@@ -467,7 +504,7 @@ async function splitPaneHorizontal(pane) {
 
   updateSplitPaneButtons();
 
-  await switchActivePane(newPane.id);
+  switchActivePane(newPane.id);
 
   if (pane.currentFilePath) {
     loadFile(pane.currentFilePath);
@@ -497,7 +534,7 @@ async function closePane(pane) {
   updateSplitPaneButtons();
 
   activePaneId = null;
-  await switchActivePane(remainingPane.id);
+  switchActivePane(remainingPane.id);
 
   saveUiState();
 }
@@ -1549,6 +1586,9 @@ function scrollTabBar(direction) {
 
 async function switchToTab(tabId) {
   if (tabId === activeTabId) return;
+  // Cancellation token: a newer switch bumps the counter, and this run's
+  // post-await continuations bail out instead of clobbering the newer state.
+  const gen = ++tabSwitchGen;
 
   // Stop graph simulation if one is running
   if (graphCleanup) {
@@ -1566,12 +1606,18 @@ async function switchToTab(tabId) {
       cur.undoStack = undoStack.slice();
       cur.redoStack = redoStack.slice();
       if (cur.isDirty) {
-        try {
-          await apiPost("/api/write-file", { path: cur.path, content: cur.content });
-          cur.isDirty = false;
-        } catch (e) {
-          console.error("Auto-save on tab switch failed:", e);
-        }
+        // Background write: the tab model already holds the content, and
+        // awaiting here would let another switch interleave mid-handoff.
+        const written = cur.content;
+        queueWriteFile(cur.path, written)
+          .then(() => {
+            // Only mark clean if nothing was typed since this write was queued.
+            if (cur.content === written) {
+              cur.isDirty = false;
+              renderTabBar();
+            }
+          })
+          .catch((e) => console.error("Auto-save on tab switch failed:", e));
       }
     }
   }
@@ -1596,6 +1642,7 @@ async function switchToTab(tabId) {
     renderEditorCommentGutter(); // clear comment balloons from the previous doc
     showMediaContainer(tab);
     await revealFileInTree(tab.path);
+    if (gen !== tabSwitchGen) return; // a newer switch took over
     document.querySelectorAll(".file-item").forEach((item) => {
       item.classList.toggle("active", item.dataset.path === tab.path);
     });
@@ -1642,18 +1689,24 @@ async function switchToTab(tabId) {
     if (graphContainer) graphContainer.style.display = "none";
     if (mediaContainer) mediaContainer.style.display = "none";
 
-    editor.value = tab.content;
+    // On a pane switch the pane's own textarea already holds this content;
+    // skipping the no-op assignment preserves its caret and scroll position.
+    if (editor.value !== tab.content) editor.value = tab.content;
     // Re-read the bibliography from disk in case it changed externally (e.g.
     // re-exported from Zotero) since it was last loaded.
     await loadCitations();
+    if (gen !== tabSwitchGen) return; // a newer switch took over
     await updatePreview();
+    if (gen !== tabSwitchGen) return;
     renderEditorCommentGutter();
     await revealFileInTree(tab.path);
+    if (gen !== tabSwitchGen) return;
     document.querySelectorAll(".file-item").forEach((item) => {
       item.classList.toggle("active", item.dataset.path === tab.path);
     });
 
     await updateTagsBar(tab.path);
+    if (gen !== tabSwitchGen) return;
     buildOutline();
     buildLinksPanel();
   }
@@ -2901,8 +2954,12 @@ async function updatePreview() {
     resetPreview();
     return;
   }
+  // Cancellation token: if a newer render starts (rapid pane/tab switches or
+  // fast typing), this run's post-await work bails instead of overwriting it.
+  const gen = ++previewGen;
   try {
     const content = document.getElementById("editor").value;
+    const filePath = currentFilePath;
     let bodyHtml;
 
     // Extract citations before rendering to protect them from markdown processor.
@@ -2914,24 +2971,40 @@ async function updatePreview() {
       return `ⓘCITATION_PLACEHOLDER_${citations.length - 1}ⓘ`;
     });
 
-    // Tokenize HTML comments before rendering so they survive both render paths
-    // (Pandoc strips comments; marked drops them too), then splice the balloons
-    // back into the rendered HTML afterward.
-    const { text: contentForRender, balloons: commentBalloons } =
-      extractComments(contentWithPlaceholders);
-
-    if (currentUsePandoc) {
-      const result = await apiPost("/api/pandoc", {
-        markdown: contentForRender,
-        file_path: currentFilePath,
-      });
-      bodyHtml = result.html;
+    // Rendering is pure in (content, renderer): reuse the cached HTML when
+    // bouncing between unchanged documents (e.g. split-pane switches) so no
+    // Pandoc round-trip / markdown re-parse is needed.
+    const cached = previewRenderCache.get(filePath);
+    if (cached && cached.content === content && cached.usePandoc === currentUsePandoc) {
+      bodyHtml = cached.bodyHtml;
     } else {
-      bodyHtml = renderMarkdownBody(contentForRender);
+      // Tokenize HTML comments before rendering so they survive both render paths
+      // (Pandoc strips comments; marked drops them too), then splice the balloons
+      // back into the rendered HTML afterward.
+      const { text: contentForRender, balloons: commentBalloons } =
+        extractComments(contentWithPlaceholders);
+
+      if (currentUsePandoc) {
+        const result = await apiPost("/api/pandoc", {
+          markdown: contentForRender,
+          file_path: filePath,
+        });
+        if (gen !== previewGen) return; // superseded by a newer render
+        bodyHtml = result.html;
+      } else {
+        bodyHtml = renderMarkdownBody(contentForRender);
+      }
+      bodyHtml = restoreComments(bodyHtml, commentBalloons);
+
+      previewRenderCache.delete(filePath); // re-insert as most recent
+      previewRenderCache.set(filePath, { content, usePandoc: currentUsePandoc, bodyHtml });
+      if (previewRenderCache.size > PREVIEW_CACHE_MAX) {
+        previewRenderCache.delete(previewRenderCache.keys().next().value);
+      }
     }
-    bodyHtml = restoreComments(bodyHtml, commentBalloons);
 
     await ensurePreviewShell(currentUserCss);
+    if (gen !== previewGen) return;
     const doc = iframe.contentDocument;
     const bodyEl = doc && doc.getElementById("hp-body");
     if (!bodyEl) return; // shell not ready (e.g. mid-reload); next edit retries
@@ -2964,7 +3037,7 @@ async function updatePreview() {
       textNode.parentNode.replaceChild(fragment, textNode);
     }
 
-    rewriteImageSources(bodyEl, currentFilePath);
+    rewriteImageSources(bodyEl, filePath);
 
     // Highlight only the freshly inserted code blocks (no full-document rescan).
     const hl = iframe.contentWindow.hljs;
@@ -2980,6 +3053,7 @@ async function updatePreview() {
     // actually contains a citation — skip the whole pipeline otherwise.
     if (citeBibData && citeBibData.length > 0 && /\[[^\]]*@/.test(content)) {
       await processCitations(bodyEl);
+      if (gen !== previewGen) return; // superseded by a newer render
     }
 
     updatePreviewStats(bodyEl.innerHTML);
@@ -3748,34 +3822,64 @@ async function saveUiState() {
 
 const Cite = window.Cite;
 
+// Last-loaded bibliography/CSL source text. The files are still re-read on
+// every call (so external changes, e.g. a Zotero re-export, are picked up),
+// but the expensive part — new Cite() parsing and CSL engine compilation —
+// is skipped when the text is unchanged, which is every tab/pane switch.
+const citeSourceCache = { bibPath: null, bibText: null, cslPath: null, cslText: null };
+
 async function loadCitations() {
-  citeBibData = null;
-  citeTemplateName = null;
-  if (!currentBibPath || !Cite) return;
+  if (!currentBibPath || !Cite) {
+    citeBibData = null;
+    citeTemplateName = null;
+    return;
+  }
   try {
     const result = await apiFetch(`/api/read-file?path=${encodeURIComponent(currentBibPath)}`);
-    const parsed = new Cite(result.content);
-    citeBibData = parsed.get();
+    const unchanged =
+      citeBibData !== null &&
+      citeSourceCache.bibPath === currentBibPath &&
+      citeSourceCache.bibText === result.content;
+    if (!unchanged) {
+      const parsed = new Cite(result.content);
+      citeBibData = parsed.get();
+      citeSourceCache.bibPath = currentBibPath;
+      citeSourceCache.bibText = result.content;
+    }
   } catch (e) {
+    citeBibData = null;
+    citeTemplateName = null;
     console.warn("Failed to load bibliography:", e);
     showStatus("Warning: could not load bibliography file");
     return;
   }
-  if (currentCslPath) {
-    try {
-      const cslResult = await apiFetch(`/api/read-file?path=${encodeURIComponent(currentCslPath)}`);
+  if (!currentCslPath) {
+    citeTemplateName = null;
+    citeSourceCache.cslPath = null;
+    citeSourceCache.cslText = null;
+    return;
+  }
+  try {
+    const cslResult = await apiFetch(`/api/read-file?path=${encodeURIComponent(currentCslPath)}`);
+    const cslUnchanged =
+      citeTemplateName !== null &&
+      citeSourceCache.cslPath === currentCslPath &&
+      citeSourceCache.cslText === cslResult.content;
+    if (!cslUnchanged) {
       // citation-js caches the compiled CSL engine by template name and never
       // invalidates it when the XML changes. Registering under a fresh name
-      // each time forces a new engine, so changing the CSL file in settings
-      // actually takes effect in the preview (instead of reusing the first
-      // style loaded this session).
+      // each time the XML changes forces a new engine, so changing the CSL
+      // file in settings actually takes effect in the preview (instead of
+      // reusing the first style loaded this session).
       citeTemplateName = `user-csl-${++cslTemplateCounter}`;
       Cite.plugins.config.get("@csl").templates.add(citeTemplateName, cslResult.content);
-    } catch (e) {
-      console.warn("Failed to load CSL style:", e);
-      showStatus("Warning: could not load CSL style — using default (APA)");
-      citeTemplateName = null;
+      citeSourceCache.cslPath = currentCslPath;
+      citeSourceCache.cslText = cslResult.content;
     }
+  } catch (e) {
+    console.warn("Failed to load CSL style:", e);
+    showStatus("Warning: could not load CSL style — using default (APA)");
+    citeTemplateName = null;
   }
 }
 
