@@ -777,6 +777,21 @@
                 ></textarea>
             </div>
 
+            <div class="settings-section">
+                <h3>Graph Folder Colors</h3>
+                <p class="settings-hint">
+                    Configure which folders appear in the graph and their colors. Only markdown files in these folders will be shown.
+                </p>
+                <div id="graph-folder-settings">
+                    <div class="graph-folder-row" style="display: flex; gap: 8px; margin-bottom: 8px;">
+                        <input type="text" class="graph-folder-input settings-input" placeholder="Folder name" style="flex: 1;">
+                        <input type="color" class="graph-color-input" value="#52c41a" style="width: 50px; height: 32px; border: none;">
+                        <button class="add-folder-btn" style="padding: 0 12px;">Add</button>
+                    </div>
+                    <div id="graph-folder-list" style="margin-top: 8px;"></div>
+                </div>
+            </div>
+
             <footer>
                 <button id="save-settings-btn" class="primary" title="Save and apply changes">
                     Save Settings

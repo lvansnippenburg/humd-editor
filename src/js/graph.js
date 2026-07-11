@@ -3,6 +3,13 @@
 // - Document -> Tag (documents tagged with that tag)
 // - Document -> Document (based on wikilinks)
 
+// Global variable to store folder color settings (set by main app)
+export let graphFolderColors = [
+  {folder: "annotations", color: "#52c41a"},
+  {folder: "thesis", color: "#e94b3c"},
+  {folder: "thoughts", color: "#ffc107"}
+];
+
 export function buildGraphData(linkIndex) {
   const nodes = [];
   const links = [];
@@ -17,12 +24,28 @@ export function buildGraphData(linkIndex) {
 
   // Create document nodes from notes index
   for (const [key, path] of Object.entries(linkIndex.notes)) {
-    const label = String(path).split(/[\\/]/).pop().replace(/\.md$/i, "");
+    const filePath = String(path);
+    const label = filePath.split(/[\\/]/).pop().replace(/\.md$/i, "");
+    
+    // Extract folder name from path
+    const parts = filePath.split(/[\\/]/);
+    const folder = parts.length >= 2 ? parts[parts.length - 2] : "";
+    
+    // Check if this folder should be included based on settings
+    const folderMatch = graphFolderColors.find(config => config.folder === folder);
+    
+    // Skip files not in the configured folders
+    if (!folderMatch) {
+      continue;
+    }
+    
     const node = {
       id: key,
       label: label || key,
       type: "document",
       radius: 8,
+      folder: folder,
+      color: folderMatch.color,
     };
     nodes.push(node);
     nodeMap.set(key, node);
@@ -192,7 +215,10 @@ export function renderGraph(container, linkIndex, onDocumentClick) {
     .enter()
     .append("circle")
     .attr("r", (d) => d.radius)
-    .attr("fill", (d) => (d.type === "tag" ? "#4a90e2" : "#52c41a"))
+    .attr("fill", (d) => {
+      if (d.type === "tag") return "#4a90e2";
+      return d.color || "#999"; // use node's color, fallback to gray
+    })
     .attr("opacity", 0.8)
     .style("cursor", (d) => (d.type === "document" ? "pointer" : "default"));
 

@@ -12,7 +12,7 @@ import {
   parseHeadingAttrs,
   COMMENT_BALLOON_SVG,
 } from "/js/markdown.js";
-import { renderGraph } from "/js/graph.js";
+import { renderGraph, graphFolderColors } from "/js/graph.js";
 
 // ===== STATE =====
 
@@ -34,6 +34,7 @@ let currentProofreadProvider = "mistral"; // "mistral" | "ollama"
 let currentOllamaUrl = "";
 let currentOllamaModel = "";
 let currentDocumentLanguage = "English"; // target language for translation (vault-wide setting)
+let currentGraphFolderColors = []; // array of {folder, color} for graph visualization
 let vaultIsGitRepo = false; // is the current vault a git working tree?
 let gitCommitInFlight = false; // serialise commit triggers (blur + timer)
 let gitAuthErrorShown = false; // only nag about credentials once per session
@@ -604,6 +605,13 @@ async function initialize() {
     currentOllamaUrl = settings.ollamaUrl || "";
     currentOllamaModel = settings.ollamaModel || "";
     currentDocumentLanguage = settings.documentLanguage || "English";
+    currentGraphFolderColors = settings.graphFolderColors || [
+      {folder: "annotations", color: "#52c41a"},
+      {folder: "thesis", color: "#e94b3c"},
+      {folder: "thoughts", color: "#ffc107"}
+    ];
+    // Update the graph module's settings
+    graphFolderColors.splice(0, graphFolderColors.length, ...currentGraphFolderColors);
     document.getElementById("editor").spellcheck = currentSpellCheck;
 
     let vaultPath = settings.vaultPath;
@@ -4050,6 +4058,7 @@ function openSettingsDialog() {
   document.getElementById("ollama-model-input").value = currentOllamaModel;
   document.getElementById("document-language-input").value = currentDocumentLanguage;
   updateProofreadProviderVisibility();
+  initGraphFolderSettings();
   document.getElementById("settings-dialog").showModal();
 }
 
@@ -4064,6 +4073,104 @@ function updateProofreadProviderVisibility() {
 
 function closeSettingsDialog() {
   document.getElementById("settings-dialog").close();
+}
+
+// Initialize graph folder color settings UI
+function initGraphFolderSettings() {
+  const container = document.getElementById("graph-folder-list");
+  container.innerHTML = ""; // Clear existing
+  
+  currentGraphFolderColors.forEach((item, index) => {
+    const row = document.createElement("div");
+    row.className = "graph-folder-row";
+    row.style.display = "flex";
+    row.style.gap = "8px";
+    row.style.marginBottom = "8px";
+    row.style.alignItems = "center";
+    
+    const folderInput = document.createElement("input");
+    folderInput.type = "text";
+    folderInput.className = "graph-folder-input settings-input";
+    folderInput.value = item.folder || "";
+    folderInput.style.flex = "1";
+    folderInput.dataset.index = index;
+    
+    const colorInput = document.createElement("input");
+    colorInput.type = "color";
+    colorInput.className = "graph-color-input";
+    colorInput.value = item.color || "#52c41a";
+    colorInput.style.width = "50px";
+    colorInput.style.height = "32px";
+    colorInput.style.border = "none";
+    colorInput.dataset.index = index;
+    
+    const removeBtn = document.createElement("button");
+    removeBtn.textContent = "Remove";
+    removeBtn.style.padding = "0 12px";
+    removeBtn.onclick = () => removeGraphFolder(index);
+    
+    // Add change handlers to update settings when inputs change
+    folderInput.addEventListener('change', () => {
+      currentGraphFolderColors[index].folder = folderInput.value.trim();
+      graphFolderColors.splice(0, graphFolderColors.length, ...currentGraphFolderColors);
+    });
+    
+    colorInput.addEventListener('input', () => {
+      currentGraphFolderColors[index].color = colorInput.value;
+      graphFolderColors.splice(0, graphFolderColors.length, ...currentGraphFolderColors);
+    });
+    
+    row.appendChild(folderInput);
+    row.appendChild(colorInput);
+    row.appendChild(removeBtn);
+    container.appendChild(row);
+  });
+  
+  // Set up add button
+  const addBtn = document.querySelector(".add-folder-btn");
+  if (addBtn) {
+    addBtn.onclick = addGraphFolder;
+  }
+}
+
+// Add a new folder-color mapping
+function addGraphFolder() {
+  const folderInput = document.querySelector(".graph-folder-input");
+  const colorInput = document.querySelector(".graph-color-input");
+  
+  if (!folderInput || !colorInput) return;
+  
+  const folder = folderInput.value.trim();
+  const color = colorInput.value;
+  
+  if (!folder) return; // Don't add empty folders
+  
+  // Check if folder already exists
+  const exists = currentGraphFolderColors.some(item => item.folder === folder);
+  if (exists) {
+    alert(`Folder "${folder}" already has a color configured.`);
+    return;
+  }
+  
+  currentGraphFolderColors.push({folder, color});
+  
+  // Update graph module
+  graphFolderColors.splice(0, graphFolderColors.length, ...currentGraphFolderColors);
+  
+  // Reset inputs
+  folderInput.value = "";
+  colorInput.value = "#52c41a";
+  
+  // Refresh UI
+  initGraphFolderSettings();
+}
+
+// Remove a folder-color mapping
+function removeGraphFolder(index) {
+  currentGraphFolderColors.splice(index, 1);
+  // Update graph module
+  graphFolderColors.splice(0, graphFolderColors.length, ...currentGraphFolderColors);
+  initGraphFolderSettings();
 }
 
 async function saveSettings() {
@@ -4118,6 +4225,7 @@ async function saveSettings() {
       ollamaUrl: newOllamaUrl,
       ollamaModel: newOllamaModel,
       documentLanguage: newDocumentLanguage,
+      graphFolderColors: currentGraphFolderColors,
     });
 
     currentUserCss = newCss;
@@ -4197,7 +4305,7 @@ async function runSuggestTags() {
     return;
   }
 
-  const btn = document.getElementById("suggest-tags-btn");
+  const btn = document.querySelector(".suggest-tags-btn");
   btn.disabled = true;
   showStatus("Suggesting tags…");
   try {
