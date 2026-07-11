@@ -106,7 +106,7 @@ This will render as:
 
 ## AI assistance
 
-Three buttons in the toolbar use an AI model to help with the document you have open. The provider is configured under **Settings → Proofreading & translation** — choose either **Google Gemini** (remote; needs a free API key) or **Ollama** (local; needs `ollama serve` running and a model pulled, so your text never leaves your machine). If Ollama is selected but not running, the app quietly falls back to Gemini and tells you so.
+Three buttons in the toolbar use an AI model to help with the document you have open. The provider is configured under **Settings → Proofreading & translation** — choose either **Mistral** (remote; needs an API key) or **Ollama** (local; needs `ollama serve` running and a model pulled, so your text never leaves your machine). If Ollama is selected but not running, the app quietly falls back to Mistral and tells you so.
 
 ### Proofread
 

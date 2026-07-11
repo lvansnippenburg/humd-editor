@@ -32,7 +32,9 @@ class InlineTagTests(unittest.TestCase):
         self.assertEqual(server.extract_inline_tags(md), ["yes"])
 
     def test_ignores_url_fragments(self):
-        self.assertEqual(server.extract_inline_tags("see https://x.com/p#frag and #real"), ["real"])
+        self.assertEqual(
+            server.extract_inline_tags("see https://x.com/p#frag and #real"), ["real"]
+        )
 
     def test_ignores_midword_hash(self):
         self.assertEqual(server.extract_inline_tags("a#b not a tag"), [])
@@ -40,17 +42,23 @@ class InlineTagTests(unittest.TestCase):
 
 class YamlTagTests(unittest.TestCase):
     def test_inline_flow(self):
-        self.assertEqual(server.extract_yaml_tags("---\ntags: [a, b]\n---\nx"), ["a", "b"])
+        self.assertEqual(
+            server.extract_yaml_tags("---\ntags: [a, b]\n---\nx"), ["a", "b"]
+        )
 
     def test_scalar_comma_list(self):
-        self.assertEqual(server.extract_yaml_tags("---\ntags: hist, modern\n---"), ["hist", "modern"])
+        self.assertEqual(
+            server.extract_yaml_tags("---\ntags: hist, modern\n---"), ["hist", "modern"]
+        )
 
     def test_block_sequence(self):
         md = "---\ntitle: t\ntags:\n  - one\n  - two\n---\nbody"
         self.assertEqual(server.extract_yaml_tags(md), ["one", "two"])
 
     def test_strips_hash_and_quotes(self):
-        self.assertEqual(server.extract_yaml_tags('---\ntags: ["#foo", bar]\n---'), ["foo", "bar"])
+        self.assertEqual(
+            server.extract_yaml_tags('---\ntags: ["#foo", bar]\n---'), ["foo", "bar"]
+        )
 
     def test_no_frontmatter(self):
         self.assertEqual(server.extract_yaml_tags("no front matter #x"), [])
@@ -200,7 +208,9 @@ class InlineWikilinkTests(unittest.TestCase):
         self._write("b.md", "body")
         self.assertEqual(server.inline_wikilinks("[[b#intro]]", self.vault), "body")
         # A pure self-anchor has no note to import.
-        self.assertEqual(server.inline_wikilinks("[[#intro]]", self.vault), "[[#intro]]")
+        self.assertEqual(
+            server.inline_wikilinks("[[#intro]]", self.vault), "[[#intro]]"
+        )
 
 
 class TranslateTests(unittest.TestCase):
@@ -212,11 +222,11 @@ class TranslateTests(unittest.TestCase):
         self._orig = server._ai_complete
         self.captured = {}
 
-        def fake(system, user, gemini_schema, json_schema, settings):
+        def fake(system, user, mistral_schema, json_schema, settings):
             self.captured.update(
                 system=system,
                 user=user,
-                gemini_schema=gemini_schema,
+                mistral_schema=mistral_schema,
                 json_schema=json_schema,
             )
             return "[]", None
@@ -238,7 +248,7 @@ class TranslateTests(unittest.TestCase):
 
     def test_reuses_proofread_schema(self):
         server.translate_text("x", "German")
-        self.assertIs(self.captured["gemini_schema"], server.PROOFREAD_SCHEMA)
+        self.assertIs(self.captured["mistral_schema"], server.PROOFREAD_SCHEMA)
         self.assertIs(self.captured["json_schema"], server.PROOFREAD_JSON_SCHEMA)
 
 

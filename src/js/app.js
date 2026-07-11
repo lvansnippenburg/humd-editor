@@ -28,9 +28,9 @@ let currentBibPath = null;
 let currentCslPath = null;
 let currentPandocRefDocPath = null;
 let currentUserNickname = "";
-let currentGeminiKey = "";
-let currentGeminiModel = "";
-let currentProofreadProvider = "gemini"; // "gemini" | "ollama"
+let currentMistralKey = "";
+let currentMistralModel = "";
+let currentProofreadProvider = "mistral"; // "mistral" | "ollama"
 let currentOllamaUrl = "";
 let currentOllamaModel = "";
 let currentDocumentLanguage = "English"; // target language for translation (vault-wide setting)
@@ -598,9 +598,9 @@ async function initialize() {
     currentCslPath = settings.cslStylePath || null;
     currentPandocRefDocPath = settings.pandocRefDocPath || null;
     currentUserNickname = settings.userNickname || "";
-    currentGeminiKey = settings.geminiApiKey || "";
-    currentGeminiModel = settings.geminiModel || "gemini-3-flash-preview";
-    currentProofreadProvider = settings.proofreadProvider || "gemini";
+    currentMistralKey = settings.mistralApiKey || "";
+    currentMistralModel = settings.mistralModel || "mistral-large-latest";
+    currentProofreadProvider = settings.proofreadProvider || "mistral";
     currentOllamaUrl = settings.ollamaUrl || "";
     currentOllamaModel = settings.ollamaModel || "";
     currentDocumentLanguage = settings.documentLanguage || "English";
@@ -4043,8 +4043,8 @@ function openSettingsDialog() {
   document.getElementById("pandoc-ref-doc-display").textContent =
     currentPandocRefDocPath || "None selected";
   document.getElementById("nickname-input").value = currentUserNickname;
-  document.getElementById("gemini-key-input").value = currentGeminiKey;
-  document.getElementById("gemini-model-input").value = currentGeminiModel;
+  document.getElementById("mistral-key-input").value = currentMistralKey;
+  document.getElementById("mistral-model-input").value = currentMistralModel;
   document.getElementById("proofread-provider-select").value = currentProofreadProvider;
   document.getElementById("ollama-url-input").value = currentOllamaUrl;
   document.getElementById("ollama-model-input").value = currentOllamaModel;
@@ -4056,8 +4056,8 @@ function openSettingsDialog() {
 // Show only the fields relevant to the selected proofreading provider.
 function updateProofreadProviderVisibility() {
   const provider = document.getElementById("proofread-provider-select").value;
-  document.getElementById("gemini-settings-group").style.display =
-    provider === "gemini" ? "" : "none";
+  document.getElementById("mistral-settings-group").style.display =
+    provider === "mistral" ? "" : "none";
   document.getElementById("ollama-settings-group").style.display =
     provider === "ollama" ? "" : "none";
 }
@@ -4085,8 +4085,8 @@ async function saveSettings() {
       pandocRefDocDisplay && pandocRefDocDisplay !== "None selected" ? pandocRefDocDisplay : null;
 
     const newNickname = document.getElementById("nickname-input").value.trim();
-    const newGeminiKey = document.getElementById("gemini-key-input").value.trim();
-    const newGeminiModel = document.getElementById("gemini-model-input").value.trim();
+    const newMistralKey = document.getElementById("mistral-key-input").value.trim();
+    const newMistralModel = document.getElementById("mistral-model-input").value.trim();
     const newProofreadProvider = document.getElementById("proofread-provider-select").value;
     const newOllamaUrl = document.getElementById("ollama-url-input").value.trim();
     const newOllamaModel = document.getElementById("ollama-model-input").value.trim();
@@ -4112,8 +4112,8 @@ async function saveSettings() {
       cslStylePath: newCslPath,
       pandocRefDocPath: newPandocRefDocPath,
       userNickname: newNickname,
-      geminiApiKey: newGeminiKey,
-      geminiModel: newGeminiModel,
+      mistralApiKey: newMistralKey,
+      mistralModel: newMistralModel,
       proofreadProvider: newProofreadProvider,
       ollamaUrl: newOllamaUrl,
       ollamaModel: newOllamaModel,
@@ -4126,8 +4126,8 @@ async function saveSettings() {
     currentAutoSave = newAutoSave;
     currentSmartQuotes = newSmartQuotes;
     currentUserNickname = newNickname;
-    currentGeminiKey = newGeminiKey;
-    currentGeminiModel = newGeminiModel;
+    currentMistralKey = newMistralKey;
+    currentMistralModel = newMistralModel;
     currentProofreadProvider = newProofreadProvider;
     currentOllamaUrl = newOllamaUrl;
     currentOllamaModel = newOllamaModel;
@@ -4232,9 +4232,9 @@ function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// ===== PROOFREADING (Gemini) =====
+// ===== PROOFREADING (Mistral) =====
 
-// Split Gemini's "revised text first, then a bulleted list of changes" reply
+// Split Mistral's "revised text first, then a bulleted list of changes" reply
 // into the two parts so the revised text can be applied on its own.
 async function runProofread() {
   if (!currentFilePath) {
@@ -4277,7 +4277,7 @@ async function runProofread() {
   try {
     const res = await apiPost("/api/proofread", { text });
 
-    // Non-fatal notice (e.g. Ollama not running → fell back to Gemini). Shown
+    // Non-fatal notice (e.g. Ollama not running → fell back to Mistral). Shown
     // unobtrusively in the status bar; the suggestions still render normally.
     if (res.warning) showStatus(res.warning);
 
@@ -4300,7 +4300,7 @@ async function runProofread() {
     // Legacy fallback: model returned a markdown bulleted list as plain text.
     const suggestionsText = res.result || "";
 
-    // Gemini returns markdown bulleted list. Render it as HTML.
+    // Mistral returns markdown bulleted list. Render it as HTML.
     if (!suggestionsText.trim()) {
       list.innerHTML =
         "<li style='color: var(--text-secondary); padding: 16px;'>No suggestions found — excellent work!</li>";
@@ -4386,15 +4386,14 @@ async function runTranslate() {
   try {
     const res = await apiPost("/api/translate", { text, target_lang: targetLang });
 
-    // Non-fatal notice (e.g. Ollama not running → fell back to Gemini).
+    // Non-fatal notice (e.g. Ollama not running → fell back to Mistral).
     if (res.warning) showStatus(res.warning);
 
     // Structured path: an array of { original, suggestion, comment } items,
     // rendered and applied exactly like proofread suggestions.
     if (Array.isArray(res.suggestions)) {
       if (res.suggestions.length === 0) {
-        list.innerHTML =
-          `<li style='color: var(--text-secondary); padding: 16px;'>Nothing to translate — the text is already in ${escapeHtml(targetLang)}.</li>`;
+        list.innerHTML = `<li style='color: var(--text-secondary); padding: 16px;'>Nothing to translate — the text is already in ${escapeHtml(targetLang)}.</li>`;
       } else {
         for (const item of res.suggestions) {
           list.appendChild(buildSuggestionItem(item));
@@ -4403,7 +4402,7 @@ async function runTranslate() {
     } else {
       // The model didn't return the expected array; show whatever came back.
       list.innerHTML = `<li style='color: var(--text-secondary); padding: 16px;'>${escapeHtml(
-        res.result || "No translation returned."
+        res.result || "No translation returned.",
       )}</li>`;
     }
     loading.style.display = "none";

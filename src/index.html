@@ -691,13 +691,13 @@
             <div class="settings-section">
                 <h3>Proofreading &amp; translation</h3>
                 <p class="settings-hint">
-                    Proofread or translate the document (or a selection) with Google Gemini (remote)
-                    or a local Ollama service. Settings are stored locally; with Ollama your text
-                    never leaves your machine.
+                    Proofread or translate the document (or a selection) with Mistral (remote) or a
+                    local Ollama service. Settings are stored locally; with Ollama your text never
+                    leaves your machine.
                 </p>
                 <label class="settings-label">Provider</label>
                 <select id="proofread-provider-select" class="settings-input">
-                    <option value="gemini">Google Gemini (remote)</option>
+                    <option value="mistral">Mistral (remote)</option>
                     <option value="ollama">Ollama (local)</option>
                 </select>
 
@@ -714,25 +714,25 @@
                     Target language the Translate button renders into (default English).
                 </p>
 
-                <div id="gemini-settings-group">
+                <div id="mistral-settings-group">
                     <p class="settings-hint" style="margin-top: 10px">
-                        Get a free API key at <code>aistudio.google.com/apikey</code>. The key is
-                        sent only to Google when you proofread or translate.
+                        Get an API key at <code>console.mistral.ai</code>. The key is sent only to
+                        Mistral when you proofread or translate.
                     </p>
-                    <label class="settings-label">Gemini API key</label>
+                    <label class="settings-label">Mistral API key</label>
                     <input
                         type="password"
-                        id="gemini-key-input"
+                        id="mistral-key-input"
                         class="settings-input"
-                        placeholder="Paste your Gemini API key"
+                        placeholder="Paste your Mistral API key"
                         autocomplete="off"
                     />
                     <label class="settings-label" style="margin-top: 10px">Model (optional)</label>
                     <input
                         type="text"
-                        id="gemini-model-input"
+                        id="mistral-model-input"
                         class="settings-input"
-                        placeholder="gemini-2.5-flash-lite"
+                        placeholder="mistral-large-latest"
                         autocomplete="off"
                         spellcheck="false"
                     />

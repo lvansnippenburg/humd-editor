@@ -581,7 +581,9 @@ _CODE_SPAN_RE = re.compile(r"```.*?```|~~~.*?~~~|`[^`\n]+`", re.DOTALL)
 _FRONTMATTER_RE = re.compile(r"\A---\n.*?\n(?:---|\.\.\.)[ \t]*\n?", re.DOTALL)
 
 
-def inline_wikilinks(markdown: str, vault_path: str, source_path: str | None = None) -> str:
+def inline_wikilinks(
+    markdown: str, vault_path: str, source_path: str | None = None
+) -> str:
     """Replace each [[note]] / [[note|alias]] with the linked note's content.
 
     Used when exporting to DOCX so the output is self-contained; only the
@@ -651,7 +653,7 @@ def export_docx(markdown: str, source_path: str | None = None) -> bytes:
     vault = settings.get("vaultPath")
     if vault:
         markdown = inline_wikilinks(markdown, vault, source_path)
-
+    # the command to export to pdf
     cmd = [
         _find_pandoc(),
         "-C",  # citeproc
@@ -660,7 +662,7 @@ def export_docx(markdown: str, source_path: str | None = None) -> bytes:
         "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables+lists_without_preceding_blankline+hard_line_breaks",
         "--to=docx",
     ]
-
+    # the command to export to pdf
     if ref_doc_path:
         cmd.append(f"--reference-doc={ref_doc_path}")
 
@@ -675,7 +677,7 @@ def export_docx(markdown: str, source_path: str | None = None) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# AI proofreading (Google Gemini)
+# AI proofreading (Mistral)
 # ---------------------------------------------------------------------------
 
 # The proofreading system prompt lives in src/PROOFREAD_SYSTEM.md so it can be
@@ -698,7 +700,7 @@ def _read_prompt_file(name: str) -> str | None:
 
 PROOFREAD_SYSTEM = _read_prompt_file("PROOFREAD_SYSTEM.md") or _PROOFREAD_FALLBACK
 
-# Schema forcing Gemini to emit the structured suggestion list the client expects.
+# Schema forcing Mistral to emit the structured suggestion list the client expects.
 PROOFREAD_SCHEMA = {
     "type": "ARRAY",
     "items": {
@@ -725,7 +727,7 @@ PROOFREAD_JSON_SCHEMA = {
         "required": ["original", "suggestion", "comment"],
     },
 }
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_MISTRAL_MODEL = "mistral-large-latest"
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 
 
@@ -737,72 +739,72 @@ class OllamaUnavailable(RuntimeError):
 
 
 def _ai_complete(
-    system: str, user: str, gemini_schema: dict, json_schema: dict, settings: dict
+    system: str, user: str, mistral_schema: dict, json_schema: dict, settings: dict
 ) -> tuple[str, str | None]:
     """Run one structured AI completion with the configured provider. Returns
     (raw_response, warning); raw_response is a JSON string matching the schema.
     When Ollama is selected but not running, transparently falls back to
-    Gemini and reports it via the warning."""
-    provider = settings.get("proofreadProvider") or "gemini"
+    Mistral and reports it via the warning."""
+    provider = settings.get("proofreadProvider") or "mistral"
     if provider == "ollama":
         try:
             return _ollama_complete(system, user, json_schema, settings), None
         except OllamaUnavailable:
             try:
-                result = _gemini_complete(system, user, gemini_schema, settings)
-            except Exception as ge:
+                result = _mistral_complete(system, user, mistral_schema, settings)
+            except Exception as me:
                 raise RuntimeError(
-                    f"Ollama is not running, and the Gemini fallback failed: {ge}"
+                    f"Ollama is not running, and the Mistral fallback failed: {me}"
                 )
-            return result, "Ollama not running — used Gemini instead."
-    return _gemini_complete(system, user, gemini_schema, settings), None
+            return result, "Ollama not running — used Mistral instead."
+    return _mistral_complete(system, user, mistral_schema, settings), None
 
 
-def _gemini_complete(system: str, user: str, schema: dict, settings: dict) -> str:
-    """One structured completion via the Google Gemini REST API."""
-    api_key = settings.get("geminiApiKey")
+def _mistral_complete(system: str, user: str, schema: dict, settings: dict) -> str:
+    """One structured completion via the Mistral REST API."""
+    api_key = settings.get("mistralApiKey")
     if not api_key:
         raise RuntimeError(
-            "No Gemini API key set. Add one under Settings → Proofreading."
+            "No Mistral API key set. Add one under Settings → Proofreading."
         )
-    model = settings.get("geminiModel") or DEFAULT_GEMINI_MODEL
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model}:generateContent"
-    )
+    model = settings.get("mistralModel") or DEFAULT_MISTRAL_MODEL
+    url = "https://api.mistral.ai/v1/chat/completions"
     payload = json.dumps(
         {
-            "system_instruction": {"parts": [{"text": system}]},
-            "contents": [{"role": "user", "parts": [{"text": user}]}],
-            "generationConfig": {
-                "responseMimeType": "application/json",
-                "responseSchema": schema,
-            },
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.7,
         }
     ).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=payload,
         method="POST",
-        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")
-        raise RuntimeError(f"Gemini API error {e.code}: {detail[:500]}")
+        raise RuntimeError(f"Mistral API error {e.code}: {detail[:500]}")
     except urllib.error.URLError as e:
-        raise RuntimeError(f"Could not reach Gemini: {e.reason}")
+        raise RuntimeError(f"Could not reach Mistral: {e.reason}")
 
-    candidates = data.get("candidates") or []
-    if not candidates:
+    choices = data.get("choices") or []
+    if not choices:
         # Often a safety block or empty response; surface what we can.
-        raise RuntimeError(f"Gemini returned no result: {json.dumps(data)[:400]}")
-    parts = candidates[0].get("content", {}).get("parts", [])
-    out = "".join(p.get("text", "") for p in parts).strip()
+        raise RuntimeError(f"Mistral returned no result: {json.dumps(data)[:400]}")
+    out = (choices[0].get("message", {}).get("content") or "").strip()
     if not out:
-        raise RuntimeError("Gemini returned an empty response.")
+        raise RuntimeError("Mistral returned an empty response.")
     return out
 
 
