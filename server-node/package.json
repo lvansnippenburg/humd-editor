@@ -1,0 +1,22 @@
+{
+  "name": "humd-editor-node",
+  "version": "1.0.0",
+  "description": "Node.js server for humd-editor",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js --open"
+  },
+  "keywords": ["markdown", "editor", "notes", "knowledge-management"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "open": "^10.0.0",
+    "which": "^4.0.0",
+    "yargs": "^17.7.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
