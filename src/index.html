@@ -800,6 +800,52 @@
             </footer>
         </dialog>
 
+        <!-- Add LLM Config Dialog -->
+        <dialog id="llmconfig-dialog">
+            <header>
+                <h2>Add LLM Configuration</h2>
+                <button id="close-llmconfig" class="icon-btn" aria-label="Close" title="Close">✕</button>
+            </header>
+            <div class="settings-section">
+                <p class="settings-hint">
+                    Add a new configuration to your <code>~/.llmconfig</code> file.
+                </p>
+                
+                <label class="settings-label" for="llmconfig-provider">Provider</label>
+                <select id="llmconfig-provider" class="settings-input">
+                    <option value="gemini">Gemini</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="mistral">Mistral</option>
+                    <option value="ollama">Ollama (local)</option>
+                </select>
+
+                <label class="settings-label" for="llmconfig-model" style="margin-top: 10px;">Model Name</label>
+                <input
+                    type="text"
+                    id="llmconfig-model"
+                    class="settings-input"
+                    placeholder="e.g. gemini-2.5-flash"
+                    autocomplete="off"
+                    spellcheck="false"
+                />
+
+                <div id="llmconfig-key-group">
+                    <label class="settings-label" for="llmconfig-key" style="margin-top: 10px;">API Key</label>
+                    <input
+                        type="password"
+                        id="llmconfig-key"
+                        class="settings-input"
+                        placeholder="Enter API key"
+                        autocomplete="off"
+                    />
+                </div>
+            </div>
+            <footer>
+                <button id="save-llmconfig-btn" class="primary" title="Add this configuration">Add Configuration</button>
+                <button id="cancel-llmconfig-btn" title="Cancel">Cancel</button>
+            </footer>
+        </dialog>
+
         <!-- Help Dialog -->
         <dialog id="help-dialog" class="help-dialog">
             <header>

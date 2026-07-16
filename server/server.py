@@ -735,6 +735,74 @@ class OllamaUnavailable(RuntimeError):
     """Raised when the local Ollama service can't be reached (not running)."""
 
 
+# --- Config parsing for ~/.llmconfig ---------------------------------------
+
+
+def load_llm_configs() -> list[dict]:
+    path = Path.home() / ".llmconfig"
+    if not path.exists():
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                "# ~/.llmconfig\n"
+                "# Format: provider/model|api_key\n"
+                "# Example: gemini/gemini-2.5-flash|AIzaSyYourApiKeyHere\n"
+                "# Example: anthropic/claude-3-5-sonnet-latest|sk-ant-YourApiKeyHere\n"
+                "# Example: mistral/mistral-large-latest|your_mistral_api_key\n"
+                "# Example: ollama/llama3.1|\n",
+                encoding="utf-8"
+            )
+        except Exception:
+            pass
+        return []
+    
+    configs = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "|" in line:
+                left, api_key = line.split("|", 1)
+            else:
+                left = line
+                api_key = ""
+            
+            if "/" in left:
+                provider, model = left.split("/", 1)
+            else:
+                provider = left
+                model = ""
+            
+            configs.append({
+                "provider": provider.strip().lower(),
+                "model": model.strip(),
+                "apiKey": api_key.strip()
+            })
+    except Exception:
+        pass
+    return configs
+
+
+def add_llm_config(provider: str, model: str, api_key: str) -> None:
+    path = Path.home() / ".llmconfig"
+    line = f"{provider}/{model}|{api_key}\n"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = ""
+        if path.exists():
+            content = path.read_text(encoding="utf-8")
+        
+        if content and not content.endswith("\n"):
+            line = "\n" + line
+            
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception as e:
+        raise RuntimeError(f"Failed to write ~/.llmconfig: {e}")
+
+
 # --- Generic provider plumbing (shared by proofreading and tag suggestion) ----
 
 
@@ -745,7 +813,54 @@ def _ai_complete(
     (raw_response, warning); raw_response is a JSON string matching the schema.
     When Ollama is selected but not running, transparently falls back to
     Mistral and reports it via the warning."""
-    provider = settings.get("proofreadProvider") or "mistral"
+    selected = settings.get("proofreadProvider") or "mistral"
+    
+    # Try to load ~/.llmconfig configs
+    configs = load_llm_configs()
+    matched_config = None
+    for c in configs:
+        cfg_key = f"{c['provider']}/{c['model']}"
+        if cfg_key == selected:
+            matched_config = c
+            break
+            
+    if matched_config:
+        provider = matched_config["provider"]
+        model = matched_config["model"]
+        api_key = matched_config["apiKey"]
+        
+        if provider == "gemini":
+            return _gemini_complete(system, user, json_schema, settings, api_key, model), None
+        elif provider == "anthropic":
+            return _anthropic_complete(system, user, settings, api_key, model), None
+        elif provider in ("mistral", "mistal"):
+            return _mistral_complete(system, user, mistral_schema, settings, api_key, model), None
+        elif provider == "ollama":
+            try:
+                return _ollama_complete(system, user, json_schema, settings, model), None
+            except OllamaUnavailable:
+                # Fallback logic for ollama: if there is a mistral config in .llmconfig, use it.
+                # Otherwise, fall back to mistral settings.
+                mistral_cfg = None
+                for c in configs:
+                    if c["provider"] in ("mistral", "mistal"):
+                        mistral_cfg = c
+                        break
+                try:
+                    if mistral_cfg:
+                        result = _mistral_complete(
+                            system, user, mistral_schema, settings, mistral_cfg["apiKey"], mistral_cfg["model"]
+                        )
+                    else:
+                        result = _mistral_complete(system, user, mistral_schema, settings)
+                except Exception as me:
+                    raise RuntimeError(
+                        f"Ollama is not running, and the Mistral fallback failed: {me}"
+                    )
+                return result, "Ollama not running — used Mistral instead."
+
+    # Backward compatibility fallback using settings directly
+    provider = selected
     if provider == "ollama":
         try:
             return _ollama_complete(system, user, json_schema, settings), None
@@ -760,14 +875,115 @@ def _ai_complete(
     return _mistral_complete(system, user, mistral_schema, settings), None
 
 
-def _mistral_complete(system: str, user: str, schema: dict, settings: dict) -> str:
+def _gemini_complete(system: str, user: str, json_schema: dict, settings: dict, api_key: str, model: str) -> str:
+    """One structured completion via Gemini REST API."""
+    if not api_key:
+        raise RuntimeError("No Gemini API key specified in ~/.llmconfig.")
+    if not model:
+        model = "gemini-2.5-flash"
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    payload_data = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": user}]
+            }
+        ],
+        "systemInstruction": {
+            "parts": [{"text": system}]
+        },
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": json_schema
+        }
+    }
+    payload = json.dumps(payload_data).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")
+        raise RuntimeError(f"Gemini API error {e.code}: {detail[:500]}")
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Could not reach Gemini: {e.reason}")
+    
+    candidates = data.get("candidates") or []
+    if not candidates:
+        raise RuntimeError(f"Gemini returned no candidates: {json.dumps(data)[:400]}")
+    
+    parts = candidates[0].get("content", {}).get("parts") or []
+    if not parts:
+        raise RuntimeError("Gemini response candidate contains no parts.")
+        
+    out = (parts[0].get("text") or "").strip()
+    if not out:
+        raise RuntimeError("Gemini returned an empty response.")
+    return out
+
+
+def _anthropic_complete(system: str, user: str, settings: dict, api_key: str, model: str) -> str:
+    """One structured completion via Anthropic REST API."""
+    if not api_key:
+        raise RuntimeError("No Anthropic API key specified in ~/.llmconfig.")
+    if not model:
+        model = "claude-3-5-sonnet-latest"
+        
+    url = "https://api.anthropic.com/v1/messages"
+    payload_data = {
+        "model": model,
+        "max_tokens": 4000,
+        "system": system,
+        "messages": [
+            {"role": "user", "content": user}
+        ]
+    }
+    payload = json.dumps(payload_data).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01"
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")
+        raise RuntimeError(f"Anthropic API error {e.code}: {detail[:500]}")
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Could not reach Anthropic: {e.reason}")
+        
+    content = data.get("content") or []
+    if not content:
+        raise RuntimeError(f"Anthropic returned no content: {json.dumps(data)[:400]}")
+        
+    out = (content[0].get("text") or "").strip()
+    if not out:
+        raise RuntimeError("Anthropic returned an empty response.")
+    return out
+
+
+def _mistral_complete(
+    system: str, user: str, schema: dict, settings: dict, api_key: str | None = None, model: str | None = None
+) -> str:
     """One structured completion via the Mistral REST API."""
-    api_key = settings.get("mistralApiKey")
+    api_key = api_key or settings.get("mistralApiKey")
     if not api_key:
         raise RuntimeError(
-            "No Mistral API key set. Add one under Settings → Proofreading."
+            "No Mistral API key set. Add one under Settings -> Proofreading."
         )
-    model = settings.get("mistralModel") or DEFAULT_MISTRAL_MODEL
+    model = model or settings.get("mistralModel") or DEFAULT_MISTRAL_MODEL
     url = "https://api.mistral.ai/v1/chat/completions"
     payload = json.dumps(
         {
@@ -808,12 +1024,14 @@ def _mistral_complete(system: str, user: str, schema: dict, settings: dict) -> s
     return out
 
 
-def _ollama_complete(system: str, user: str, json_schema: dict, settings: dict) -> str:
+def _ollama_complete(
+    system: str, user: str, json_schema: dict, settings: dict, model: str | None = None
+) -> str:
     """One structured completion via a local Ollama /api/chat call."""
-    model = settings.get("ollamaModel")
+    model = model or settings.get("ollamaModel")
     if not model:
         raise RuntimeError(
-            "No Ollama model set. Add one under Settings → Proofreading."
+            "No Ollama model set. Add one under Settings -> Proofreading."
         )
     base = (settings.get("ollamaUrl") or DEFAULT_OLLAMA_URL).rstrip("/")
     url = f"{base}/api/chat"
@@ -842,7 +1060,7 @@ def _ollama_complete(system: str, user: str, json_schema: dict, settings: dict) 
         raise RuntimeError(f"Ollama API error {e.code}: {detail[:500]}")
     except urllib.error.URLError as e:
         raise OllamaUnavailable(
-            f"Could not reach Ollama at {base} — is `ollama serve` running? ({e.reason})"
+            f"Could not reach Ollama at {base} - is 'ollama serve' running? ({e.reason})"
         )
 
     out = (data.get("message", {}).get("content") or "").strip()
@@ -1149,7 +1367,14 @@ class Handler(SimpleHTTPRequestHandler):
         path = parsed.path
         qs = parse_qs(parsed.query)
 
-        if path == "/api/settings":
+        if path == "/api/llm-configs":
+            try:
+                configs = load_llm_configs()
+                self.send_json({"configs": configs})
+            except Exception as e:
+                self.send_error_json(str(e))
+                return
+        elif path == "/api/settings":
             self.send_json(load_settings())
         elif path == "/api/version":
             self.send_json({"version": SERVER_VERSION})
@@ -1280,7 +1505,20 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        if path == "/api/settings":
+        if path == "/api/add-llm-config":
+            try:
+                data = self.read_body()
+                provider = data.get("provider") or ""
+                model = data.get("model") or ""
+                api_key = data.get("apiKey") or ""
+                if not provider:
+                    raise ValueError("Provider is required")
+                add_llm_config(provider, model, api_key)
+                self.send_json({"ok": True})
+            except Exception as e:
+                self.send_error_json(str(e))
+                return
+        elif path == "/api/settings":
             try:
                 data = self.read_body()
                 with _lock:

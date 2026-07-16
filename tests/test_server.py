@@ -310,5 +310,34 @@ class VersionTests(unittest.TestCase):
             srv.server_close()
 
 
+class LlmConfigTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_home = Path(self.tmp.name)
+        self.orig_home = Path.home
+        Path.home = lambda: self.tmp_home
+
+    def tearDown(self):
+        Path.home = self.orig_home
+        self.tmp.cleanup()
+
+    def test_load_non_existent_creates_default(self):
+        configs = server.load_llm_configs()
+        self.assertEqual(configs, [])
+        config_file = self.tmp_home / ".llmconfig"
+        self.assertTrue(config_file.exists())
+        self.assertIn("# Format: provider/model|api_key", config_file.read_text())
+
+    def test_add_and_load_configs(self):
+        server.load_llm_configs()
+        server.add_llm_config("gemini", "gemini-2.5-flash", "api-key-1")
+        server.add_llm_config("ollama", "llama3.1", "")
+        
+        configs = server.load_llm_configs()
+        self.assertEqual(len(configs), 2)
+        self.assertEqual(configs[0], {"provider": "gemini", "model": "gemini-2.5-flash", "apiKey": "api-key-1"})
+        self.assertEqual(configs[1], {"provider": "ollama", "model": "llama3.1", "apiKey": ""})
+
+
 if __name__ == "__main__":
     unittest.main()
