@@ -44,7 +44,9 @@ let proofreadRange = null; // { start, end } in the editor that proofreading tar
 let suggestionPanelMode = "proofread"; // "proofread" | "translate" — which feature owns the shared panel
 let previewVisible = true;
 let previewStale = false; // edits happened while preview was hidden; refresh on show
-let savedEditorFlexBasis = null;
+let previewPosition = "right"; // "right" | "bottom" — where the preview pane sits
+let savedEditorFlexBasis = null; // editor width when the preview is on the right
+let savedEditorHeight = null; // editor height when the preview is at the bottom
 let isDirty = false;
 let isInitialized = false;
 let activeSidebarTab = "files";
@@ -1327,22 +1329,31 @@ function addFileMouseDrag(li, filePath, fileName, isDir = false) {
 
 function togglePreview() {
   const editorPane = document.getElementById("editor-pane");
+  const isBottom = previewPosition === "bottom";
   if (previewVisible) {
-    const w = editorPane.getBoundingClientRect().width;
-    if (w > 0) savedEditorFlexBasis = w;
+    const rect = editorPane.getBoundingClientRect();
+    const size = isBottom ? rect.height : rect.width;
+    if (size > 0) {
+      if (isBottom) savedEditorHeight = size;
+      else savedEditorFlexBasis = size;
+    }
     editorPane.style.flex = "";
   } else {
-    if (savedEditorFlexBasis) editorPane.style.flex = `0 0 ${savedEditorFlexBasis}px`;
+    const basis = isBottom ? savedEditorHeight : savedEditorFlexBasis;
+    if (basis) editorPane.style.flex = `0 0 ${basis}px`;
   }
   previewVisible = !previewVisible;
   const pane = document.getElementById("preview-pane");
-  const btn = document.getElementById("preview-toggle-btn");
   const editorHandle = document.getElementById("editor-resize");
   pane.style.display = previewVisible ? "" : "none";
   editorHandle.style.display = previewVisible ? "" : "none";
-  btn.classList.toggle("active", previewVisible);
-  btn.title = previewVisible ? "Hide preview (⌘E)" : "Show preview (⌘E)";
-  btn.setAttribute("aria-label", previewVisible ? "Hide preview" : "Show preview");
+  // The toggle button lives in the pane template (one per split pane), so it
+  // carries a class, not an id.
+  document.querySelectorAll(".preview-toggle-btn").forEach((btn) => {
+    btn.classList.toggle("active", previewVisible);
+    btn.title = previewVisible ? "Hide preview (⌘E)" : "Show preview (⌘E)";
+    btn.setAttribute("aria-label", previewVisible ? "Hide preview" : "Show preview");
+  });
   // Re-showing a preview that went stale while hidden: render it now.
   if (previewVisible && previewStale) {
     previewStale = false;
@@ -1352,17 +1363,31 @@ function togglePreview() {
   saveUiState();
 }
 
+// Reflect the previewPosition setting in the layout: flip the wrapper's flex
+// direction and re-apply the editor size remembered for that orientation.
+function applyPreviewPosition() {
+  const isBottom = previewPosition === "bottom";
+  document.getElementById("main-area").classList.toggle("preview-bottom", isBottom);
+  const editorPane = document.getElementById("editor-pane");
+  if (!previewVisible) {
+    editorPane.style.flex = "";
+    return;
+  }
+  const basis = isBottom ? savedEditorHeight : savedEditorFlexBasis;
+  editorPane.style.flex = basis ? `0 0 ${basis}px` : "";
+}
+
 // ===== RESIZE HANDLES =====
 
-function startDrag(handle, startX, onDrag, onEnd) {
+function startDrag(handle, startPos, onDrag, onEnd, axis = "x") {
   const iframe = document.getElementById("preview");
   handle.classList.add("dragging");
-  document.body.style.cursor = "col-resize";
+  document.body.style.cursor = axis === "y" ? "row-resize" : "col-resize";
   document.body.style.userSelect = "none";
   if (iframe) iframe.style.pointerEvents = "none";
 
   function onMove(e) {
-    onDrag(e.clientX - startX);
+    onDrag((axis === "y" ? e.clientY : e.clientX) - startPos);
   }
   function onUp() {
     handle.classList.remove("dragging");
@@ -1403,6 +1428,26 @@ function initResizableHandles() {
   const editorHandle = document.getElementById("editor-resize");
   editorHandle.addEventListener("mousedown", (e) => {
     e.preventDefault();
+    if (previewPosition === "bottom") {
+      const startHeight = editorPane.getBoundingClientRect().height;
+      startDrag(
+        editorHandle,
+        e.clientY,
+        (dy) => {
+          const mainHeight = document.getElementById("main-area").getBoundingClientRect().height;
+          const maxHeight = mainHeight - 150 - 10;
+          const newHeight = Math.max(150, Math.min(maxHeight, startHeight + dy));
+          editorPane.style.flex = `0 0 ${newHeight}px`;
+          savedEditorHeight = newHeight;
+        },
+        () => {
+          updateTabScrollButtons();
+          saveUiState();
+        },
+        "y",
+      );
+      return;
+    }
     const startWidth = editorPane.getBoundingClientRect().width;
     startDrag(
       editorHandle,
@@ -3794,26 +3839,30 @@ function restoreUiState(settings) {
     document.getElementById("sidebar").style.flex = `0 0 ${settings.sidebarWidth}px`;
   }
   if (settings.editorWidth) savedEditorFlexBasis = settings.editorWidth;
+  if (settings.editorHeight) savedEditorHeight = settings.editorHeight;
+  previewPosition = settings.previewPosition === "bottom" ? "bottom" : "right";
   if (settings.previewVisible === false) {
     previewVisible = false;
     document.getElementById("preview-pane").style.display = "none";
     document.getElementById("editor-resize").style.display = "none";
-    const btn = document.getElementById("preview-toggle-btn");
-    btn.classList.remove("active");
-    btn.title = "Show preview (⌘E)";
-    btn.setAttribute("aria-label", "Show preview");
-  } else if (savedEditorFlexBasis) {
-    document.getElementById("editor-pane").style.flex = `0 0 ${savedEditorFlexBasis}px`;
+    document.querySelectorAll(".preview-toggle-btn").forEach((btn) => {
+      btn.classList.remove("active");
+      btn.title = "Show preview (⌘E)";
+      btn.setAttribute("aria-label", "Show preview");
+    });
   }
+  applyPreviewPosition();
 }
 
 async function saveUiState() {
   if (!isInitialized) return;
   try {
     const sidebarWidth = document.getElementById("sidebar").getBoundingClientRect().width;
-    const editorWidth = previewVisible
-      ? document.getElementById("editor-pane").getBoundingClientRect().width
-      : null;
+    const editorRect = document.getElementById("editor-pane").getBoundingClientRect();
+    const editorWidth =
+      previewVisible && previewPosition === "right" ? editorRect.width : savedEditorFlexBasis;
+    const editorHeight =
+      previewVisible && previewPosition === "bottom" ? editorRect.height : savedEditorHeight;
 
     // Synchronize active globals into the active pane object
     saveActivePaneState();
@@ -3830,6 +3879,8 @@ async function saveUiState() {
     await apiPost("/api/settings", {
       sidebarWidth: sidebarWidth > 0 ? sidebarWidth : null,
       editorWidth: editorWidth && editorWidth > 0 ? editorWidth : null,
+      editorHeight: editorHeight && editorHeight > 0 ? editorHeight : null,
+      previewPosition,
       previewVisible,
       lastOpenFile: currentFilePath,
       openFiles: tabs.map((t) => t.path),
@@ -4080,6 +4131,7 @@ async function openSettingsDialog() {
   document.getElementById("ollama-url-input").value = currentOllamaUrl;
   document.getElementById("ollama-model-input").value = currentOllamaModel;
   document.getElementById("document-language-input").value = currentDocumentLanguage;
+  document.getElementById("preview-position-select").value = previewPosition;
   updateProofreadProviderVisibility();
   initGraphFolderSettings();
   document.getElementById("settings-dialog").showModal();
@@ -4367,6 +4419,7 @@ async function saveSettings() {
     const newOllamaModel = document.getElementById("ollama-model-input").value.trim();
     const newDocumentLanguage =
       document.getElementById("document-language-input").value.trim() || "English";
+    const newPreviewPosition = document.getElementById("preview-position-select").value;
 
     // Validate vault path
     try {
@@ -4394,7 +4447,13 @@ async function saveSettings() {
       ollamaModel: newOllamaModel,
       documentLanguage: newDocumentLanguage,
       graphFolderColors: currentGraphFolderColors,
+      previewPosition: newPreviewPosition,
     });
+
+    if (newPreviewPosition !== previewPosition) {
+      previewPosition = newPreviewPosition;
+      applyPreviewPosition();
+    }
 
     currentUserCss = newCss;
     currentSpellCheck = newSpellCheck;

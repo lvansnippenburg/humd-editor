@@ -273,6 +273,8 @@
 
             <div class="resize-handle" id="sidebar-resize"></div>
 
+            <!-- Editor + preview; flex direction depends on preview position -->
+            <div id="main-area">
             <!-- Editor Pane -->
             <section id="editor-pane">
                 <!-- Dynamic split panes are inserted here -->
@@ -577,6 +579,7 @@
                     sandbox="allow-scripts allow-same-origin"
                 ></iframe>
             </section>
+            </div>
         </div>
 
         <!-- Settings Dialog -->
@@ -645,6 +648,11 @@
                     renderer. Pandoc produces more accurate output for complex documents but
                     requires Pandoc to be installed.
                 </p>
+                <label class="settings-label" style="margin-top: 10px">Preview position</label>
+                <select id="preview-position-select" class="settings-input">
+                    <option value="right">Right of the editor</option>
+                    <option value="bottom">Below the editor</option>
+                </select>
             </div>
 
             <div class="settings-section">
