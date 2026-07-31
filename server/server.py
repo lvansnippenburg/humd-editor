@@ -556,16 +556,18 @@ def _find_pandoc() -> str:
     return found
 
 
-def render_pandoc(markdown: str, file_path: str | None) -> str:
+def render_pandoc(markdown: str, file_path: str | None, number_sections: bool = True) -> str:
     """Render markdown via system pandoc, return HTML body fragment."""
+    cmd = [
+        _find_pandoc(),
+        "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables+lists_without_preceding_blankline+hard_line_breaks",
+        "--to=html5",
+        "--standalone=false",
+    ]
+    if number_sections:
+        cmd.append("--number-sections")  # 1, 1.1, … (respects {-}/{.unnumbered})
     result = subprocess.run(
-        [
-            _find_pandoc(),
-            "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables+lists_without_preceding_blankline+hard_line_breaks",
-            "--to=html5",
-            "--standalone=false",
-            "--number-sections",  # 1, 1.1, … (respects {-}/{.unnumbered})
-        ],
+        cmd,
         input=markdown.encode(),
         capture_output=True,
     )
@@ -1705,7 +1707,11 @@ class Handler(SimpleHTTPRequestHandler):
         elif path == "/api/pandoc":
             try:
                 data = self.read_body()
-                html = render_pandoc(data["markdown"], data.get("file_path"))
+                html = render_pandoc(
+                    data["markdown"],
+                    data.get("file_path"),
+                    data.get("number_sections", True),
+                )
                 self.send_json({"html": html})
             except Exception as e:
                 self.send_error_json(str(e))

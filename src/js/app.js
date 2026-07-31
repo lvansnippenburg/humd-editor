@@ -10,6 +10,7 @@ import {
   extractComments,
   restoreComments,
   parseHeadingAttrs,
+  parseNumberSectionsOverride,
   COMMENT_BALLOON_SVG,
 } from "/js/markdown.js";
 import { renderGraph, graphFolderColors } from "/js/graph.js";
@@ -22,6 +23,7 @@ let currentFilePath = null;
 let currentUserCss = "";
 let currentSpellCheck = true;
 let currentUsePandoc = false;
+let currentNumberSections = true;
 let currentAutoSave = false;
 let currentSmartQuotes = false;
 let currentBibPath = null;
@@ -596,6 +598,7 @@ async function initialize() {
     currentUserCss = settings.userCss || "";
     currentSpellCheck = settings.spellCheck ?? true;
     currentUsePandoc = settings.usePandoc ?? false;
+    currentNumberSections = settings.numberSections ?? true;
     currentAutoSave = settings.useAutoSave ?? false;
     currentSmartQuotes = settings.smartQuotes ?? false;
     currentBibPath = settings.cslJsonPath || null;
@@ -3028,6 +3031,11 @@ async function updatePreview() {
     const filePath = currentFilePath;
     let bodyHtml;
 
+    // A document's own front matter (output: html_document: number_sections:)
+    // overrides the global "Number chapter and paragraph titles" setting.
+    const numberSectionsOverride = parseNumberSectionsOverride(content);
+    const effectiveNumberSections = numberSectionsOverride ?? currentNumberSections;
+
     // Extract citations before rendering to protect them from markdown processor.
     // Use a placeholder format that won't be interpreted as markdown (no __, **, etc).
     const citationRe = /\[@[^\]]+\]/g;
@@ -3041,7 +3049,12 @@ async function updatePreview() {
     // bouncing between unchanged documents (e.g. split-pane switches) so no
     // Pandoc round-trip / markdown re-parse is needed.
     const cached = previewRenderCache.get(filePath);
-    if (cached && cached.content === content && cached.usePandoc === currentUsePandoc) {
+    if (
+      cached &&
+      cached.content === content &&
+      cached.usePandoc === currentUsePandoc &&
+      cached.numberSections === effectiveNumberSections
+    ) {
       bodyHtml = cached.bodyHtml;
     } else {
       // Tokenize HTML comments before rendering so they survive both render paths
@@ -3054,6 +3067,7 @@ async function updatePreview() {
         const result = await apiPost("/api/pandoc", {
           markdown: contentForRender,
           file_path: filePath,
+          number_sections: effectiveNumberSections,
         });
         if (gen !== previewGen) return; // superseded by a newer render
         bodyHtml = result.html;
@@ -3063,7 +3077,12 @@ async function updatePreview() {
       bodyHtml = restoreComments(bodyHtml, commentBalloons);
 
       previewRenderCache.delete(filePath); // re-insert as most recent
-      previewRenderCache.set(filePath, { content, usePandoc: currentUsePandoc, bodyHtml });
+      previewRenderCache.set(filePath, {
+        content,
+        usePandoc: currentUsePandoc,
+        numberSections: effectiveNumberSections,
+        bodyHtml,
+      });
       if (previewRenderCache.size > PREVIEW_CACHE_MAX) {
         previewRenderCache.delete(previewRenderCache.keys().next().value);
       }
@@ -3079,6 +3098,7 @@ async function updatePreview() {
     // Pandoc numbers sections itself; flag the body so the CSS section-numbering
     // counters (for the built-in renderer) don't double up.
     bodyEl.classList.toggle("pandoc", currentUsePandoc);
+    bodyEl.classList.toggle("no-numbering", !effectiveNumberSections);
 
     // Restore citations in the DOM by walking text nodes and replacing placeholders.
     const walker = doc.createTreeWalker(bodyEl, NodeFilter.SHOW_TEXT);
@@ -4082,6 +4102,7 @@ let settingsBeforeEdit = {
   userCss: "",
   spellCheck: true,
   usePandoc: false,
+  numberSections: true,
   autoSave: false,
   bibPath: null,
   cslPath: null,
@@ -4104,6 +4125,7 @@ async function openSettingsDialog() {
     userCss: currentUserCss,
     spellCheck: currentSpellCheck,
     usePandoc: currentUsePandoc,
+    numberSections: currentNumberSections,
     autoSave: currentAutoSave,
     smartQuotes: currentSmartQuotes,
     bibPath: currentBibPath,
@@ -4117,6 +4139,7 @@ async function openSettingsDialog() {
   document.getElementById("css-editor").value = currentUserCss;
   document.getElementById("spell-check-toggle").checked = currentSpellCheck;
   document.getElementById("use-pandoc-toggle").checked = currentUsePandoc;
+  document.getElementById("number-sections-toggle").checked = currentNumberSections;
   document.getElementById("auto-save-toggle").checked = currentAutoSave;
   document.getElementById("smart-quotes-toggle").checked = currentSmartQuotes;
   document.getElementById("bib-path-display").textContent = currentBibPath || "None selected";
@@ -4398,6 +4421,7 @@ async function saveSettings() {
     const newCss = document.getElementById("css-editor").value;
     const newSpellCheck = document.getElementById("spell-check-toggle").checked;
     const newUsePandoc = document.getElementById("use-pandoc-toggle").checked;
+    const newNumberSections = document.getElementById("number-sections-toggle").checked;
     const newAutoSave = document.getElementById("auto-save-toggle").checked;
     const newSmartQuotes = document.getElementById("smart-quotes-toggle").checked;
     const displayedPath = document.getElementById("vault-path-display").textContent;
@@ -4434,6 +4458,7 @@ async function saveSettings() {
       userCss: newCss,
       spellCheck: newSpellCheck,
       usePandoc: newUsePandoc,
+      numberSections: newNumberSections,
       useAutoSave: newAutoSave,
       smartQuotes: newSmartQuotes,
       cslJsonPath: newBibPath,
@@ -4458,6 +4483,7 @@ async function saveSettings() {
     currentUserCss = newCss;
     currentSpellCheck = newSpellCheck;
     currentUsePandoc = newUsePandoc;
+    currentNumberSections = newNumberSections;
     currentAutoSave = newAutoSave;
     currentSmartQuotes = newSmartQuotes;
     currentUserNickname = newNickname;
@@ -4499,6 +4525,7 @@ function cancelSettings() {
   document.getElementById("css-editor").value = settingsBeforeEdit.userCss;
   document.getElementById("spell-check-toggle").checked = settingsBeforeEdit.spellCheck;
   document.getElementById("use-pandoc-toggle").checked = settingsBeforeEdit.usePandoc;
+  document.getElementById("number-sections-toggle").checked = settingsBeforeEdit.numberSections;
   document.getElementById("auto-save-toggle").checked = settingsBeforeEdit.autoSave;
   document.getElementById("smart-quotes-toggle").checked = settingsBeforeEdit.smartQuotes;
 

@@ -648,6 +648,16 @@
                     renderer. Pandoc produces more accurate output for complex documents but
                     requires Pandoc to be installed.
                 </p>
+                <label class="settings-toggle" style="margin-top: 8px">
+                    <input type="checkbox" id="number-sections-toggle" />
+                    <span>Number chapter and paragraph titles</span>
+                </label>
+                <p class="settings-hint">
+                    Number headings (1, 1.1, 1.1.1, …) in the preview. Override per document via
+                    YAML front matter:
+                    <code>output: html_document: number_sections: true</code> (or
+                    <code>false</code>).
+                </p>
                 <label class="settings-label" style="margin-top: 10px">Preview position</label>
                 <select id="preview-position-select" class="settings-input">
                     <option value="right">Right of the editor</option>

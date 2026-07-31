@@ -38,6 +38,50 @@ function stripFrontMatter(md) {
   return md;
 }
 
+// Reads output.html_document.number_sections from YAML front matter, if
+// present. Returns true/false to override the global "Number chapter and
+// paragraph titles" setting, or null if the document doesn't specify it.
+export function parseNumberSectionsOverride(md) {
+  const lines = md.split("\n");
+  if (!lines.length || lines[0].trim() !== "---") return null;
+  let end = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === "---" || lines[i].trim() === "...") {
+      end = i;
+      break;
+    }
+  }
+  if (end === -1) return null;
+  const fm = lines.slice(1, end);
+
+  const indentOf = (l) => l.length - l.trimStart().length;
+  function findKey(scope, key) {
+    for (let i = 0; i < scope.length; i++) {
+      const trimmed = scope[i].trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const m = trimmed.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
+      if (!m || m[1] !== key) continue;
+      const indent = indentOf(scope[i]);
+      const nested = [];
+      for (let j = i + 1; j < scope.length; j++) {
+        if (!scope[j].trim()) continue;
+        if (indentOf(scope[j]) <= indent) break;
+        nested.push(scope[j]);
+      }
+      return { value: m[2].trim(), nested };
+    }
+    return null;
+  }
+
+  const output = findKey(fm, "output");
+  const htmlDoc = output && findKey(output.nested, "html_document");
+  const numSec = htmlDoc && findKey(htmlDoc.nested, "number_sections");
+  if (!numSec) return null;
+  if (/^(true|yes)$/i.test(numSec.value)) return true;
+  if (/^(false|no)$/i.test(numSec.value)) return false;
+  return null;
+}
+
 function preprocessInlineFootnotes(md) {
   let result = "";
   let footnotes = [];
