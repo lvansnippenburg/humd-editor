@@ -572,11 +572,30 @@
                 <div id="preview-header">
                     <span>Preview</span>
                     <span id="preview-stats"></span>
+                    <button
+                        id="print-preview-btn"
+                        class="icon-btn"
+                        aria-label="Print preview"
+                        title="Print preview"
+                    >
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            xmlns="http://www.w3.org/2000/svg"
+                        >
+                            <path
+                                d="M4 1.5h8v3.5H4V1.5zm-1.5 4A1.5 1.5 0 0 0 1 7v4a1.5 1.5 0 0 0 1.5 1.5H4V15h8v-2.5h1.5A1.5 1.5 0 0 0 15 11V7a1.5 1.5 0 0 0-1.5-1.5h-11zM5 11h6v3H5v-3zm7-3.25a.75.75 0 1 1 0 1.5.75.75 0 0 1 0-1.5z"
+                                fill="currentColor"
+                            />
+                        </svg>
+                    </button>
                 </div>
                 <iframe
                     id="preview"
                     title="Markdown preview"
-                    sandbox="allow-scripts allow-same-origin"
+                    sandbox="allow-scripts allow-same-origin allow-modals"
                 ></iframe>
             </section>
             </div>

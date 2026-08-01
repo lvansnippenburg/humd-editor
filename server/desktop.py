@@ -12,6 +12,7 @@ after you unplug a monitor).
 """
 
 import subprocess
+import tempfile
 import threading
 
 import webview
@@ -32,6 +33,30 @@ class Api:
     def open_external(self, url):
         try:
             subprocess.run(["open", url], check=False)
+        except Exception:
+            pass
+        return True
+
+    def print_preview(self, html):
+        """Print the rendered preview.
+
+        WKWebView only exposes window.print() on the top-level window, which
+        would print the whole app chrome rather than just the preview, so
+        instead the frontend hands us the preview's rendered HTML and we open
+        it as a standalone page in the OS default browser, which prints it
+        properly (the page auto-triggers window.print() once loaded).
+        """
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                suffix=".html",
+                prefix="humd-editor-print-",
+                delete=False,
+                encoding="utf-8",
+            ) as f:
+                f.write(html)
+                path = f.name
+            subprocess.run(["open", path], check=False)
         except Exception:
             pass
         return True

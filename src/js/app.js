@@ -963,6 +963,7 @@ function setupEventListeners() {
   document.getElementById("graph-btn").addEventListener("click", openGraphTab);
   document.getElementById("change-vault-btn").addEventListener("click", changeVaultFolder);
   document.getElementById("settings-btn").addEventListener("click", openSettingsDialog);
+  document.getElementById("print-preview-btn").addEventListener("click", printPreview);
   document
     .getElementById("proofread-provider-select")
     .addEventListener("change", (e) => {
@@ -3152,6 +3153,48 @@ async function updatePreview() {
     iframe.srcdoc = `<div style="padding:20px;color:red;font-family:sans-serif"><strong>Error rendering preview:</strong><br>${error.message || error}</div>`;
     const el = document.getElementById("preview-stats");
     if (el) el.textContent = "";
+  }
+}
+
+// ===== PRINT =====
+
+// Snapshot the live preview iframe as a standalone HTML document: root-relative
+// asset URLs (/css/…, /js/…, /api/…) only resolve against this app's own
+// server, so they're qualified with the page origin to keep working once the
+// document leaves the iframe (opened standalone in the desktop print fallback).
+function getPrintableHtml() {
+  const doc = document.getElementById("preview")?.contentDocument;
+  if (!doc) return null;
+  const origin = window.location.origin;
+  const html = doc.documentElement.outerHTML.replace(
+    /(href|src)="\//g,
+    `$1="${origin}/`
+  );
+  return `<!DOCTYPE html>\n${html}`;
+}
+
+// Print the preview pane's content. The desktop app's WKWebView only exposes
+// window.print() on the top-level window (which would print the whole app,
+// not just the preview), so there we hand the rendered HTML to the native
+// bridge, which opens it in the OS default browser and prints it from there.
+// In a plain browser tab the preview iframe can print itself directly.
+function printPreview() {
+  const iframe = document.getElementById("preview");
+  if (!iframe || !iframe.contentWindow) return;
+  if (window.pywebview?.api?.print_preview) {
+    let html = getPrintableHtml();
+    if (!html) {
+      showStatus("Nothing to print");
+      return;
+    }
+    // Auto-open the print dialog once the standalone page has finished loading.
+    html = html.replace(
+      "</body>",
+      `<script>window.addEventListener("load", function () { window.print(); });<\/script></body>`
+    );
+    window.pywebview.api.print_preview(html);
+  } else {
+    iframe.contentWindow.print();
   }
 }
 
