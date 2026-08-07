@@ -1581,6 +1581,11 @@ dialog h2 {
     margin-bottom: 4px;
 }
 
+.proofread-peel-result {
+    white-space: pre-wrap;
+    line-height: 1.5;
+}
+
 .proofread-change {
     font-size: 11px;
     color: var(--text-secondary);

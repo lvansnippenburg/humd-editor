@@ -702,6 +702,19 @@ def _read_prompt_file(name: str) -> str | None:
 
 PROOFREAD_SYSTEM = _read_prompt_file("PROOFREAD_SYSTEM.md") or _PROOFREAD_FALLBACK
 
+# The PEEL-framework check prompt lives in src/PEELFRAMEWORK_SYSTEM.md, loaded
+# the same way. It returns free-form prose (a labelled Point/Evidence/
+# Explanation/Link/Verdict critique), not the JSON array PROOFREAD_SYSTEM asks
+# for, so callers must pass no schema to _ai_complete (see peel_check_text).
+_PEEL_FALLBACK = (
+    "You are reviewing a paragraph from an academic text for structural "
+    "adherence to the PEEL framework (Point, Evidence, Explanation, Link). "
+    "Analyze the paragraph and respond with a labelled critique covering "
+    "each of the four elements plus an overall verdict. Be specific and "
+    "critical; do not soften weaknesses."
+)
+PEEL_SYSTEM = _read_prompt_file("PEELFRAMEWORK_SYSTEM.md") or _PEEL_FALLBACK
+
 # Schema forcing Mistral to emit the structured suggestion list the client expects.
 PROOFREAD_SCHEMA = {
     "type": "ARRAY",
@@ -809,10 +822,11 @@ def add_llm_config(provider: str, model: str, api_key: str) -> None:
 
 
 def _ai_complete(
-    system: str, user: str, mistral_schema: dict, json_schema: dict, settings: dict
+    system: str, user: str, mistral_schema: dict | None, json_schema: dict | None, settings: dict
 ) -> tuple[str, str | None]:
     """Run one structured AI completion with the configured provider. Returns
-    (raw_response, warning); raw_response is a JSON string matching the schema.
+    (raw_response, warning); raw_response is a JSON string matching the schema,
+    or free-form text if both schema args are None.
     When Ollama is selected but not running, transparently falls back to
     Mistral and reports it via the warning."""
     selected = settings.get("proofreadProvider") or "mistral"
@@ -877,8 +891,9 @@ def _ai_complete(
     return _mistral_complete(system, user, mistral_schema, settings), None
 
 
-def _gemini_complete(system: str, user: str, json_schema: dict, settings: dict, api_key: str, model: str) -> str:
-    """One structured completion via Gemini REST API."""
+def _gemini_complete(system: str, user: str, json_schema: dict | None, settings: dict, api_key: str, model: str) -> str:
+    """One structured completion via Gemini REST API. json_schema=None asks for
+    free-form text instead of forcing a JSON response shape."""
     if not api_key:
         raise RuntimeError("No Gemini API key specified in ~/.llmconfig.")
     if not model:
@@ -895,11 +910,12 @@ def _gemini_complete(system: str, user: str, json_schema: dict, settings: dict, 
         "systemInstruction": {
             "parts": [{"text": system}]
         },
-        "generationConfig": {
+    }
+    if json_schema is not None:
+        payload_data["generationConfig"] = {
             "responseMimeType": "application/json",
             "responseSchema": json_schema
         }
-    }
     payload = json.dumps(payload_data).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -977,9 +993,10 @@ def _anthropic_complete(system: str, user: str, settings: dict, api_key: str, mo
 
 
 def _mistral_complete(
-    system: str, user: str, schema: dict, settings: dict, api_key: str | None = None, model: str | None = None
+    system: str, user: str, schema: dict | None, settings: dict, api_key: str | None = None, model: str | None = None
 ) -> str:
-    """One structured completion via the Mistral REST API."""
+    """One structured completion via the Mistral REST API. schema=None asks for
+    free-form text instead of forcing a JSON response shape."""
     api_key = api_key or settings.get("mistralApiKey")
     if not api_key:
         raise RuntimeError(
@@ -987,17 +1004,17 @@ def _mistral_complete(
         )
     model = model or settings.get("mistralModel") or DEFAULT_MISTRAL_MODEL
     url = "https://api.mistral.ai/v1/chat/completions"
-    payload = json.dumps(
-        {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.7,
-        }
-    ).encode("utf-8")
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": 0.7,
+    }
+    if schema is not None:
+        body["response_format"] = {"type": "json_object"}
+    payload = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=payload,
@@ -1027,9 +1044,10 @@ def _mistral_complete(
 
 
 def _ollama_complete(
-    system: str, user: str, json_schema: dict, settings: dict, model: str | None = None
+    system: str, user: str, json_schema: dict | None, settings: dict, model: str | None = None
 ) -> str:
-    """One structured completion via a local Ollama /api/chat call."""
+    """One structured completion via a local Ollama /api/chat call. json_schema
+    =None asks for free-form text instead of forcing a JSON response shape."""
     model = model or settings.get("ollamaModel")
     if not model:
         raise RuntimeError(
@@ -1037,17 +1055,17 @@ def _ollama_complete(
         )
     base = (settings.get("ollamaUrl") or DEFAULT_OLLAMA_URL).rstrip("/")
     url = f"{base}/api/chat"
-    payload = json.dumps(
-        {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "stream": False,
-            "format": json_schema,
-        }
-    ).encode("utf-8")
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "stream": False,
+    }
+    if json_schema is not None:
+        body["format"] = json_schema
+    payload = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=payload,
@@ -1077,6 +1095,13 @@ def proofread_text(text: str) -> tuple[str, str | None]:
     return _ai_complete(
         PROOFREAD_SYSTEM, text, PROOFREAD_SCHEMA, PROOFREAD_JSON_SCHEMA, load_settings()
     )
+
+
+def peel_check_text(text: str) -> tuple[str, str | None]:
+    """Check `text` against the PEEL framework. Returns (raw, warning); raw is
+    free-form prose (no schema forced), which the /api/proofread handler falls
+    back to returning as `result` since it won't parse as JSON."""
+    return _ai_complete(PEEL_SYSTEM, text, None, None, load_settings())
 
 
 # The translation system prompt lives in src/TRANSLATE_SYSTEM.md so it can be
@@ -1744,7 +1769,10 @@ class Handler(SimpleHTTPRequestHandler):
                 text = (data.get("text") or "").strip()
                 if not text:
                     raise ValueError("Nothing to proofread")
-                raw, warning = proofread_text(text)
+                if data.get("mode") == "peel":
+                    raw, warning = peel_check_text(text)
+                else:
+                    raw, warning = proofread_text(text)
                 # The model is asked for a JSON array of suggestions. Parse it so
                 # the client gets structured data; fall back to the raw string if
                 # the response isn't valid JSON (so something is still shown).

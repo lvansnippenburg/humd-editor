@@ -353,7 +353,9 @@ function setupPaneEventListeners(pane) {
   });
 
   pane.containerEl.querySelector(".preview-toggle-btn").addEventListener("click", togglePreview);
-  pane.containerEl.querySelector(".proofread-btn").addEventListener("click", runProofread);
+  pane.containerEl.querySelector(".proofread-btn").addEventListener("click", (e) => {
+    runProofread(e.metaKey || e.ctrlKey);
+  });
   pane.containerEl.querySelector(".translate-btn").addEventListener("click", runTranslate);
   pane.containerEl.querySelector(".suggest-tags-btn").addEventListener("click", runSuggestTags);
   pane.containerEl.querySelector(".export-docx-btn").addEventListener("click", exportToWord);
@@ -4641,7 +4643,12 @@ function escapeRegExp(s) {
 
 // Split Mistral's "revised text first, then a bulleted list of changes" reply
 // into the two parts so the revised text can be applied on its own.
-async function runProofread() {
+//
+// `usePeel` (Cmd/Ctrl-click on the button) runs a PEEL-framework structural
+// check instead of normal proofreading. PEELFRAMEWORK_SYSTEM.md is written
+// for a single paragraph, so a selection spanning multiple paragraphs (or no
+// selection, meaning the whole document) is confirmed with the user first.
+async function runProofread(usePeel = false) {
   if (!currentFilePath) {
     showStatus("Open a file to proofread", true);
     return;
@@ -4655,6 +4662,27 @@ async function runProofread() {
     showStatus("Nothing to proofread", true);
     return;
   }
+
+  if (usePeel) {
+    const paragraphCount = text
+      .split(/\n\s*\n/)
+      .map((p) => p.trim())
+      .filter(Boolean).length;
+    if (!isSelection) {
+      const proceed = await confirmDialog(
+        "The PEEL check is designed for a single paragraph, but nothing is selected — " +
+          "the whole document would be sent. Check anyway?"
+      );
+      if (!proceed) return;
+    } else if (paragraphCount > 1) {
+      const proceed = await confirmDialog(
+        "The PEEL check is designed for a single paragraph, but your selection spans " +
+          `${paragraphCount} paragraphs. Check anyway?`
+      );
+      if (!proceed) return;
+    }
+  }
+
   proofreadRange = { start, end };
 
   const panel = document.getElementById("proofread-panel");
@@ -4670,8 +4698,8 @@ async function runProofread() {
   suggestionPanelMode = "proofread";
   // The panel is shared with Translate, so reset its header/label each run.
   // innerHTML reset also clears any error markup left by a previous failed run.
-  document.querySelector("#proofread-panel h3").textContent = "Suggestions";
-  loading.innerHTML = "<p>Proofreading…</p>";
+  document.querySelector("#proofread-panel h3").textContent = usePeel ? "PEEL Check" : "Suggestions";
+  loading.innerHTML = usePeel ? "<p>Checking against PEEL…</p>" : "<p>Proofreading…</p>";
   document.getElementById("proofread-scope").textContent =
     `${isSelection ? "Selected text" : "Whole document"} (${text.length} chars)`;
   loading.style.display = "";
@@ -4680,7 +4708,7 @@ async function runProofread() {
   panel.style.display = "";
 
   try {
-    const res = await apiPost("/api/proofread", { text });
+    const res = await apiPost("/api/proofread", usePeel ? { text, mode: "peel" } : { text });
 
     // Non-fatal notice (e.g. Ollama not running → fell back to Mistral). Shown
     // unobtrusively in the status bar; the suggestions still render normally.
@@ -4697,6 +4725,19 @@ async function runProofread() {
           list.appendChild(buildSuggestionItem(item));
         }
       }
+      loading.style.display = "none";
+      suggestions.style.display = "";
+      return;
+    }
+
+    if (usePeel) {
+      // PEEL responses are a labelled prose critique, not edit suggestions —
+      // render as a single readable, non-interactive block (no Apply action).
+      const analysis = res.result || "";
+      const li = document.createElement("li");
+      li.className = "proofread-peel-result";
+      li.textContent = analysis.trim() || "No analysis returned.";
+      list.appendChild(li);
       loading.style.display = "none";
       suggestions.style.display = "";
       return;
