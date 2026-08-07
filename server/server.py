@@ -679,7 +679,7 @@ def export_docx(markdown: str, source_path: str | None = None) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# AI proofreading (Mistral)
+# AI proofreading
 # ---------------------------------------------------------------------------
 
 # The proofreading system prompt lives in src/PROOFREAD_SYSTEM.md so it can be
@@ -757,7 +757,7 @@ def load_llm_configs() -> list[dict]:
         except Exception:
             pass
         return []
-    
+
     configs = []
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -770,13 +770,13 @@ def load_llm_configs() -> list[dict]:
             else:
                 left = line
                 api_key = ""
-            
+
             if "/" in left:
                 provider, model = left.split("/", 1)
             else:
                 provider = left
                 model = ""
-            
+
             configs.append({
                 "provider": provider.strip().lower(),
                 "model": model.strip(),
@@ -795,10 +795,10 @@ def add_llm_config(provider: str, model: str, api_key: str) -> None:
         content = ""
         if path.exists():
             content = path.read_text(encoding="utf-8")
-        
+
         if content and not content.endswith("\n"):
             line = "\n" + line
-            
+
         with open(path, "a", encoding="utf-8") as f:
             f.write(line)
     except Exception as e:
@@ -816,7 +816,7 @@ def _ai_complete(
     When Ollama is selected but not running, transparently falls back to
     Mistral and reports it via the warning."""
     selected = settings.get("proofreadProvider") or "mistral"
-    
+
     # Try to load ~/.llmconfig configs
     configs = load_llm_configs()
     matched_config = None
@@ -825,12 +825,12 @@ def _ai_complete(
         if cfg_key == selected:
             matched_config = c
             break
-            
+
     if matched_config:
         provider = matched_config["provider"]
         model = matched_config["model"]
         api_key = matched_config["apiKey"]
-        
+
         if provider == "gemini":
             return _gemini_complete(system, user, json_schema, settings, api_key, model), None
         elif provider == "anthropic":
@@ -883,7 +883,7 @@ def _gemini_complete(system: str, user: str, json_schema: dict, settings: dict, 
         raise RuntimeError("No Gemini API key specified in ~/.llmconfig.")
     if not model:
         model = "gemini-2.5-flash"
-    
+
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
     payload_data = {
         "contents": [
@@ -915,15 +915,15 @@ def _gemini_complete(system: str, user: str, json_schema: dict, settings: dict, 
         raise RuntimeError(f"Gemini API error {e.code}: {detail[:500]}")
     except urllib.error.URLError as e:
         raise RuntimeError(f"Could not reach Gemini: {e.reason}")
-    
+
     candidates = data.get("candidates") or []
     if not candidates:
         raise RuntimeError(f"Gemini returned no candidates: {json.dumps(data)[:400]}")
-    
+
     parts = candidates[0].get("content", {}).get("parts") or []
     if not parts:
         raise RuntimeError("Gemini response candidate contains no parts.")
-        
+
     out = (parts[0].get("text") or "").strip()
     if not out:
         raise RuntimeError("Gemini returned an empty response.")
@@ -936,7 +936,7 @@ def _anthropic_complete(system: str, user: str, settings: dict, api_key: str, mo
         raise RuntimeError("No Anthropic API key specified in ~/.llmconfig.")
     if not model:
         model = "claude-3-5-sonnet-latest"
-        
+
     url = "https://api.anthropic.com/v1/messages"
     payload_data = {
         "model": model,
@@ -965,11 +965,11 @@ def _anthropic_complete(system: str, user: str, settings: dict, api_key: str, mo
         raise RuntimeError(f"Anthropic API error {e.code}: {detail[:500]}")
     except urllib.error.URLError as e:
         raise RuntimeError(f"Could not reach Anthropic: {e.reason}")
-        
+
     content = data.get("content") or []
     if not content:
         raise RuntimeError(f"Anthropic returned no content: {json.dumps(data)[:400]}")
-        
+
     out = (content[0].get("text") or "").strip()
     if not out:
         raise RuntimeError("Anthropic returned an empty response.")
