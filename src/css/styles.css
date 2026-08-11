@@ -514,6 +514,39 @@ body[data-platform="ios"] .resize-handle {
     opacity: 0.7;
 }
 
+#editor-actions-menu {
+    position: fixed;
+    z-index: 9000;
+    min-width: 180px;
+    margin: 0;
+    padding: 4px;
+    list-style: none;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+}
+
+.eam-item {
+    padding: 5px 10px;
+    font-size: 12.5px;
+    color: var(--text-primary);
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.eam-item:hover {
+    background: var(--accent);
+    color: #fff;
+}
+
+.eam-separator {
+    height: 1px;
+    margin: 4px 2px;
+    background: var(--border);
+}
+
 /* ===== TAGS PANEL ===== */
 #tags-list {
     list-style: none;

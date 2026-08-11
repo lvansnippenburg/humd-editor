@@ -354,10 +354,19 @@ function setupPaneEventListeners(pane) {
   });
 
   pane.containerEl.querySelector(".preview-toggle-btn").addEventListener("click", togglePreview);
-  pane.containerEl.querySelector(".proofread-btn").addEventListener("click", (e) => {
-    runProofread(e.metaKey || e.ctrlKey);
+  // mousedown + preventDefault (not click) so opening the menu never shifts
+  // focus off the textarea — the editor's selection is never touched, rather
+  // than relying on blur to preserve it (which isn't consistent everywhere).
+  // stopPropagation skips the pane's own mousedown->switchActivePane listener,
+  // so that's called explicitly first (matters when clicking "..." in a
+  // non-active split pane).
+  pane.containerEl.querySelector(".editor-actions-btn").addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    switchActivePane(pane.id);
+    const rect = e.currentTarget.getBoundingClientRect();
+    showEditorActionsMenu(rect.left, rect.bottom + 4);
   });
-  pane.containerEl.querySelector(".translate-btn").addEventListener("click", runTranslate);
   pane.containerEl.querySelector(".suggest-tags-btn").addEventListener("click", runSuggestTags);
   pane.containerEl.querySelector(".export-docx-btn").addEventListener("click", exportToWord);
 
@@ -2411,6 +2420,98 @@ function closeAutocomplete() {
   getAutocompletePopup().style.display = "none";
 }
 
+// ===== EDITOR ACTIONS MENU =====
+// Dropdown of selection-based AI/editing actions, opened from the toolbar's
+// "Text actions" button. (Originally this was a right-click context menu, but
+// right-clicking a selection — at least via Ctrl-click — collapses it before
+// the menu can act on it; a toolbar button doesn't touch the textarea's
+// selection at all, so it doesn't have that problem.)
+
+function getEditorActionsMenu() {
+  let el = document.getElementById("editor-actions-menu");
+  if (!el) {
+    el = document.createElement("ul");
+    el.id = "editor-actions-menu";
+    el.style.display = "none";
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+function showEditorActionsMenu(x, y) {
+  hideEditorActionsMenu();
+  const menu = getEditorActionsMenu();
+  menu.innerHTML = "";
+
+  const entries = [
+    { label: "Translate", action: runTranslate },
+    { label: "Proofread", action: () => runProofread(false) },
+    { label: "PEEL check", action: () => runProofread(true) },
+    { label: "Insert Comment", action: insertComment },
+    null,
+    { label: "Change Case", action: toggleSelectionCase },
+    { label: "Prepend Lines…", action: prependSelectedLines },
+    { label: "Append Lines…", action: appendSelectedLines },
+    null,
+    { label: "Find All Occurrences", action: findSelectionOccurrences },
+  ];
+
+  entries.forEach((entry) => {
+    if (!entry) {
+      const sep = document.createElement("li");
+      sep.className = "eam-separator";
+      menu.appendChild(sep);
+      return;
+    }
+    const li = document.createElement("li");
+    li.className = "eam-item";
+    li.textContent = entry.label;
+    // mousedown (not click) so the action runs before the textarea blurs
+    // and collapses the selection it needs to act on.
+    li.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      hideEditorActionsMenu();
+      entry.action();
+    });
+    menu.appendChild(li);
+  });
+
+  menu.style.display = "block";
+  menu.style.left = "0px";
+  menu.style.top = "0px";
+  let left = x;
+  let top = y;
+  if (left + menu.offsetWidth > window.innerWidth - 8) {
+    left = window.innerWidth - menu.offsetWidth - 8;
+  }
+  if (top + menu.offsetHeight > window.innerHeight - 8) {
+    top = window.innerHeight - menu.offsetHeight - 8;
+  }
+  menu.style.left = `${Math.max(8, left)}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
+
+  setTimeout(() => {
+    document.addEventListener("mousedown", onEditorActionsMenuDismiss);
+    document.addEventListener("keydown", onEditorActionsMenuKeydown);
+  }, 0);
+}
+
+function hideEditorActionsMenu() {
+  const menu = document.getElementById("editor-actions-menu");
+  if (menu) menu.style.display = "none";
+  document.removeEventListener("mousedown", onEditorActionsMenuDismiss);
+  document.removeEventListener("keydown", onEditorActionsMenuKeydown);
+}
+
+function onEditorActionsMenuDismiss(e) {
+  const menu = document.getElementById("editor-actions-menu");
+  if (menu && !menu.contains(e.target)) hideEditorActionsMenu();
+}
+
+function onEditorActionsMenuKeydown(e) {
+  if (e.key === "Escape") hideEditorActionsMenu();
+}
+
 // ===== COMMENTS =====
 
 // Two-digit zero-pad.
@@ -2962,6 +3063,90 @@ function prefixLine(prefix) {
   );
   const trimmed = currentLine.replace(/^#+\s/, "");
   editorReplace(editor, lineStart, lineStart + currentLine.length, prefix + trimmed);
+}
+
+// Toggle the case of the current selection: if it contains any lowercase
+// letter, uppercase the whole thing; otherwise (all-caps or no letters at
+// all) lowercase it. Running it twice in a row flips back and forth.
+// Whether `pos` in `value` starts a new sentence: either the very start of
+// the document, or preceded (after skipping whitespace and a closing
+// quote/bracket) by sentence-ending punctuation.
+function isSentenceStart(value, pos) {
+  let i = pos;
+  while (i > 0 && /\s/.test(value[i - 1])) i--;
+  if (i === 0) return true;
+  let j = i;
+  while (j > 0 && /["')\]]/.test(value[j - 1])) j--;
+  return j > 0 && /[.!?]/.test(value[j - 1]);
+}
+
+function toggleSelectionCase() {
+  const editor = document.getElementById("editor");
+  const start = editor.selectionStart,
+    end = editor.selectionEnd;
+  const text = editor.value.slice(start, end);
+  if (!text) return;
+  let newText;
+  if (/[a-z]/.test(text)) {
+    newText = text.toUpperCase();
+  } else {
+    newText = text.toLowerCase();
+    // Re-capitalize the first letter if the selection opens a sentence.
+    if (isSentenceStart(editor.value, start)) {
+      newText = newText.charAt(0).toUpperCase() + newText.slice(1);
+    }
+  }
+  editorReplace(editor, start, end, newText);
+  editor.setSelectionRange(start, start + newText.length);
+}
+
+// Grow a selection out to the start of its first line and the end of its
+// last line, so a line-based edit (prepend/append) applies to every full
+// line the selection touches, not just the exact characters selected.
+function expandSelectionToLines(editor) {
+  const value = editor.value;
+  const start = value.lastIndexOf("\n", editor.selectionStart - 1) + 1;
+  let end = value.indexOf("\n", editor.selectionEnd);
+  if (end === -1) end = value.length;
+  return { start, end, text: value.slice(start, end) };
+}
+
+async function prependSelectedLines() {
+  const editor = document.getElementById("editor");
+  if (editor.selectionStart === editor.selectionEnd) return;
+  const str = await promptDialog("Prepend each selected line with:");
+  if (str === null) return;
+  const { start, end, text } = expandSelectionToLines(editor);
+  const result = text
+    .split("\n")
+    .map((l) => str + l)
+    .join("\n");
+  editorReplace(editor, start, end, result);
+  editor.setSelectionRange(start, start + result.length);
+}
+
+async function appendSelectedLines() {
+  const editor = document.getElementById("editor");
+  if (editor.selectionStart === editor.selectionEnd) return;
+  const str = await promptDialog("Append each selected line with:");
+  if (str === null) return;
+  const { start, end, text } = expandSelectionToLines(editor);
+  const result = text
+    .split("\n")
+    .map((l) => l + str)
+    .join("\n");
+  editorReplace(editor, start, end, result);
+  editor.setSelectionRange(start, start + result.length);
+}
+
+// Prefill and run the editor's own Find with the current selection.
+function findSelectionOccurrences() {
+  const editor = document.getElementById("editor");
+  const text = editor.value.slice(editor.selectionStart, editor.selectionEnd);
+  if (!text) return;
+  openEditorSearch();
+  document.getElementById("editor-search-input").value = text;
+  updateEditorSearchResults();
 }
 
 // ===== PREVIEW =====
