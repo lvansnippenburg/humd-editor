@@ -55,6 +55,7 @@ let activeSidebarTab = "files";
 let previewDebounceTimer = null;
 let previewShellReady = false; // is the persistent preview document mounted?
 let previewShellCss = null; // userCss the current shell was built with
+let printIframe = null; // reused hidden iframe the print flow renders into
 let autoSaveDebounceTimer = null;
 let editorScrollTimer = null;
 let suppressEditorScroll = false;
@@ -3160,12 +3161,107 @@ async function updatePreview() {
 
 // ===== PRINT =====
 
-// Snapshot the live preview iframe as a standalone HTML document: root-relative
-// asset URLs (/css/…, /js/…, /api/…) only resolve against this app's own
-// server, so they're qualified with the page origin to keep working once the
-// document leaves the iframe (opened standalone in the desktop print fallback).
-function getPrintableHtml() {
-  const doc = document.getElementById("preview")?.contentDocument;
+// Render the current document into a disposable, off-screen iframe for
+// printing. Unlike the live preview, wikilinked notes are inlined (like
+// "Export to Word" does) so the printed/PDF output is self-contained, and
+// rendering always goes through Pandoc regardless of the preview-renderer
+// setting, matching Word export's behaviour. A separate iframe (rather than
+// the live #preview one) keeps this from disturbing the interactive preview,
+// where wikilinks stay clickable links, and sidesteps the live preview's
+// caching/cancellation machinery, which doesn't apply to a one-shot render.
+async function buildPrintDocument() {
+  if (!currentFilePath) return null;
+  const content = document.getElementById("editor").value;
+  const filePath = currentFilePath;
+
+  const numberSectionsOverride = parseNumberSectionsOverride(content);
+  const effectiveNumberSections = numberSectionsOverride ?? currentNumberSections;
+
+  const citationRe = /\[@[^\]]+\]/g;
+  const citations = [];
+  const contentWithPlaceholders = content.replace(citationRe, (match) => {
+    citations.push(match);
+    return `ⓘCITATION_PLACEHOLDER_${citations.length - 1}ⓘ`;
+  });
+  const { text: contentForRender, balloons: commentBalloons } =
+    extractComments(contentWithPlaceholders);
+
+  const result = await apiPost("/api/pandoc", {
+    markdown: contentForRender,
+    file_path: filePath,
+    number_sections: effectiveNumberSections,
+    inline_wikilinks: true,
+  });
+  const bodyHtml = restoreComments(result.html, commentBalloons);
+
+  if (printIframe) printIframe.remove();
+  const iframe = document.createElement("iframe");
+  iframe.style.cssText =
+    "position:fixed;top:-10000px;left:-10000px;width:800px;height:600px;";
+  iframe.sandbox = "allow-scripts allow-same-origin allow-modals";
+  document.body.appendChild(iframe);
+  printIframe = iframe;
+
+  await new Promise((resolve) => {
+    iframe.addEventListener("load", resolve, { once: true });
+    iframe.srcdoc = buildPreviewShell(currentUserCss);
+  });
+
+  const doc = iframe.contentDocument;
+  const bodyEl = doc.getElementById("hp-body");
+  bodyEl.innerHTML = bodyHtml;
+  // Rendered via Pandoc, which numbers sections itself when requested.
+  bodyEl.classList.add("pandoc");
+  bodyEl.classList.toggle("no-numbering", !effectiveNumberSections);
+
+  // Restore citations in the DOM by walking text nodes and replacing placeholders.
+  const walker = doc.createTreeWalker(bodyEl, NodeFilter.SHOW_TEXT);
+  const nodesToReplace = [];
+  let node;
+  while ((node = walker.nextNode())) {
+    if (/ⓘCITATION_PLACEHOLDER_\d+ⓘ/.test(node.textContent)) {
+      nodesToReplace.push(node);
+    }
+  }
+  for (const textNode of nodesToReplace) {
+    const parts = textNode.textContent.split(/(ⓘCITATION_PLACEHOLDER_\d+ⓘ)/);
+    const fragment = doc.createDocumentFragment();
+    for (const part of parts) {
+      const m = part.match(/ⓘCITATION_PLACEHOLDER_(\d+)ⓘ/);
+      if (m) {
+        fragment.appendChild(doc.createTextNode(citations[parseInt(m[1])]));
+      } else if (part) {
+        fragment.appendChild(doc.createTextNode(part));
+      }
+    }
+    textNode.parentNode.replaceChild(fragment, textNode);
+  }
+
+  rewriteImageSources(bodyEl, filePath);
+
+  const hl = iframe.contentWindow.hljs;
+  if (hl) {
+    bodyEl.querySelectorAll("pre code").forEach((b) => {
+      try {
+        hl.highlightElement(b);
+      } catch {}
+    });
+  }
+
+  if (citeBibData && citeBibData.length > 0 && /\[[^\]]*@/.test(content)) {
+    await processCitations(bodyEl);
+  }
+
+  return iframe;
+}
+
+// Snapshot a rendered print iframe as a standalone HTML document:
+// root-relative asset URLs (/css/…, /js/…, /api/…) only resolve against this
+// app's own server, so they're qualified with the page origin to keep
+// working once the document leaves the iframe (opened standalone in the
+// desktop print fallback).
+function getPrintableHtml(iframe) {
+  const doc = iframe?.contentDocument;
   if (!doc) return null;
   const origin = window.location.origin;
   const html = doc.documentElement.outerHTML.replace(
@@ -3175,16 +3271,29 @@ function getPrintableHtml() {
   return `<!DOCTYPE html>\n${html}`;
 }
 
-// Print the preview pane's content. The desktop app's WKWebView only exposes
-// window.print() on the top-level window (which would print the whole app,
-// not just the preview), so there we hand the rendered HTML to the native
-// bridge, which opens it in the OS default browser and prints it from there.
-// In a plain browser tab the preview iframe can print itself directly.
-function printPreview() {
-  const iframe = document.getElementById("preview");
-  if (!iframe || !iframe.contentWindow) return;
+// Print the current document (wikilinks inlined — see buildPrintDocument).
+// The desktop app's WKWebView only exposes window.print() on the top-level
+// window (which would print the whole app, not just the document), so there
+// we hand the rendered HTML to the native bridge, which opens it in the OS
+// default browser and prints it from there. In a plain browser tab the print
+// iframe can print itself directly.
+async function printPreview() {
+  if (!currentFilePath) {
+    showStatus("Open a file to print", true);
+    return;
+  }
+  let iframe;
+  try {
+    showStatus("Preparing document for print…");
+    iframe = await buildPrintDocument();
+  } catch (err) {
+    showStatus(`Error preparing print: ${err.message || err}`, true);
+    return;
+  }
+  if (!iframe) return;
+
   if (window.pywebview?.api?.print_preview) {
-    let html = getPrintableHtml();
+    let html = getPrintableHtml(iframe);
     if (!html) {
       showStatus("Nothing to print");
       return;

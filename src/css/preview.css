@@ -3,6 +3,33 @@
     margin: 25mm;
 }
 
+@media print {
+    /* Keep images and tables from being split across a page boundary. */
+    #hp-body img,
+    #hp-body table {
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }
+
+    /* Always start a new page at a top-level (# ) heading, except the very
+       first one — forcing a break there just produces a blank leading page.
+       Some print engines suppress a forced break at the very top of the
+       document on their own, but not reliably across engines, so the first
+       h1 is excluded outright rather than depending on that. */
+    #hp-body h1:not(:first-of-type) {
+        break-before: page;
+        page-break-before: always;
+    }
+
+     #hp-body img {
+        max-width: 40%;
+        height: auto;
+        float: right;
+        margin-left: 0.5em;
+    }
+
+}
+
 body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     line-height: 1.5;

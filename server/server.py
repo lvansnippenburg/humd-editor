@@ -1746,8 +1746,13 @@ class Handler(SimpleHTTPRequestHandler):
         elif path == "/api/pandoc":
             try:
                 data = self.read_body()
+                markdown = data["markdown"]
+                if data.get("inline_wikilinks"):
+                    vault = load_settings().get("vaultPath")
+                    if vault:
+                        markdown = inline_wikilinks(markdown, vault, data.get("file_path"))
                 html = render_pandoc(
-                    data["markdown"],
+                    markdown,
                     data.get("file_path"),
                     data.get("number_sections", True),
                 )
