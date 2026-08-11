@@ -556,11 +556,26 @@ def _find_pandoc() -> str:
     return found
 
 
+# Matches only a front-matter block at the very start of the document. Used
+# to strip a document's own front matter before handing it to Pandoc: Pandoc's
+# yaml_metadata_block extension (part of its default "markdown" reader) will
+# also try to parse any OTHER "---"-delimited block later in the body as YAML
+# metadata if it's preceded by a blank line — which misfires on an ordinary
+# horizontal-rule divider followed by prose/heading text, raising a parse
+# error. We strip our own front matter ourselves and disable both
+# yaml_metadata_block and multiline_tables in Pandoc's --from= extensions (see
+# render_pandoc/export_docx): multiline_tables is also on by default and,
+# separately, treats two "---"-only divider lines anywhere in the body as the
+# start/end of a table, silently mangling everything between them.
+_FRONTMATTER_RE = re.compile(r"\A---\n.*?\n(?:---|\.\.\.)[ \t]*\n?", re.DOTALL)
+
+
 def render_pandoc(markdown: str, file_path: str | None, number_sections: bool = True) -> str:
     """Render markdown via system pandoc, return HTML body fragment."""
+    markdown = _FRONTMATTER_RE.sub("", markdown)
     cmd = [
         _find_pandoc(),
-        "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables+lists_without_preceding_blankline+hard_line_breaks",
+        "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables+lists_without_preceding_blankline+hard_line_breaks-yaml_metadata_block-multiline_tables",
         "--to=html5",
         "--standalone=false",
     ]
@@ -579,8 +594,6 @@ def render_pandoc(markdown: str, file_path: str | None, number_sections: bool = 
 # Code regions skipped during wikilink inlining, so an example [[link]] inside
 # a fence or inline code span isn't replaced with a note body.
 _CODE_SPAN_RE = re.compile(r"```.*?```|~~~.*?~~~|`[^`\n]+`", re.DOTALL)
-
-_FRONTMATTER_RE = re.compile(r"\A---\n.*?\n(?:---|\.\.\.)[ \t]*\n?", re.DOTALL)
 
 
 def inline_wikilinks(
@@ -652,6 +665,7 @@ def export_docx(markdown: str, source_path: str | None = None) -> bytes:
     if not csl_path:
         raise ValueError("CSL style path not configured in settings")
 
+    markdown = _FRONTMATTER_RE.sub("", markdown)
     vault = settings.get("vaultPath")
     if vault:
         markdown = inline_wikilinks(markdown, vault, source_path)
@@ -661,7 +675,7 @@ def export_docx(markdown: str, source_path: str | None = None) -> bytes:
         "-C",  # citeproc
         f"--bibliography={bib_path}",
         f"--csl={csl_path}",
-        "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables+lists_without_preceding_blankline+hard_line_breaks",
+        "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables+lists_without_preceding_blankline+hard_line_breaks-yaml_metadata_block-multiline_tables",
         "--to=docx",
     ]
     # the command to export to pdf
