@@ -3208,6 +3208,9 @@ async function buildPrintDocument() {
   });
 
   const doc = iframe.contentDocument;
+  // Browsers use the document title to suggest a filename when saving the
+  // print output as a PDF, so give it the note's name (no path, no ".md").
+  doc.title = filePath.split("/").pop().replace(/\.md$/, "");
   const bodyEl = doc.getElementById("hp-body");
   bodyEl.innerHTML = bodyHtml;
   // Rendered via Pandoc, which numbers sections itself when requested.
