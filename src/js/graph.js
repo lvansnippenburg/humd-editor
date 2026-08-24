@@ -30,30 +30,40 @@ export function buildGraphData(linkIndex) {
     // Extract folder name from path
     const parts = filePath.split(/[\\/]/);
     const folder = parts.length >= 2 ? parts[parts.length - 2] : "";
-    
-    // Check if this folder should be included based on settings
-    const folderMatch = graphFolderColors.find(config => config.folder === folder);
-    
-    // Skip files not in the configured folders
-    if (!folderMatch) {
+
+    // Only include notes inside a folder (at any level) whose name starts
+    // with "z_" — the vault's convention for graph/tag-relevant material.
+    const inZFolder = parts.slice(0, -1).some((seg) => seg.startsWith("z_"));
+    if (!inZFolder) {
       continue;
     }
-    
+
+    // graphFolderColors still drives per-folder coloring when configured;
+    // folders without an explicit entry fall back to a default color.
+    const folderMatch = graphFolderColors.find(config => config.folder === folder);
+
     const node = {
       id: key,
       label: label || key,
       type: "document",
       radius: 8,
       folder: folder,
-      color: folderMatch.color,
+      color: folderMatch ? folderMatch.color : "#999",
     };
     nodes.push(node);
     nodeMap.set(key, node);
   }
 
-  // Create tag nodes from tag_index
+  // Create tag nodes from tag_index — only for tags with at least one file
+  // already included as a document node (i.e. inside a "z_" folder), so tags
+  // used solely outside those folders don't show up as disconnected nodes.
   if (linkIndex.tag_index) {
     for (const [tag, tagData] of Object.entries(linkIndex.tag_index)) {
+      const docKeys = (tagData.files || [])
+        .map(normKey)
+        .filter((docKey) => nodeMap.has(docKey));
+      if (docKeys.length === 0) continue;
+
       const node = {
         id: `tag:${tag}`,
         label: `#${tagData.name || tag}`,
@@ -63,17 +73,13 @@ export function buildGraphData(linkIndex) {
       nodes.push(node);
       nodeMap.set(node.id, node);
 
-      // Link documents to this tag
-      for (const filePath of tagData.files || []) {
-        const docKey = normKey(filePath);
-        if (nodeMap.has(docKey)) {
-          links.push({
-            source: docKey,
-            target: node.id,
-            type: "tag-link",
-            strength: 0.5,
-          });
-        }
+      for (const docKey of docKeys) {
+        links.push({
+          source: docKey,
+          target: node.id,
+          type: "tag-link",
+          strength: 0.5,
+        });
       }
     }
   }

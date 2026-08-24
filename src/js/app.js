@@ -1005,6 +1005,7 @@ function setupEventListeners() {
       highlightProofreadSnippet(li.dataset.original, li);
     }
   });
+  document.getElementById("insert-translation-btn").addEventListener("click", insertTranslationBelow);
   document
     .getElementById("editor-search-input")
     .addEventListener("keydown", handleEditorSearchKeydown);
@@ -4168,18 +4169,33 @@ function expandTag(tagName) {
   li.scrollIntoView({ block: "nearest" });
 }
 
+// Whether `filePath` lives inside a folder (at any level) whose name starts
+// with "z_" — the vault's convention for tags/graph-relevant material.
+function isInZFolder(filePath) {
+  const parts = String(filePath).split(/[\\/]/);
+  return parts.slice(0, -1).some((seg) => seg.startsWith("z_"));
+}
+
 function buildTagsPanel() {
   const list = document.getElementById("tags-list");
   list.innerHTML = "";
 
-  // Sort real tags alphabetically (case-insensitive).
-  const entries = Object.values(tagIndexCache);
+  // Only tags/files inside a "z_"-prefixed folder are shown. Recompute each
+  // tag's file list and count from that subset, dropping tags left empty.
+  const entries = Object.values(tagIndexCache)
+    .map((entry) => {
+      const files = (entry.files || []).filter(isInZFolder);
+      return { ...entry, files, count: files.length };
+    })
+    .filter((entry) => entry.count > 0);
   entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+
+  const untagged = untaggedCache.filter(isInZFolder);
 
   // Pin a synthetic "#notag" entry to the top for files with no tags.
   const rows = [];
-  if (untaggedCache.length > 0) {
-    rows.push({ name: "notag", count: untaggedCache.length, files: untaggedCache });
+  if (untagged.length > 0) {
+    rows.push({ name: "notag", count: untagged.length, files: untagged });
   }
   rows.push(...entries);
 
@@ -5001,6 +5017,7 @@ async function runProofread(usePeel = false) {
     `${isSelection ? "Selected text" : "Whole document"} (${text.length} chars)`;
   loading.style.display = "";
   suggestions.style.display = "none";
+  document.getElementById("insert-translation-btn").style.display = "none";
   list.innerHTML = "";
   panel.style.display = "";
 
@@ -5123,6 +5140,7 @@ async function runTranslate() {
     `${isSelection ? "Selected text" : "Whole document"} → ${targetLang} (${text.length} chars)`;
   loading.style.display = "";
   suggestions.style.display = "none";
+  document.getElementById("insert-translation-btn").style.display = "none";
   list.innerHTML = "";
   panel.style.display = "";
 
@@ -5141,6 +5159,7 @@ async function runTranslate() {
         for (const item of res.suggestions) {
           list.appendChild(buildSuggestionItem(item));
         }
+        document.getElementById("insert-translation-btn").style.display = "";
       }
     } else {
       // The model didn't return the expected array; show whatever came back.
@@ -5269,6 +5288,34 @@ function applyProofreadSuggestion(li) {
     btn.textContent = "Applied";
     btn.disabled = true;
   }
+}
+
+// Insert the full translation (all suggestion segments joined into one block)
+// directly under the translated selection, surrounded by a blank line on
+// each side, leaving the original text untouched.
+function insertTranslationBelow() {
+  const parts = [];
+  document.querySelectorAll("#proofread-list li[data-suggestion]").forEach((li) => {
+    parts.push(li.dataset.suggestion);
+  });
+  const translated = parts.join("\n\n");
+  if (!translated) return;
+
+  const editor = document.getElementById("editor");
+  const range = proofreadRange || { start: editor.selectionEnd, end: editor.selectionEnd };
+  // Drop any newlines the document already had right after the selection, so
+  // inserting our own leading/trailing blank line can't stack into two.
+  const afterMatch = editor.value.slice(range.end).match(/^\n+/);
+  const existingNewlines = afterMatch ? afterMatch[0].length : 0;
+  const insertText = `\n\n${translated}\n\n`;
+  editorReplace(editor, range.end, range.end + existingNewlines, insertText);
+
+  const insertStart = range.end + 2; // past the leading blank line
+  editor.setSelectionRange(insertStart, insertStart + translated.length);
+  editor.scrollTop = editor.scrollHeight * (insertStart / Math.max(1, editor.value.length));
+
+  closeProofreadPanel();
+  showStatus("Translation inserted below");
 }
 
 // Build an index mapping each character position in the whitespace-normalised

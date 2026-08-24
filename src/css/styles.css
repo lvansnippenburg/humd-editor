@@ -1658,6 +1658,25 @@ dialog h2 {
     opacity: 0.6;
 }
 
+.proofread-insert-below {
+    display: block;
+    width: calc(100% - 24px);
+    margin: 4px 12px 12px;
+    padding: 6px 10px;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.proofread-insert-below:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+
 #proofread-list li.applied {
     opacity: 0.55;
 }
