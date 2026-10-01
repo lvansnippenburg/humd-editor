@@ -3,6 +3,7 @@
 - [Links](#links)
 - [Footnotes](#footnotes)
 - [Tables](#tables)
+- [Rich-text editing](#rich-text-editing)
 - [AI assistance](#ai-assistance)
 - [Version control](#version-control)
 - [Tips](#tips)
@@ -103,6 +104,28 @@ This will render as:
 |   12  |  12  |    12   |    12  |
 |  123  |  123 |   123   |   123  |
 |    1  |    1 |     1   |     1  |
+
+## Rich-text editing
+
+The **rich-text** button in the editor toolbar (just left of the preview toggle) swaps the Markdown source view for a **WYSIWYG** editor, where headings, bold, lists, quotes, tables, links and the humanities syntax below are shown formatted and edited directly. Click it again to return to the Markdown source. It is per editor pane.
+
+The Markdown file stays the single source of truth: every rich-text edit is written straight back to it, so the preview, saving, autosave, the outline and version control all keep working. YAML front matter is kept intact (hidden while you edit, re-attached automatically).
+
+The custom syntax round-trips through the rich-text view:
+
+| Syntax | In rich-text |
+| --- | --- |
+| `==highlight==` | highlighted text |
+| `^superscript^`, `~subscript~` | raised / lowered text |
+| `[[wikilink]]` | a link — click it to open the note |
+| `^[footnote]` and `[^ref]` footnotes | a small numbered marker; the text is shown and edited in the **Links** panel in the sidebar, not inline |
+| `#tags` | left as plain text |
+
+Notes:
+
+- Reference-style footnotes (`[^id]` with a matching `[^id]:` line) are converted to inline `^[…]` footnotes the first time you edit the document in rich-text mode.
+- Switching to rich-text may lightly tidy Markdown (e.g. `*` vs `-` bullet markers). Meaning is unchanged.
+- `<!-- comments -->` and the `[[`/`#`/`\@` autocomplete popups are available in source mode only.
 
 ## AI assistance
 
