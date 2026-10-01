@@ -941,6 +941,8 @@ function setupEventListeners() {
 
   window.addEventListener("resize", updateTabScrollButtons, { passive: true });
 
+  document.getElementById("file-tree-container").addEventListener("keydown", onFileTreeKeydown);
+
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "e") {
       e.preventDefault();
@@ -1550,6 +1552,46 @@ async function revealFileInTree(filePath) {
       nestedUl.dataset.loaded = "true";
     }
   }
+}
+
+// Arrow up/down in the focused file tree opens the previous/next visible file.
+// Loads are serialized and only the latest target is opened, so holding an
+// arrow key skips over files instead of queueing a load for each one.
+let fileTreeNavTarget = null;
+let fileTreeNavBusy = false;
+
+function onFileTreeKeydown(e) {
+  if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+  if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+  if (e.target.closest("input")) return; // inline rename / new-file input
+  e.preventDefault();
+
+  const container = document.getElementById("file-tree-container");
+  // offsetParent is null for items hidden inside collapsed folders.
+  const items = [...container.querySelectorAll(".file-item")].filter((el) => el.offsetParent !== null);
+  if (items.length === 0) return;
+  const idx = items.findIndex((el) => el.classList.contains("active"));
+  let next;
+  if (idx === -1) next = e.key === "ArrowDown" ? 0 : items.length - 1;
+  else next = Math.max(0, Math.min(items.length - 1, idx + (e.key === "ArrowDown" ? 1 : -1)));
+  if (next === idx) return;
+
+  // Move the highlight right away so repeated presses step from here.
+  items.forEach((el, i) => el.classList.toggle("active", i === next));
+  items[next].scrollIntoView({ block: "nearest" });
+  fileTreeNavTarget = items[next].dataset.path;
+  openFileTreeNavTarget();
+}
+
+async function openFileTreeNavTarget() {
+  if (fileTreeNavBusy) return;
+  fileTreeNavBusy = true;
+  while (fileTreeNavTarget) {
+    const path = fileTreeNavTarget;
+    fileTreeNavTarget = null;
+    await loadFile(path, { replaceUnedited: true });
+  }
+  fileTreeNavBusy = false;
 }
 
 function renderFileTree(nodes, container = null) {

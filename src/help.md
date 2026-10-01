@@ -29,6 +29,7 @@
 | `⌘⇧G` | Suggest tags from the vault |
 | `⌘F` | Search |
 | `⌘H` | Search and replace |
+| `↑` / `↓` in the file browser | Open the previous / next file |
 | `[[` | Suggests note names (for linking) |
 | `#` | suggests existing tags |
 | `↑` / `↓` | Move through the suggestions |
