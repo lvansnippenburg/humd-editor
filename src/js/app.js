@@ -783,6 +783,7 @@ async function initialize() {
                 isMedia: true,
                 mediaType,
                 isDirty: false,
+                edited: true, // restored from last session: keep on file-browser clicks
                 content: "",
               });
             } else {
@@ -791,6 +792,7 @@ async function initialize() {
                 id: `tab-${++tabCounter}`,
                 path,
                 isDirty: false,
+                edited: true, // restored from last session: keep on file-browser clicks
                 content,
                 undoStack: [{ value: content, start: 0, end: 0 }],
                 redoStack: [],
@@ -849,6 +851,7 @@ async function initialize() {
             isMedia: true,
             mediaType,
             isDirty: false,
+            edited: true, // restored from last session: keep on file-browser clicks
             content: "",
           });
         } else {
@@ -857,6 +860,7 @@ async function initialize() {
             id: `tab-${++tabCounter}`,
             path,
             isDirty: false,
+            edited: true, // restored from last session: keep on file-browser clicks
             content,
             undoStack: [{ value: content, start: 0, end: 0 }],
             redoStack: [],
@@ -1955,10 +1959,11 @@ async function openGraphTab() {
 }
 
 // True if the user changed the active tab's document since it was opened
-// (saving doesn't reset this, unlike isDirty).
+// (saving doesn't reset this, unlike isDirty). Tabs restored at startup are
+// flagged edited too, so they aren't replaced by a file-browser click.
 function activeTabWasEdited(tab) {
   if (tab.isGraph) return true; // never replace the graph view
-  if (tab.isMedia) return false; // viewers are read-only
+  if (tab.isMedia) return !!tab.edited; // viewers are read-only
   return isDirty || tab.isDirty || !!tab.edited;
 }
 
