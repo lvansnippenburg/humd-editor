@@ -80,10 +80,20 @@
 }
 /* preview.css supplies max-width/margin/padding/font/line-height/color for
    this element (rewritten from `body`) — this just makes it a full-height
-   click target so clicking below short content still places the cursor. */
+   click target so clicking below short content still places the cursor.
+   Content-box like the preview's <body>, so max-width gives the same line
+   length; the min-height subtracts preview.css's 20px top+bottom padding. */
 .milkdown .editor {
-  min-height: 100%;
-  box-sizing: border-box;
+  min-height: calc(100% - 40px);
+  box-sizing: content-box;
+}
+
+/* ProseMirror always wraps list-item text in a <p>; the preview only does so
+   for loose lists. Drop the paragraph margin in tight lists so items aren't
+   spaced apart like paragraphs. Looseness is decided per list (as the
+   preview does), not per item. */
+.milkdown .editor :is(ul, ol)[data-spread="false"] > li > p {
+  margin: 0;
 }
 
 /* ---- Wikilinks: an editor-only affordance (the preview renders them as

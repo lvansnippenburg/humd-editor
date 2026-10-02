@@ -25,6 +25,17 @@ const SCOPE_ROOT = ".milkdown-wrap";
 const EDITOR_ROOT = ".editor";
 const STYLE_EL_ID = "milkdown-preview-style";
 
+// The preview iframe is a fresh document: browser-default margins/padding
+// (paragraph spacing, heading margins, list and blockquote indentation),
+// content-box sizing and a 16px base font. The editor instead inherits the
+// app's global reset (`* { margin: 0; padding: 0; box-sizing: border-box }`)
+// and 13px UI font. Undo that inside the scope first, so preview.css and the
+// user's CSS (emitted after this, so they win) start from the same baseline.
+const BASELINE_CSS = `
+* { margin: revert; padding: revert; box-sizing: revert; }
+${EDITOR_ROOT} { font-size: 16px; }
+`;
+
 let previewCssText = null; // cached fetch of /css/preview.css
 let currentUserCss = "";
 
@@ -44,9 +55,11 @@ function render() {
       document.head.appendChild(s);
       return s;
     })();
-  const scoped = [rewriteForEditorRoot(previewCssText), rewriteForEditorRoot(currentUserCss)].join(
-    "\n",
-  );
+  const scoped = [
+    BASELINE_CSS,
+    rewriteForEditorRoot(previewCssText),
+    rewriteForEditorRoot(currentUserCss),
+  ].join("\n");
   el.textContent = `@scope (${SCOPE_ROOT}) {\n${scoped}\n}`;
 }
 
