@@ -4,6 +4,7 @@
 - [Footnotes](#footnotes)
 - [Tables](#tables)
 - [Rich-text editing](#rich-text-editing)
+- [Searching](#searching)
 - [AI assistance](#ai-assistance)
 - [Version control](#version-control)
 - [Tips](#tips)
@@ -110,6 +111,8 @@ This will render as:
 
 The **rich-text** button in the editor toolbar (just left of the preview toggle) swaps the Markdown source view for a **WYSIWYG** editor, where headings, bold, lists, quotes, tables, links and the humanities syntax below are shown formatted and edited directly. Click it again to return to the Markdown source. It is per editor pane.
 
+The rich-text view uses the same styling as the preview — fonts, paragraph spacing, indentation of lists and quotes, and any CSS you entered under **Settings → Preview Styling** — so a document looks the same in both.
+
 The Markdown file stays the single source of truth: every rich-text edit is written straight back to it, so the preview, saving, autosave, the outline and version control all keep working. YAML front matter is kept intact (hidden while you edit, re-attached automatically).
 
 The custom syntax round-trips through the rich-text view:
@@ -127,6 +130,29 @@ Notes:
 - Reference-style footnotes (`[^id]` with a matching `[^id]:` line) are converted to inline `^[…]` footnotes the first time you edit the document in rich-text mode.
 - Switching to rich-text may lightly tidy Markdown (e.g. `*` vs `-` bullet markers). Meaning is unchanged.
 - `<!-- comments -->` and the `[[`/`#`/`\@` autocomplete popups are available in source mode only.
+
+## Searching
+
+Open the **Search** panel in the sidebar. The two buttons at the top choose how to search.
+
+### Words
+
+Finds every note containing the text you type (case-insensitive), with the matching lines underneath. Results update as you type. Click a note name to open it, or a matching line to jump straight to that line.
+
+### LLM search
+
+Ask a question in your own words — for example *"Why did the glassmakers move to Murano?"* — and press `Enter`. A language model running **locally on your Mac** reads the passages from your notes that best match the question and writes an answer, citing its sources as `[note.md:12]`. Click a citation, or one of the **Sources** listed under the answer, to open the note at that line. Nothing leaves your computer and your notes are never changed.
+
+How it finds passages: keyword matching (good for names and exact terms) combined with *semantic* matching, which also finds passages that say the same thing in other words, in several languages. The model only uses those passages: if they don't contain the answer, it says so — which means the retrieved passages lack it, not necessarily your notes.
+
+Good to know:
+
+- **Requirements:** a Mac with Apple silicon (M1 or later) and Python 3.9 or newer. See the README for details.
+- **First use takes a while.** The needed Python packages are installed automatically (about a minute), and the language model (several GB) and a small search model are downloaded once. The panel shows what is happening. Later questions start much faster: the model stays loaded until you quit the app.
+- **If installing fails**, the panel shows the error and the exact commands to install the packages by hand in Terminal.
+- One question is answered at a time. You can switch back to **Words** while an answer is being written; switching to **LLM Search** again shows it.
+- Notes in hidden folders (such as `.trash`) are not searched.
+- **Choosing another model:** add `"llmSearchModel": "<model>"` to `~/.humd-editor/settings.json`, where `<model>` is an MLX model on Hugging Face (e.g. `mlx-community/Qwen2.5-3B-Instruct-4bit` for a smaller, faster one). It is used from the next question on. The default is `mlx-community/Qwen2.5-7B-Instruct-4bit`.
 
 ## AI assistance
 
@@ -157,6 +183,8 @@ Commit messages are generated from the changes. If a push fails — usually beca
 ### Tips
 
 **Files and folders.** Use the **New file** and **New folder** buttons at the top of the Files panel to create items in the vault. Double-click (or simply rest the pointer on) a name to rename it. Drag a file or folder onto another folder to move it, or onto the trash to delete it. Dragging a note into the editor inserts a `[[wikilink]]` to it.
+
+**Browsing files.** Clicking a file in the Files panel opens it *in place of* the current tab if you haven't edited that document, so quickly looking through notes doesn't pile up tabs. A document you have edited — or one that was already open when the app started — keeps its tab, and the file opens in a new one. Images and PDFs you opened can't be edited, so they are always replaced (unless they were already open when the app started). After clicking in the Files panel you can also use `↑` / `↓` to open the previous or next file in the list (files inside collapsed folders are skipped).
 
 **Comments.** Press `⌘⇧M` to insert a comment. Comments are signed with the nickname you set under Settings, are shown as small markers in the margin of the preview, and never appear in exported documents.
 

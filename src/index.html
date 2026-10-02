@@ -197,6 +197,18 @@
                     <ul id="tags-list"></ul>
                 </div>
                 <div id="search-container">
+                    <div id="search-mode" class="search-mode">
+                        <button type="button" data-mode="words" class="active" title="Find notes containing the text">
+                            Words
+                        </button>
+                        <button
+                            type="button"
+                            data-mode="llm"
+                            title="Ask a question; a local language model answers from your notes"
+                        >
+                            LLM Search
+                        </button>
+                    </div>
                     <input
                         type="search"
                         id="search-input"

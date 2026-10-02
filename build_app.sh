@@ -78,6 +78,7 @@ date +%Y%m%d-%H%M%S > src/build_id.txt
     --noconfirm \
     --clean \
     --add-data "src:src" \
+    --add-data "server/mdsearch.py:server" \
     --icon "src/assets/icon.icns" \
     --collect-all webview \
     server/desktop.py

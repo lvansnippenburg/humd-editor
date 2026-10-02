@@ -491,6 +491,138 @@ def search_vault(
 
 
 # ---------------------------------------------------------------------------
+# LLM search (local model via server/mdsearch.py)
+# ---------------------------------------------------------------------------
+#
+# mdsearch.py runs as a long-lived worker process under a regular python3 (not
+# this process: the bundled .app has no pip, and the model takes several GB of
+# memory we'd rather keep out of the server). It installs its own dependencies
+# on first use. One question is answered at a time; the client starts it with
+# POST /api/llm-search and polls GET /api/llm-search-status for progress.
+
+if getattr(sys, "frozen", False):
+    MDSEARCH_PATH = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "server" / "mdsearch.py"
+else:
+    MDSEARCH_PATH = Path(__file__).parent / "mdsearch.py"
+
+_PYTHON_DIRS = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/Library/Frameworks/Python.framework/Versions/Current/bin",
+    str(Path.home() / ".local" / "bin"),
+    "/usr/bin",
+]
+
+
+def _find_python() -> str:
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+    search = os.environ.get("PATH", "")
+    for d in _PYTHON_DIRS:
+        if d not in search.split(os.pathsep):
+            search += os.pathsep + d
+    found = shutil.which("python3", path=search)
+    if not found:
+        raise FileNotFoundError(
+            "LLM search needs Python 3.9 or newer, which was not found. Install it "
+            "from https://www.python.org or with `brew install python`, then try again."
+        )
+    return found
+
+
+class LlmSearch:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.proc = None
+        self.job = {"state": "idle"}
+        self.job_id = 0
+
+    def _spawn(self):
+        self.proc = subprocess.Popen(
+            [_find_python(), "-u", str(MDSEARCH_PATH), "--serve"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+        )
+        threading.Thread(target=self._read, args=(self.proc,), daemon=True).start()
+
+    def _read(self, proc):
+        """Apply the worker's events to the current job."""
+        fatal = None
+        for line in proc.stdout:
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            with self.lock:
+                job, kind = self.job, ev.get("event")
+                if kind == "status":
+                    job["status"] = ev.get("message", "")
+                elif kind == "sources":
+                    root = job.get("vault", "")
+                    job["sources"] = [
+                        {**s, "path": os.path.join(root, s["file"])}
+                        for s in ev.get("sources", [])
+                    ]
+                elif kind == "token":
+                    job["answer"] = job.get("answer", "") + ev.get("text", "")
+                elif kind == "done":
+                    if ev.get("answer"):
+                        job["answer"] = ev["answer"]
+                    job["state"] = "done"
+                elif kind in ("error", "fatal"):
+                    job["state"] = "error"
+                    job["error"] = ev.get("message", "LLM search failed")
+                    if kind == "fatal":
+                        fatal = job["error"]
+        proc.wait()
+        with self.lock:
+            if self.proc is proc:
+                self.proc = None
+            if self.job.get("state") == "running":
+                self.job["state"] = "error"
+                self.job["error"] = fatal or (
+                    f"The LLM search process stopped unexpectedly (exit code {proc.returncode})."
+                )
+
+    def start(self, vault: str, query: str, model: str | None):
+        with self.lock:
+            if self.job.get("state") == "running":
+                raise RuntimeError("Still answering the previous question — please wait.")
+            self.job_id += 1
+            self.job = {
+                "id": self.job_id,
+                "state": "running",
+                "vault": vault,
+                "query": query,
+                "status": "Starting LLM search …",
+                "sources": [],
+                "answer": "",
+            }
+            try:
+                if self.proc is None or self.proc.poll() is not None:
+                    self._spawn()
+                req = {"vault": vault, "query": query}
+                if model:
+                    req["model"] = model
+                self.proc.stdin.write(json.dumps(req) + "\n")
+                self.proc.stdin.flush()
+            except Exception as e:
+                self.job["state"] = "error"
+                self.job["error"] = str(e)
+            return self.job_id
+
+    def status(self) -> dict:
+        with self.lock:
+            return dict(self.job)
+
+
+llm_search = LlmSearch()
+
+
+# ---------------------------------------------------------------------------
 # Wikilink maintenance
 # ---------------------------------------------------------------------------
 
@@ -1522,6 +1654,8 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(search_vault(str(safe_path(vault_path)), query))
             except Exception as e:
                 self.send_error_json(str(e))
+        elif path == "/api/llm-search-status":
+            self.send_json(llm_search.status())
         elif path == "/api/zotero-cayw":
             # Proxy the Better BibTeX "cite as you write" picker. Doing this
             # server-side avoids the browser's flaky cross-origin long-poll to
@@ -1779,6 +1913,18 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(docx_bytes)))
                 self.end_headers()
                 self.wfile.write(docx_bytes)
+            except Exception as e:
+                self.send_error_json(str(e))
+
+        elif path == "/api/llm-search":
+            try:
+                data = self.read_body()
+                query = (data.get("q") or "").strip()
+                if not query:
+                    raise ValueError("Type a question first")
+                vault = str(safe_path(data.get("vault_path") or ""))
+                model = load_settings().get("llmSearchModel")
+                self.send_json({"id": llm_search.start(vault, query, model)})
             except Exception as e:
                 self.send_error_json(str(e))
 

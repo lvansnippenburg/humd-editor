@@ -995,6 +995,10 @@ function setupEventListeners() {
   });
 
   document.getElementById("search-input").addEventListener("input", onSearchInput);
+  document.getElementById("search-input").addEventListener("keydown", onSearchKeydown);
+  document.querySelectorAll("#search-mode button").forEach((btn) => {
+    btn.addEventListener("click", () => setSearchMode(btn.dataset.mode));
+  });
 
   document.getElementById("new-file-btn").addEventListener("click", promptNewFile);
   document.getElementById("new-folder-btn").addEventListener("click", promptNewFolder);
@@ -3851,10 +3855,173 @@ function switchSidebarTab(tab) {
 // ===== SEARCH PANEL =====
 
 let searchDebounceTimer = null;
+let searchMode = "words"; // "words" (live substring search) | "llm" (ask on Enter)
 
 function onSearchInput() {
+  if (searchMode !== "words") return;
   clearTimeout(searchDebounceTimer);
   searchDebounceTimer = setTimeout(runSearch, 200);
+}
+
+function onSearchKeydown(e) {
+  if (searchMode === "llm" && e.key === "Enter") {
+    e.preventDefault();
+    runLlmSearch();
+  }
+}
+
+function setSearchMode(mode) {
+  searchMode = mode;
+  document.querySelectorAll("#search-mode button").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.mode === mode);
+  });
+  const input = document.getElementById("search-input");
+  input.placeholder = mode === "llm" ? "Ask a question about your notes… (Enter)" : "Search notes…";
+  input.focus();
+  document.getElementById("search-results").innerHTML = "";
+  if (mode === "words") runSearch();
+  else resumeLlmSearch();
+}
+
+// ----- LLM search -----
+// The server runs a local model (server/mdsearch.py) on passages retrieved
+// from the vault. One question at a time; progress is polled.
+
+let llmPollGen = 0;
+
+function apiErrorMessage(error) {
+  const msg = error.message || String(error);
+  try {
+    return JSON.parse(msg).error || msg;
+  } catch {
+    return msg;
+  }
+}
+
+async function runLlmSearch() {
+  const query = document.getElementById("search-input").value.trim();
+  if (!query || !currentVaultPath) return;
+  try {
+    await apiPost("/api/llm-search", { vault_path: currentVaultPath, q: query });
+  } catch (error) {
+    showStatus(apiErrorMessage(error), true);
+    return;
+  }
+  pollLlmSearch();
+}
+
+// Show the current/last answer when switching to LLM mode (e.g. after
+// switching away mid-answer), and keep polling if it's still running.
+async function resumeLlmSearch() {
+  try {
+    const job = await apiFetch("/api/llm-search-status");
+    if (job.state === "idle" || searchMode !== "llm") return;
+    if (job.state === "running") pollLlmSearch();
+    else renderLlmJob(job);
+  } catch {
+    /* nothing to show */
+  }
+}
+
+async function pollLlmSearch() {
+  const gen = ++llmPollGen;
+  while (gen === llmPollGen) {
+    let job;
+    try {
+      job = await apiFetch("/api/llm-search-status");
+    } catch (error) {
+      showStatus(`LLM search failed: ${apiErrorMessage(error)}`, true);
+      return;
+    }
+    if (gen !== llmPollGen) return;
+    if (searchMode === "llm") renderLlmJob(job);
+    if (job.state !== "running") return;
+    await new Promise((r) => setTimeout(r, 400));
+  }
+}
+
+function openLlmSource(path, line) {
+  loadFile(path).then(() => scrollEditorToLine(line - 1));
+}
+
+// Answer text with [file:line] citations (also "[a.md:3, b.md:10]") turned
+// into links that open the note at that line.
+function renderLlmAnswer(text, sources) {
+  const pathFor = (file) =>
+    sources.find((s) => s.file === file)?.path || `${currentVaultPath}/${file}`;
+  return escapeHtml(text).replace(/\[([^[\]\n]+)\]/g, (whole, inner) => {
+    const parts = inner.split(/\s*[;,]\s*/);
+    const refs = parts.map((p) => p.match(/^(.+):(\d+)$/));
+    if (refs.some((m) => !m)) return whole;
+    const links = refs.map(
+      ([part, file, line]) =>
+        `<a href="#" class="llm-cite" data-path="${escapeHtml(pathFor(file))}" data-line="${line}">${part}</a>`,
+    );
+    return `[${links.join(", ")}]`;
+  });
+}
+
+function renderLlmJob(job) {
+  const results = document.getElementById("search-results");
+  results.innerHTML = "";
+  const box = document.createElement("li");
+  box.className = "llm-result";
+
+  const question = document.createElement("div");
+  question.className = "llm-question";
+  question.textContent = job.query || "";
+  box.appendChild(question);
+
+  if (job.state === "running") {
+    const status = document.createElement("div");
+    status.className = "llm-status";
+    status.textContent = job.status || "Working …";
+    box.appendChild(status);
+  }
+  if (job.answer) {
+    const answer = document.createElement("div");
+    answer.className = "llm-answer";
+    answer.innerHTML = renderLlmAnswer(job.answer, job.sources || []);
+    answer.querySelectorAll("a.llm-cite").forEach((a) => {
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        openLlmSource(a.dataset.path, Number(a.dataset.line));
+      });
+    });
+    box.appendChild(answer);
+  }
+  if (job.state === "error") {
+    const err = document.createElement("div");
+    err.className = "llm-error";
+    err.textContent = job.error || "LLM search failed";
+    box.appendChild(err);
+  }
+  results.appendChild(box);
+
+  if ((job.sources || []).length > 0) {
+    const head = document.createElement("li");
+    head.className = "llm-sources-head";
+    head.textContent = "Sources";
+    results.appendChild(head);
+    job.sources.forEach((s) => {
+      const li = document.createElement("li");
+      li.className = "search-file";
+      const name = document.createElement("div");
+      name.className = "search-file-name";
+      name.innerHTML =
+        `<span class="tree-file-icon">${getFileIcon(s.file)}</span>` +
+        `<span class="tree-item-name">${escapeHtml(s.file)}:${s.line}</span>`;
+      name.title = s.path;
+      name.addEventListener("click", () => openLlmSource(s.path, s.line));
+      li.appendChild(name);
+      const snippet = document.createElement("div");
+      snippet.className = "search-match";
+      snippet.textContent = s.text.length > 200 ? s.text.slice(0, 200) + "…" : s.text;
+      snippet.addEventListener("click", () => openLlmSource(s.path, s.line));
+      li.appendChild(snippet);
+      results.appendChild(li);
+    });
+  }
 }
 
 async function runSearch() {
