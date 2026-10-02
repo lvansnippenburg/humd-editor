@@ -17,12 +17,29 @@ To install Pandoc either go to https://pandoc.org/installing.html or use brew.
 brew install pandoc
 ```
 
+## Python
+
+**The app (`Humd Editor.app`) does not need Python:** it contains its own copy of Python. You only need to install Python yourself to run the editor from source, to build the app, or to use [LLM search](#llm-search-optional).
+
+**Running from source** needs Python 3.10 or newer (from https://www.python.org or `brew install python`). The server only uses Python's standard library, so nothing else has to be installed. Start it with:
+```
+./run.sh            # serves the editor on http://127.0.0.1:8082 and opens it in your browser
+./run.sh 8090       # same, on another port
+```
+To show the editor in its own window instead of a browser tab, install pywebview and start the desktop launcher:
+```
+python3 -m pip install pywebview
+python3 server/desktop.py
+```
+
+**Building the app** needs PyInstaller and pywebview in the same Python; `./build_app.sh` finds a suitable Python or creates a build environment. See the comments at the top of `build_app.sh`.
+
 ## LLM search (optional)
 
 The **LLM Search** option in the Search panel answers questions about your notes with a language model that runs locally (see [Help.md](src/help.md#llm-search) for how to use it). It is implemented by [`server/mdsearch.py`](server/mdsearch.py) and needs:
 
 - a Mac with **Apple silicon** (it uses Apple's MLX), and
-- **Python 3.9 or newer** (`python3`). From source the app uses the Python that runs the server; the bundled app looks for `python3` in the usual places (`/opt/homebrew/bin`, `/usr/local/bin`, python.org's framework). Get it from https://www.python.org or with `brew install python`.
+- **Python 3.9 or newer** (`python3`), also when you use the app, because the app's built-in Python can't install packages. From source the editor uses the Python that runs the server; the app looks for `python3` in the usual places (`/opt/homebrew/bin`, `/usr/local/bin`, python.org's framework). Get it from https://www.python.org or with `brew install python`.
 
 On first use the required packages — `mlx-lm`, and `fastembed` for semantic matching — are installed automatically into a private environment at `~/.humd-editor/mdsearch-venv`, so your own Python installation is left untouched. If that fails, the app shows the error and these commands, which you can also run yourself:
 ```
