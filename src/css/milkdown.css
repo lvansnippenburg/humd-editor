@@ -1,0 +1,157 @@
+/* Mechanics + app chrome for the Milkdown rich-text (WYSIWYG) editor.
+ *
+ * The actual document look (typography, headings, tables, code, highlights,
+ * footnotes, citations, and the user's own "Preview Styling" CSS) is NOT
+ * defined here — it's the same preview.css the Markdown preview uses,
+ * injected scoped to `.milkdown-wrap .editor` at runtime by
+ * src/js/preview-style.js, so the two always match. This file only owns
+ * things the preview has no equivalent of: ProseMirror's own base rules, the
+ * editor's layout inside the pane, and editor-only affordances (wikilink
+ * pills, the footnote-marker hover state, the toggle button, the sidebar
+ * footnote panel).
+ */
+
+/* ---- ProseMirror base (vendored from @milkdown/prose) ---- */
+.milkdown .ProseMirror {
+  position: relative;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+  white-space: break-spaces;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0;
+  outline: none;
+}
+.milkdown .ProseMirror pre {
+  white-space: pre-wrap;
+}
+.milkdown .ProseMirror li {
+  position: relative;
+}
+.milkdown .ProseMirror-hideselection *::selection {
+  background: transparent;
+}
+.milkdown .ProseMirror-hideselection {
+  caret-color: transparent;
+}
+.milkdown .ProseMirror [draggable][contenteditable="false"] {
+  user-select: text;
+}
+.milkdown .ProseMirror-selectednode {
+  outline: 2px solid var(--accent);
+}
+.milkdown img.ProseMirror-separator {
+  display: inline !important;
+  border: none !important;
+  margin: 0 !important;
+}
+.milkdown .ProseMirror-gapcursor {
+  display: none;
+  pointer-events: none;
+  position: absolute;
+}
+.milkdown .ProseMirror-gapcursor::after {
+  content: "";
+  display: block;
+  position: absolute;
+  top: -2px;
+  width: 20px;
+  border-top: 1px solid var(--text-primary);
+  animation: ProseMirror-cursor-blink 1.1s steps(2, start) infinite;
+}
+.milkdown .ProseMirror-focused .ProseMirror-gapcursor {
+  display: block;
+}
+@keyframes ProseMirror-cursor-blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+/* ---- Layout: fill the pane, scroll internally ---- */
+.milkdown-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-primary);
+}
+.milkdown {
+  height: 100%;
+  overflow-y: auto;
+}
+/* preview.css supplies max-width/margin/padding/font/line-height/color for
+   this element (rewritten from `body`) — this just makes it a full-height
+   click target so clicking below short content still places the cursor. */
+.milkdown .editor {
+  min-height: 100%;
+  box-sizing: border-box;
+}
+
+/* ---- Wikilinks: an editor-only affordance (the preview renders them as
+   plain links, indistinguishable from any other link) ---- */
+.milkdown .editor a.wikilink {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dashed var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.milkdown .editor a.wikilink::before {
+  content: "🔗\FE0E";
+  font-size: 0.8em;
+  opacity: 0.6;
+  margin-right: 2px;
+}
+
+/* Footnote marker: preview.css sizes `sup.footnote-ref`; this only adds the
+   interactivity the preview's version (a real <a> to the footnotes section)
+   gets for free — the body itself lives in the Links sidebar panel, not
+   inline, so clicking it opens that instead of jumping in-place. */
+.milkdown .editor sup.footnote-ref {
+  cursor: pointer;
+  color: var(--accent);
+  user-select: none;
+}
+.milkdown .editor sup.footnote-ref:hover {
+  text-decoration: underline;
+}
+
+/* Raw HTML / comment nodes: keep visible but muted (edit them in source mode). */
+.milkdown .editor .html {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  color: var(--text-secondary);
+}
+
+/* ---- Toolbar toggle button state ---- */
+.wysiwyg-toggle-btn.active {
+  color: var(--accent);
+}
+
+/* ---- Footnotes section in the Links sidebar panel ---- */
+.footnote-panel-item {
+  padding: 4px 10px 8px;
+}
+.footnote-panel-item .fn-num {
+  font-weight: 700;
+  color: var(--accent);
+  font-size: 11px;
+}
+.footnote-panel-item textarea {
+  width: 100%;
+  margin-top: 3px;
+  padding: 5px 7px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  resize: vertical;
+  min-height: 2.4em;
+  box-sizing: border-box;
+}
+.footnote-panel-item textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}

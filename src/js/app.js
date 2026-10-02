@@ -14,6 +14,18 @@ import {
   COMMENT_BALLOON_SVG,
 } from "/js/markdown.js";
 import { renderGraph, graphFolderColors } from "/js/graph.js";
+import {
+  enableWysiwyg,
+  disableWysiwyg,
+  isWysiwygActive,
+  isWysiwygBusy,
+  syncWysiwygFromTextarea,
+  setWysiwygViewVisible,
+  getWysiwygFootnotes,
+  setWysiwygFootnoteContent,
+  setWysiwygNumberSections,
+} from "/js/wysiwyg.js";
+import { setPreviewStyleUserCss } from "/js/preview-style.js";
 
 // ===== STATE =====
 
@@ -370,6 +382,12 @@ function setupPaneEventListeners(pane) {
   pane.containerEl.querySelector(".suggest-tags-btn").addEventListener("click", runSuggestTags);
   pane.containerEl.querySelector(".export-docx-btn").addEventListener("click", exportToWord);
 
+  pane.containerEl.querySelector(".wysiwyg-toggle-btn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    switchActivePane(pane.id);
+    toggleWysiwygForPane(pane);
+  });
+
   pane.containerEl
     .querySelector(".tab-scroll-left")
     .addEventListener("click", () => scrollTabBar(-1));
@@ -539,6 +557,7 @@ async function closePane(pane) {
 
   const remainingPane = panes.find((p) => p.id !== pane.id);
 
+  if (isWysiwygActive(pane)) disableWysiwyg(pane);
   pane.containerEl.remove();
 
   const resizer = document.querySelector(".pane-resize-handle");
@@ -608,6 +627,7 @@ async function initialize() {
     createPane();
 
     currentUserCss = settings.userCss || "";
+    setPreviewStyleUserCss(currentUserCss); // WYSIWYG shares the preview's CSS
     currentSpellCheck = settings.spellCheck ?? true;
     currentUsePandoc = settings.usePandoc ?? false;
     currentNumberSections = settings.numberSections ?? true;
@@ -763,6 +783,7 @@ async function initialize() {
                 isMedia: true,
                 mediaType,
                 isDirty: false,
+                edited: true, // restored from last session: keep on file-browser clicks
                 content: "",
               });
             } else {
@@ -771,6 +792,7 @@ async function initialize() {
                 id: `tab-${++tabCounter}`,
                 path,
                 isDirty: false,
+                edited: true, // restored from last session: keep on file-browser clicks
                 content,
                 undoStack: [{ value: content, start: 0, end: 0 }],
                 redoStack: [],
@@ -829,6 +851,7 @@ async function initialize() {
             isMedia: true,
             mediaType,
             isDirty: false,
+            edited: true, // restored from last session: keep on file-browser clicks
             content: "",
           });
         } else {
@@ -837,6 +860,7 @@ async function initialize() {
             id: `tab-${++tabCounter}`,
             path,
             isDirty: false,
+            edited: true, // restored from last session: keep on file-browser clicks
             content,
             undoStack: [{ value: content, start: 0, end: 0 }],
             redoStack: [],
@@ -916,6 +940,8 @@ function setupEventListeners() {
   initResizableHandles();
 
   window.addEventListener("resize", updateTabScrollButtons, { passive: true });
+
+  document.getElementById("file-tree-container").addEventListener("keydown", onFileTreeKeydown);
 
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "e") {
@@ -1528,6 +1554,46 @@ async function revealFileInTree(filePath) {
   }
 }
 
+// Arrow up/down in the focused file tree opens the previous/next visible file.
+// Loads are serialized and only the latest target is opened, so holding an
+// arrow key skips over files instead of queueing a load for each one.
+let fileTreeNavTarget = null;
+let fileTreeNavBusy = false;
+
+function onFileTreeKeydown(e) {
+  if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+  if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+  if (e.target.closest("input")) return; // inline rename / new-file input
+  e.preventDefault();
+
+  const container = document.getElementById("file-tree-container");
+  // offsetParent is null for items hidden inside collapsed folders.
+  const items = [...container.querySelectorAll(".file-item")].filter((el) => el.offsetParent !== null);
+  if (items.length === 0) return;
+  const idx = items.findIndex((el) => el.classList.contains("active"));
+  let next;
+  if (idx === -1) next = e.key === "ArrowDown" ? 0 : items.length - 1;
+  else next = Math.max(0, Math.min(items.length - 1, idx + (e.key === "ArrowDown" ? 1 : -1)));
+  if (next === idx) return;
+
+  // Move the highlight right away so repeated presses step from here.
+  items.forEach((el, i) => el.classList.toggle("active", i === next));
+  items[next].scrollIntoView({ block: "nearest" });
+  fileTreeNavTarget = items[next].dataset.path;
+  openFileTreeNavTarget();
+}
+
+async function openFileTreeNavTarget() {
+  if (fileTreeNavBusy) return;
+  fileTreeNavBusy = true;
+  while (fileTreeNavTarget) {
+    const path = fileTreeNavTarget;
+    fileTreeNavTarget = null;
+    await loadFile(path, { replaceUnedited: true });
+  }
+  fileTreeNavBusy = false;
+}
+
 function renderFileTree(nodes, container = null) {
   if (!container) {
     container = document.getElementById("file-tree");
@@ -1587,7 +1653,7 @@ function renderFileTree(nodes, container = null) {
           dragDidOccur = false;
           return;
         }
-        loadFile(node.path);
+        loadFile(node.path, { replaceUnedited: true });
       });
       nameEl.addEventListener("dblclick", (e) => {
         e.stopPropagation();
@@ -1714,12 +1780,14 @@ async function switchToTab(tabId) {
 
   const graphContainer = document.getElementById("graph-container");
   const mediaContainer = document.getElementById("media-container");
+  const activePaneForView = panes.find((p) => p.id === activePaneId);
 
   if (tab.isMedia) {
     // Show an image/PDF in the read-only viewer; hide editor, preview, graph.
     currentFilePath = null;
     isDirty = false;
     editor.style.display = "none";
+    setWysiwygViewVisible(activePaneForView, false);
     preview.style.display = "none";
     if (graphContainer) graphContainer.style.display = "none";
     renderEditorCommentGutter(); // clear comment balloons from the previous doc
@@ -1732,6 +1800,7 @@ async function switchToTab(tabId) {
   } else if (tab.isGraph) {
     // Show graph tab
     editor.style.display = "none";
+    setWysiwygViewVisible(activePaneForView, false);
     if (mediaContainer) mediaContainer.style.display = "none";
     if (graphContainer) {
       graphContainer.style.display = "flex";
@@ -1774,7 +1843,7 @@ async function switchToTab(tabId) {
 
     // On a pane switch the pane's own textarea already holds this content;
     // skipping the no-op assignment preserves its caret and scroll position.
-    if (editor.value !== tab.content) editor.value = tab.content;
+    setEditorContent(tab.content);
     // Re-read the bibliography from disk in case it changed externally (e.g.
     // re-exported from Zotero) since it was last loaded.
     await loadCitations();
@@ -1830,6 +1899,7 @@ async function closeTab(tabId, skipSave = false) {
     } else {
       currentFilePath = null;
       isDirty = false;
+      exitWysiwyg(panes.find((p) => p.id === activePaneId));
       document.getElementById("note-tags").innerHTML = "";
       document.getElementById("editor").value = "";
       // Restore the editor view in case the closed tab was a media/graph viewer.
@@ -1860,6 +1930,7 @@ function closeFile() {
   activeTabId = null;
   currentFilePath = null;
   isDirty = false;
+  exitWysiwyg(panes.find((p) => p.id === activePaneId));
   document.getElementById("note-tags").innerHTML = "";
   document.getElementById("editor").value = "";
   document.getElementById("preview").srcdoc = "<p>No file open</p>";
@@ -1885,7 +1956,7 @@ function mediaTypeForPath(path) {
 }
 
 // Open an image/PDF in a read-only viewer tab (no text content, not editable).
-async function openMediaTab(path) {
+async function openMediaTab(path, replaceUnedited = false) {
   const tab = {
     id: `tab-${++tabCounter}`,
     path,
@@ -1894,7 +1965,7 @@ async function openMediaTab(path) {
     isDirty: false,
     content: "",
   };
-  tabs.push(tab);
+  if (!(replaceUnedited && replaceUneditedActiveTab(tab))) tabs.push(tab);
   await switchToTab(tab.id);
   showStatus(`Opened: ${path.split("/").pop()}`);
 }
@@ -1929,7 +2000,30 @@ async function openGraphTab() {
   await switchToTab(graphTab.id);
 }
 
-async function loadFile(path) {
+// True if the user changed the active tab's document since it was opened
+// (saving doesn't reset this, unlike isDirty). Tabs restored at startup are
+// flagged edited too, so they aren't replaced by a file-browser click.
+function activeTabWasEdited(tab) {
+  if (tab.isGraph) return true; // never replace the graph view
+  if (tab.isMedia) return !!tab.edited; // viewers are read-only
+  return isDirty || tab.isDirty || !!tab.edited;
+}
+
+// Swap the active tab for `newTab` in place when it was only opened to look at,
+// so browsing through files doesn't pile up tabs. Returns true if replaced; the
+// caller then activates newTab (activeTabId is cleared so no state is saved
+// back into the dropped tab).
+function replaceUneditedActiveTab(newTab) {
+  const cur = getActiveTab();
+  if (!cur || activeTabWasEdited(cur)) return false;
+  tabs.splice(tabs.indexOf(cur), 1, newTab);
+  activeTabId = null;
+  return true;
+}
+
+// replaceUnedited: open in place of the active tab if it hasn't been edited
+// (used for clicks in the file browser).
+async function loadFile(path, { replaceUnedited = false } = {}) {
   try {
     const existing = tabs.find((t) => t.path === path);
     if (existing) {
@@ -1939,7 +2033,7 @@ async function loadFile(path) {
 
     // Images and PDFs open in a read-only viewer rather than the text editor.
     if (mediaTypeForPath(path)) {
-      await openMediaTab(path);
+      await openMediaTab(path, replaceUnedited);
       return;
     }
 
@@ -1968,7 +2062,7 @@ async function loadFile(path) {
       undoStack: [initialSnap],
       redoStack: [],
     };
-    tabs.push(tab);
+    if (!(replaceUnedited && replaceUneditedActiveTab(tab))) tabs.push(tab);
 
     activeTabId = tabId;
     currentFilePath = path;
@@ -1976,7 +2070,7 @@ async function loadFile(path) {
     undoStack = [initialSnap];
     redoStack = [];
 
-    document.getElementById("editor").value = content;
+    setEditorContent(content);
     // Re-read the bibliography from disk in case it changed externally (e.g.
     // re-exported from Zotero) since it was last loaded.
     await loadCitations();
@@ -2097,10 +2191,97 @@ function getEditorContent() {
   return document.getElementById("editor").value;
 }
 
+// ===== RICH-TEXT (WYSIWYG) MODE =====
+//
+// Per pane. Milkdown mounts over the textarea; the textarea stays the source of
+// truth (see js/wysiwyg.js). Edits are pushed back through the textarea's own
+// `input` handler so nothing downstream needs to know rich-text mode exists.
+
+// Set the active editor's text, mirroring into the rich-text view when it's on
+// so tab switches / reloads / reverts stay in sync.
+function setEditorContent(content) {
+  const editor = document.getElementById("editor");
+  if (editor.value !== content) editor.value = content;
+  const pane = panes.find((p) => p.id === activePaneId);
+  if (pane && isWysiwygActive(pane)) {
+    syncWysiwygFromTextarea(pane);
+    // switchToTab flips the textarea back to display:block for document tabs.
+    setWysiwygViewVisible(pane, true);
+    if (activeSidebarTab === "links") buildLinksPanel();
+  }
+}
+
+function wysiwygButton(pane) {
+  return pane.containerEl.querySelector(".wysiwyg-toggle-btn");
+}
+
+// Leave rich-text mode (if on) and restore the toggle button. Used when a
+// document is closed out from under the pane.
+function exitWysiwyg(pane) {
+  if (!pane || !isWysiwygActive(pane)) return;
+  disableWysiwyg(pane);
+  const btn = wysiwygButton(pane);
+  if (btn) {
+    btn.classList.remove("active");
+    btn.title = "Switch to rich-text (WYSIWYG) editing";
+  }
+  if (activeSidebarTab === "links") buildLinksPanel();
+}
+
+async function toggleWysiwygForPane(pane) {
+  const btn = wysiwygButton(pane);
+  if (isWysiwygBusy(pane)) return;
+  if (isWysiwygActive(pane)) {
+    await disableWysiwyg(pane);
+    btn.classList.remove("active");
+    btn.title = "Switch to rich-text (WYSIWYG) editing";
+    pane.editorEl.focus();
+    if (activeSidebarTab === "links") buildLinksPanel();
+    return;
+  }
+  if (pane.id === activePaneId && !currentFilePath) {
+    showStatus("Open a document first", true);
+    return;
+  }
+  btn.classList.add("active");
+  btn.title = "Switch to Markdown source editing";
+  try {
+    await enableWysiwyg(pane, {
+      onChange: () => {
+        // Only the active pane owns the shared editor state; route rich-text
+        // edits through the textarea's input handler.
+        if (pane.id !== activePaneId) return;
+        pane.editorEl.dispatchEvent(new Event("input", { bubbles: true }));
+      },
+      onOpenWikilink: (target) => {
+        const path = findNoteByName(target);
+        if (path) loadFile(path);
+        else showStatus(`Note not found: ${target}`);
+      },
+      onFootnotesChanged: (focusNum) => {
+        const clicked = typeof focusNum === "number" && focusNum > 0;
+        if (clicked && activeSidebarTab !== "links") switchSidebarTab("links");
+        // Don't rebuild while the user is typing in a footnote field.
+        if (activeSidebarTab === "links" && (clicked || !document.getElementById("links-list").contains(document.activeElement))) {
+          buildLinksPanel(clicked ? focusNum : undefined);
+        }
+      },
+    });
+    const override = parseNumberSectionsOverride(pane.editorEl.value);
+    setWysiwygNumberSections(pane, override ?? currentNumberSections);
+  } catch (err) {
+    console.error("WYSIWYG init failed:", err);
+    showStatus("Rich-text editor failed to load", true);
+    btn.classList.remove("active");
+    btn.title = "Switch to rich-text (WYSIWYG) editing";
+  }
+}
+
 function onEditorInput() {
   if (!currentFilePath) return;
   isDirty = true;
   const cur = getActiveTab();
+  if (cur) cur.edited = true;
   if (cur && !cur.isDirty) {
     cur.isDirty = true;
     renderTabBar();
@@ -3022,6 +3203,7 @@ function applyUndoSnapshot(editor, snap) {
   const tab = getActiveTab();
   if (tab) {
     tab.content = snap.value;
+    tab.edited = true;
     if (!tab.isDirty) {
       tab.isDirty = true;
       renderTabBar();
@@ -3289,6 +3471,8 @@ async function updatePreview() {
     // counters (for the built-in renderer) don't double up.
     bodyEl.classList.toggle("pandoc", currentUsePandoc);
     bodyEl.classList.toggle("no-numbering", !effectiveNumberSections);
+    const wysiwygPane = panes.find((p) => p.id === activePaneId && isWysiwygActive(p));
+    if (wysiwygPane) setWysiwygNumberSections(wysiwygPane, effectiveNumberSections);
 
     // Restore citations in the DOM by walking text nodes and replacing placeholders.
     const walker = doc.createTreeWalker(bodyEl, NodeFilter.SHOW_TEXT);
@@ -3594,7 +3778,7 @@ async function reloadCleanTabsFromDisk() {
       if (content === t.content) continue;
       t.content = content;
       if (t.id === activeTabId) {
-        document.getElementById("editor").value = content;
+        setEditorContent(content);
         await updatePreview();
         renderEditorCommentGutter();
         if (activeSidebarTab === "links") buildLinksPanel();
@@ -3960,9 +4144,56 @@ function scrollPreviewToHeader(headerText) {
 
 // ===== LINKS PANEL =====
 
-function buildLinksPanel() {
+function buildLinksPanel(focusFootnoteNum) {
   const list = document.getElementById("links-list");
   list.innerHTML = "";
+
+  // When rich-text mode is on, footnote bodies live only in the Milkdown doc
+  // (hidden inline) — surface and edit them here.
+  const wysiwygPane = panes.find((p) => p.id === activePaneId && isWysiwygActive(p));
+  if (wysiwygPane) {
+    const footnotes = getWysiwygFootnotes(wysiwygPane);
+    const header = document.createElement("li");
+    header.className = "links-section";
+    header.textContent = "Footnotes";
+    list.appendChild(header);
+    if (footnotes.length === 0) {
+      const empty = document.createElement("li");
+      empty.className = "links-empty";
+      empty.textContent = "None";
+      list.appendChild(empty);
+    }
+    footnotes.forEach((fn, i) => {
+      const li = document.createElement("li");
+      li.className = "footnote-panel-item";
+      const num = document.createElement("span");
+      num.className = "fn-num";
+      num.textContent = `${i + 1}.`;
+      const ta = document.createElement("textarea");
+      ta.value = fn.content;
+      ta.rows = 2;
+      ta.spellcheck = true;
+      let t = null;
+      ta.addEventListener("input", () => {
+        clearTimeout(t);
+        t = setTimeout(() => setWysiwygFootnoteContent(wysiwygPane, fn.pos, ta.value), 250);
+      });
+      ta.addEventListener("blur", () => {
+        clearTimeout(t);
+        setWysiwygFootnoteContent(wysiwygPane, fn.pos, ta.value);
+      });
+      li.appendChild(num);
+      li.appendChild(ta);
+      list.appendChild(li);
+      if (focusFootnoteNum === i + 1) {
+        requestAnimationFrame(() => {
+          ta.focus();
+          ta.scrollIntoView({ block: "nearest" });
+        });
+      }
+    });
+  }
+
   if (!currentFilePath) {
     const li = document.createElement("li");
     li.className = "links-empty";
@@ -4839,6 +5070,7 @@ async function saveSettings() {
     }
 
     currentUserCss = newCss;
+    setPreviewStyleUserCss(currentUserCss); // WYSIWYG shares the preview's CSS
     currentSpellCheck = newSpellCheck;
     currentUsePandoc = newUsePandoc;
     currentNumberSections = newNumberSections;
@@ -5614,6 +5846,8 @@ function editorReplaceCurrent() {
   const query = document.getElementById("editor-search-input").value;
   updateEditorSearchResults();
   isDirty = true;
+  const tab = getActiveTab();
+  if (tab) tab.edited = true;
   updatePreview();
 }
 
@@ -5631,6 +5865,8 @@ function editorReplaceAll() {
   editor.value = newText;
   updateEditorSearchResults();
   isDirty = true;
+  const tab = getActiveTab();
+  if (tab) tab.edited = true;
   updatePreview();
   showStatus(`Replaced ${editorSearchMatches.length} occurrence(s)`);
 }

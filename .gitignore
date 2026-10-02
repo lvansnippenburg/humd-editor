@@ -39,3 +39,6 @@ CLAUDE.md
 .vscode
 .node_modules
 src/.link-index.json
+
+# Milkdown WYSIWYG build (node_modules already ignored above)
+wysiwyg-build/.npmcache

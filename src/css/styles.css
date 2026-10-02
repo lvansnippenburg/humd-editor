@@ -265,6 +265,11 @@ body[data-platform="ios"] .resize-handle {
     padding: 4px 0;
 }
 
+/* Focusable for arrow-key navigation; the active file shows the position. */
+#file-tree-container:focus {
+    outline: none;
+}
+
 #outline-container,
 #links-container,
 #tags-container,
