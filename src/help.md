@@ -83,8 +83,11 @@ You don't have to switch to the preview to follow a link: hold `⌘` (or `Ctrl`)
 Images are entered as links, but preceded by a `!`. For example: `[this is the logo of Humd Editor](assets/icon-32x32.png)`. Rendered this looks like: ![this is the logo of Humd Editor](assets/icon-32x32.png). There are options to format the image, [here](https://dzone.com/articles/how-to-style-images-with-markdown) are some suggestions and instructions. Remember however that the beauty of using Markdown is that you can concentrate on the text of your article, book, or thesis. Worry about the beauty later.
 
 ### Footnotes
-There are two ways to insert a footnote. The preferred way in our opinion is:
-`^[Here is the text of my footnote]`
+There are two ways to insert a footnote. The preferred way in our opinion is typing something like:
+```
+^[Here is the text of my footnote]
+```
+
 This is by far the easiest method, and you can just keep on typing. The footnote number will be generated automatically.
 
 The second way is to type `[^uniqueref]` at the spot where you want to create the footnote. Immediately under the paragraph, or anywhere you like, you can then type the actual content of the footnote.
