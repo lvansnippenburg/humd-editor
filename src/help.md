@@ -157,6 +157,17 @@ Good to know:
 - Notes in hidden folders (such as `.trash`) are not searched.
 - **Choosing another model:** add `"llmSearchModel": "<model>"` to `~/.humd-editor/settings.json`, where `<model>` is an MLX model on Hugging Face (e.g. `mlx-community/Qwen2.5-3B-Instruct-4bit` for a smaller, faster one). It is used from the next question on. The default is `mlx-community/Qwen2.5-7B-Instruct-4bit`.
 
+### ZotSeek: find sources in Zotero
+
+Select a sentence in the editor, open the **text actions** menu in the toolbar and choose **ZotSeek**. Your Zotero library is searched for publications that match what the sentence *says* — also when they use other words or another language — and the results appear in the side panel: title, author and year, the citation key, and the best-matching passage with the page in the PDF.
+
+- **Cite** adds the citation after the sentence, before its full stop: `… in 1291 [@molaSilkIndustryRenaissance2003].` Cite more results to add them to the same citation (`[@a; @b]`); if the sentence already ends with a citation, the key is added to it.
+- **Zotero Item** selects the item in Zotero; **PDF** opens the PDF at the matching page.
+
+The page number is *not* added to the citation: the page shown is the page in the PDF file, which often differs from the printed page number. Check the passage and add the page yourself, e.g. `[@molaSilkIndustryRenaissance2003, p. 45]`.
+
+This needs Zotero to be running with the **ZotSeek** plugin (with its MCP server enabled) and **Better BibTeX**, which provides the citation keys. Citation markup is ignored when searching, so you can select a sentence that already has footnotes or citations.
+
 ## AI assistance
 
 Three buttons in the toolbar use an AI model to help with the document you have open. The provider is configured under **Settings → Proofreading & translation** — choose either **Mistral** (remote; needs an API key) or **Ollama** (local; needs `ollama serve` running and a model pulled, so your text never leaves your machine). If Ollama is selected but not running, the app quietly falls back to Mistral and tells you so.

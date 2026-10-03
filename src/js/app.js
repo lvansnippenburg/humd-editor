@@ -55,7 +55,7 @@ let gitCommitInFlight = false; // serialise commit triggers (blur + timer)
 let gitAuthErrorShown = false; // only nag about credentials once per session
 let gitAutoCommitTimer = null; // 60-min periodic commit interval handle
 let proofreadRange = null; // { start, end } in the editor that proofreading targets
-let suggestionPanelMode = "proofread"; // "proofread" | "translate" — which feature owns the shared panel
+let suggestionPanelMode = "proofread"; // "proofread" | "translate" | "zotseek" — which feature owns the shared panel
 let previewVisible = true;
 let previewStale = false; // edits happened while preview was hidden; refresh on show
 let previewPosition = "right"; // "right" | "bottom" — where the preview pane sits
@@ -2632,6 +2632,7 @@ function showEditorActionsMenu(x, y) {
   const entries = [
     { label: "Translate", action: runTranslate },
     { label: "Proofread", action: runProofread },
+    { label: "ZotSeek", action: runZotSeek },
     { label: "Insert Comment", action: insertComment },
     null,
     { label: "Change Case", action: toggleSelectionCase },
@@ -5551,6 +5552,157 @@ const PROOFREAD_TYPE_LABELS = {
   passive: "Passive voice",
   structure: "Structure (PEE)",
 };
+
+// ===== ZOTSEEK (semantic search in the Zotero library) =====
+
+// Where Cite inserts: the searched sentence without its closing punctuation
+// (which is where the citation goes, so the anchor survives inserting it).
+// Kept as text + offset so it can be found again after other edits.
+let zotseekAnchor = null; // { text, start }
+
+// Strip citations, footnotes and Markdown markup so only the prose is searched.
+function zotseekQueryText(text) {
+  return text
+    .replace(/\^\[[^\]]*\]/g, " ") // inline footnotes
+    .replace(/\[\^[^\]]*\]/g, " ") // footnote references
+    .replace(/\[@[^\]]*\]/g, " ") // citations
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/\[\[([^\]|]*)(\|[^\]]*)?\]\]/g, "$1")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[*_=~^#>`]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function runZotSeek() {
+  if (!currentFilePath) {
+    showStatus("Open a document first", true);
+    return;
+  }
+  const editor = document.getElementById("editor");
+  const { selectionStart: start, selectionEnd: end } = editor;
+  const selected = editor.value.slice(start, end);
+  const query = zotseekQueryText(selected);
+  if (!query) {
+    showStatus("Select a sentence to find sources for it in Zotero", true);
+    return;
+  }
+  zotseekAnchor = { text: selected.replace(/[\s.,;:!?]+$/, ""), start };
+
+  const panel = document.getElementById("proofread-panel");
+  const loading = document.getElementById("proofread-loading");
+  const suggestions = document.getElementById("proofread-suggestions");
+  const list = document.getElementById("proofread-list");
+  panel.style.width = document.getElementById("sidebar").offsetWidth + "px";
+  suggestionPanelMode = "zotseek";
+  document.querySelector("#proofread-panel h3").textContent = "ZotSeek";
+  document.getElementById("proofread-scope").textContent =
+    `Sources for: “${query.length > 80 ? query.slice(0, 80) + "…" : query}”`;
+  loading.innerHTML = "<p>Searching your Zotero library…</p>";
+  loading.style.display = "";
+  suggestions.style.display = "none";
+  document.getElementById("insert-translation-btn").style.display = "none";
+  list.innerHTML = "";
+  panel.style.display = "";
+
+  try {
+    const res = await apiPost("/api/zotseek-search", { query });
+    if (res.warning) showStatus(res.warning, true);
+    if (!res.results.length) {
+      list.innerHTML =
+        "<li style='color: var(--text-secondary); padding: 16px;'>No matching sources found in your Zotero library.</li>";
+    }
+    for (const r of res.results) list.appendChild(buildZotSeekItem(r));
+    loading.style.display = "none";
+    suggestions.style.display = "";
+  } catch (err) {
+    loading.innerHTML = `<p style="color: var(--text-secondary); margin: 0; padding: 12px 16px; font-size: 12px;">${escapeHtml(apiErrorMessage(err))}</p>`;
+  }
+}
+
+function buildZotSeekItem(r) {
+  const li = document.createElement("li");
+  li.className = "zotseek-item";
+  const who = [r.authors, r.year].filter(Boolean).join(" ");
+  // Semantic similarity (0–1) between the sentence and the matching passage.
+  const sim = typeof r.similarity === "number" ? r.similarity : null;
+  const score =
+    sim === null && !r.keywordMatch
+      ? ""
+      : `<div class="zotseek-score" title="Similarity in meaning between your sentence and the passage (0–1); results are ranked by ZotSeek, combining meaning and keyword matches">` +
+        (sim !== null
+          ? `<span class="zotseek-bar"><span style="width:${Math.round(Math.min(1, Math.max(0, sim)) * 100)}%"></span></span>` +
+            `similarity ${sim.toFixed(2)}`
+          : "") +
+        (r.keywordMatch ? `<span class="zotseek-kw">keyword match</span>` : "") +
+        `</div>`;
+  const snippet = r.snippet.length > 300 ? r.snippet.slice(0, 300) + "…" : r.snippet;
+  li.innerHTML =
+    `<div class="zotseek-title">${escapeHtml(r.title || "(untitled)")}</div>` +
+    `<div class="zotseek-meta">${escapeHtml(who)}` +
+    (r.citekey ? ` · <code>@${escapeHtml(r.citekey)}</code>` : "") +
+    `</div>` +
+    score +
+    (r.fromFullText && snippet
+      ? `<div class="zotseek-snippet">${escapeHtml(snippet)}` +
+        (r.page ? ` <span class="zotseek-page">(PDF p. ${r.page})</span>` : "") +
+        `</div>`
+      : "") +
+    `<div class="proofread-actions">` +
+    `<button type="button" class="proofread-apply zs-cite"${r.citekey ? "" : " disabled title='No Better BibTeX citation key'"}>Cite</button>` +
+    (r.selectUrl ? ` <button type="button" class="proofread-apply zs-open">Zotero Item</button>` : "") +
+    (r.pdfUrl ? ` <button type="button" class="proofread-apply zs-pdf">PDF</button>` : "") +
+    `</div>`;
+  li.querySelector(".zs-cite").addEventListener("click", (e) => {
+    if (insertZotSeekCitation(r.citekey)) e.target.textContent = "Cited ✓";
+  });
+  li.querySelector(".zs-open")?.addEventListener("click", () => openExternalUrl(r.selectUrl));
+  li.querySelector(".zs-pdf")?.addEventListener("click", () => openExternalUrl(r.pdfUrl));
+  return li;
+}
+
+// Insert [@key] after the searched sentence, before its closing punctuation
+// ("… in 1291 [@key]."). If a citation already sits there, add the key to it
+// ("[@a; @key]") so citing several sources builds one citation.
+function insertZotSeekCitation(citekey) {
+  const editor = document.getElementById("editor");
+  const value = editor.value;
+  const a = zotseekAnchor;
+  let start = -1;
+  if (a) {
+    if (value.slice(a.start, a.start + a.text.length) === a.text) {
+      start = a.start;
+    } else {
+      // The document was edited: use the occurrence nearest the old position.
+      let best = -1;
+      for (let i = value.indexOf(a.text); i !== -1; i = value.indexOf(a.text, i + 1)) {
+        if (best === -1 || Math.abs(i - a.start) < Math.abs(best - a.start)) best = i;
+      }
+      start = best;
+    }
+  }
+  if (start === -1) {
+    showStatus("Couldn't find the selected sentence any more", true);
+    return false;
+  }
+  a.start = start;
+  // Insertion point: end of the sentence, or before a citation it ends with.
+  const ownCitation = a.text.match(/ ?\[@[^\]]*\]$/);
+  const pos = start + a.text.length - (ownCitation ? ownCitation[0].length : 0);
+  const existing = value.slice(pos).match(/^ ?\[(@[^\]]*)\]/);
+  if (existing) {
+    if (existing[1].split(/;\s*/).some((c) => c.trim().split(/[\s,]/)[0] === `@${citekey}`)) {
+      showStatus(`@${citekey} is already cited here`);
+      return true;
+    }
+    const close = pos + existing[0].length - 1; // the "]"
+    editorReplace(editor, close, close, `; @${citekey}`);
+  } else {
+    editorReplace(editor, pos, pos, ` [@${citekey}]`);
+  }
+  showStatus(`Cited @${citekey}`);
+  return true;
+}
 
 // Build a clickable suggestion <li> from a structured proofread item. The exact
 // source passage and its replacement are stashed in the dataset so a click can

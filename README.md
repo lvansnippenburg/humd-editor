@@ -34,6 +34,15 @@ python3 server/desktop.py
 
 **Building the app** needs PyInstaller and pywebview in the same Python; `./build_app.sh` finds a suitable Python or creates a build environment. See the comments at the top of `build_app.sh`.
 
+## ZotSeek (optional)
+
+The **ZotSeek** text action finds sources in your Zotero library for a selected sentence and inserts the citation (see [Help.md](src/help.md#zotseek-find-sources-in-zotero)). It needs, in Zotero:
+
+- the ZotSeek plugin, with its library indexed and its MCP server enabled in ZotSeek's preferences (the editor calls `http://localhost:23119/zotseek/mcp`), and
+- [Better BibTeX](https://retorque.re/zotero-better-bibtex/), which turns Zotero items into citation keys (also used by the `@` citation picker).
+
+Nothing else has to be installed in the editor, and all searching happens locally in Zotero.
+
 ## LLM search (optional)
 
 The **LLM Search** option in the Search panel answers questions about your notes with a language model that runs locally (see [Help.md](src/help.md#llm-search) for how to use it). It is implemented by [`server/mdsearch.py`](server/mdsearch.py) and needs:

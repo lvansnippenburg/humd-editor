@@ -1720,6 +1720,60 @@ dialog h2 {
     font-style: italic;
 }
 
+.zotseek-title {
+    font-weight: 600;
+}
+
+.zotseek-meta {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+
+.zotseek-score {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10.5px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+
+.zotseek-bar {
+    width: 60px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--hover-bg);
+    overflow: hidden;
+}
+
+.zotseek-bar > span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+}
+
+.zotseek-kw {
+    padding: 0 5px;
+    border-radius: 6px;
+    background: var(--hover-bg);
+}
+
+.zotseek-snippet {
+    font-size: 11px;
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+}
+
+.zotseek-page {
+    white-space: nowrap;
+}
+
+.proofread-apply:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
 .proofread-change {
     font-size: 11px;
     color: var(--text-secondary);

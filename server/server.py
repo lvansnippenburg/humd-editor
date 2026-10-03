@@ -623,6 +623,118 @@ llm_search = LlmSearch()
 
 
 # ---------------------------------------------------------------------------
+# ZotSeek: semantic search in the Zotero library
+# ---------------------------------------------------------------------------
+#
+# ZotSeek (a Zotero plugin) serves an MCP endpoint inside Zotero's local HTTP
+# server; its `search` tool returns papers with the best-matching passage. The
+# results carry Zotero item keys, which Better BibTeX's JSON-RPC API turns into
+# the citation keys used in documents ([@key]).
+
+ZOTERO_BASE = "http://127.0.0.1:23119"
+
+
+def _zotero_post(path: str, payload: dict, timeout: int = 60) -> dict:
+    req = urllib.request.Request(
+        ZOTERO_BASE + path,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={
+            # Zotero's server rejects a Content-Type with parameters (charset).
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = resp.read().decode("utf-8")
+    # MCP servers may answer as a server-sent event stream; take its data line.
+    if body.lstrip().startswith(("event:", "data:")):
+        body = next(
+            (l[5:].strip() for l in body.splitlines() if l.startswith("data:")), "{}"
+        )
+    return json.loads(body)
+
+
+def _zotseek_call(tool: str, arguments: dict) -> dict:
+    """Call a ZotSeek MCP tool; returns the tool's JSON result."""
+    msg = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": tool, "arguments": arguments},
+    }
+    try:
+        data = _zotero_post("/zotseek/mcp", msg)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise RuntimeError(
+                "ZotSeek was not found in Zotero. Install the ZotSeek plugin and "
+                "enable its MCP server in ZotSeek's preferences."
+            )
+        raise RuntimeError(f"ZotSeek error {e.code}: {e.read().decode('utf-8', 'replace')[:300]}")
+    except urllib.error.URLError:
+        raise RuntimeError("Zotero is not running. Start Zotero (with ZotSeek) and try again.")
+    if data.get("error"):
+        raise RuntimeError(f"ZotSeek: {data['error'].get('message', data['error'])}")
+    result = data.get("result") or {}
+    text = "".join(c.get("text", "") for c in result.get("content", []) if c.get("type") == "text")
+    if result.get("isError"):
+        raise RuntimeError(f"ZotSeek: {text or 'search failed'}")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        raise RuntimeError(f"Unexpected answer from ZotSeek: {text[:300]}")
+
+
+def _bbt_citation_keys(item_keys: list) -> dict:
+    """Map Zotero item keys to Better BibTeX citation keys (missing → absent)."""
+    data = _zotero_post(
+        "/better-bibtex/json-rpc",
+        {"jsonrpc": "2.0", "method": "item.citationkey", "params": [item_keys], "id": 1},
+        timeout=15,
+    )
+    return {k: v for k, v in (data.get("result") or {}).items() if v}
+
+
+def zotseek_search(query: str, max_results: int = 10) -> dict:
+    found = _zotseek_call(
+        "search", {"query": query, "max_results": max_results, "granularity": "papers"}
+    )
+    # ZotSeek ranks by `score` (semantic + keyword fused); it's rounded, so
+    # break ties with the semantic similarity.
+    results = sorted(
+        found.get("results") or [],
+        key=lambda r: (-(r.get("score") or 0), -(r.get("semanticScore") or 0)),
+    )
+    warning = None
+    keys = [r["itemKey"] for r in results if r.get("itemKey")]
+    try:
+        citekeys = _bbt_citation_keys(keys) if keys else {}
+    except Exception:
+        citekeys = {}
+        warning = "Better BibTeX not reachable: citation keys unavailable, so Cite is disabled."
+    out = []
+    for r in results:
+        chunk = r.get("matchedChunk") or {}
+        links = r.get("links") or {}
+        out.append({
+            "itemKey": r.get("itemKey"),
+            "citekey": citekeys.get(r.get("itemKey")),
+            "title": r.get("title") or "",
+            "authors": r.get("authors") or "",
+            "year": r.get("year"),
+            "snippet": chunk.get("snippet") or "",
+            "page": chunk.get("page"),
+            "fromFullText": chunk.get("textSource") == "content",
+            "similarity": r.get("semanticScore"),
+            "keywordMatch": r.get("keywordScore") is not None,
+            "selectUrl": links.get("select"),
+            "pdfUrl": links.get("openPdf"),
+        })
+    return {"results": out, "warning": warning}
+
+
+# ---------------------------------------------------------------------------
 # Wikilink maintenance
 # ---------------------------------------------------------------------------
 
@@ -1942,6 +2054,16 @@ class Handler(SimpleHTTPRequestHandler):
                 vault = str(safe_path(data.get("vault_path") or ""))
                 model = load_settings().get("llmSearchModel")
                 self.send_json({"id": llm_search.start(vault, query, model)})
+            except Exception as e:
+                self.send_error_json(str(e))
+
+        elif path == "/api/zotseek-search":
+            try:
+                data = self.read_body()
+                query = (data.get("query") or "").strip()
+                if not query:
+                    raise ValueError("Select a sentence to search for")
+                self.send_json(zotseek_search(query))
             except Exception as e:
                 self.send_error_json(str(e))
 
