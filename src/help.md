@@ -163,7 +163,15 @@ Three buttons in the toolbar use an AI model to help with the document you have 
 
 ### Proofread
 
-Click the **Proofread** button (or press `⌘⇧P`) to review the whole document, or select some text first to review just that part. Suggestions appear in a side panel. Click a suggestion to highlight the passage it refers to in the editor, and click **Apply** to replace the original text with the correction. Markdown syntax (links, footnotes, citations, etc.) is left alone.
+Click the **Proofread** button (or press `⌘⇧P`) to review the whole document, or select some text first to review just that part. Suggestions appear in a side panel, in the order of the text. Click a suggestion to highlight the passage it refers to in the editor, and click **Apply** to replace the original text with the suggestion. Markdown syntax (links, footnotes, citations, etc.) is left alone.
+
+Each suggestion is labelled with what kind of finding it is:
+
+- **Language** — grammar, punctuation, spelling (British), clarity and academic tone.
+- **Passive voice** — a clause in the passive ("the treaty was signed"). When the text makes clear who acted, an active rewrite is offered that you can apply. Otherwise it is a warning only (no **Apply**): the comment says whether the passive is acceptable here — for example because the actor is unknown — or hides who is responsible.
+- **Structure (PEE)** — a paragraph that doesn't follow the order **P**oint (its claim), **E**vidence (sources, quotations, citations, examples), **E**xplanation (what the evidence shows and how it supports the point), or in which one of these is missing or weak. The comment names what is missing or weak and the most important fix. Clicking it highlights the start of the paragraph; there is nothing to apply, as the fix is yours to write. Paragraphs with a sound structure, headings, lists, quotes and footnotes are not reported.
+
+The instructions given to the model are in `PROOFREAD_SYSTEM.md` (in the app's `src` folder) and can be adjusted to your own house style; restart the app after changing them.
 
 ### Translate
 

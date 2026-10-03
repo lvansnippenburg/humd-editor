@@ -2631,8 +2631,7 @@ function showEditorActionsMenu(x, y) {
 
   const entries = [
     { label: "Translate", action: runTranslate },
-    { label: "Proofread", action: () => runProofread(false) },
-    { label: "PEEL check", action: () => runProofread(true) },
+    { label: "Proofread", action: runProofread },
     { label: "Insert Comment", action: insertComment },
     null,
     { label: "Change Case", action: toggleSelectionCase },
@@ -5353,14 +5352,10 @@ function escapeRegExp(s) {
 
 // ===== PROOFREADING (Mistral) =====
 
-// Split Mistral's "revised text first, then a bulleted list of changes" reply
-// into the two parts so the revised text can be applied on its own.
-//
-// `usePeel` (Cmd/Ctrl-click on the button) runs a PEEL-framework structural
-// check instead of normal proofreading. PEELFRAMEWORK_SYSTEM.md is written
-// for a single paragraph, so a selection spanning multiple paragraphs (or no
-// selection, meaning the whole document) is confirmed with the user first.
-async function runProofread(usePeel = false) {
+// Proofread the selection (or whole document). One request returns language
+// corrections, passive-voice warnings and PEE paragraph-structure notes (see
+// src/PROOFREAD_SYSTEM.md), shown together in text order.
+async function runProofread() {
   if (!currentFilePath) {
     showStatus("Open a file to proofread", true);
     return;
@@ -5373,26 +5368,6 @@ async function runProofread(usePeel = false) {
   if (!text.trim()) {
     showStatus("Nothing to proofread", true);
     return;
-  }
-
-  if (usePeel) {
-    const paragraphCount = text
-      .split(/\n\s*\n/)
-      .map((p) => p.trim())
-      .filter(Boolean).length;
-    if (!isSelection) {
-      const proceed = await confirmDialog(
-        "The PEEL check is designed for a single paragraph, but nothing is selected — " +
-          "the whole document would be sent. Check anyway?"
-      );
-      if (!proceed) return;
-    } else if (paragraphCount > 1) {
-      const proceed = await confirmDialog(
-        "The PEEL check is designed for a single paragraph, but your selection spans " +
-          `${paragraphCount} paragraphs. Check anyway?`
-      );
-      if (!proceed) return;
-    }
   }
 
   proofreadRange = { start, end };
@@ -5410,8 +5385,8 @@ async function runProofread(usePeel = false) {
   suggestionPanelMode = "proofread";
   // The panel is shared with Translate, so reset its header/label each run.
   // innerHTML reset also clears any error markup left by a previous failed run.
-  document.querySelector("#proofread-panel h3").textContent = usePeel ? "PEEL Check" : "Suggestions";
-  loading.innerHTML = usePeel ? "<p>Checking against PEEL…</p>" : "<p>Proofreading…</p>";
+  document.querySelector("#proofread-panel h3").textContent = "Suggestions";
+  loading.innerHTML = "<p>Proofreading…</p>";
   document.getElementById("proofread-scope").textContent =
     `${isSelection ? "Selected text" : "Whole document"} (${text.length} chars)`;
   loading.style.display = "";
@@ -5421,7 +5396,7 @@ async function runProofread(usePeel = false) {
   panel.style.display = "";
 
   try {
-    const res = await apiPost("/api/proofread", usePeel ? { text, mode: "peel" } : { text });
+    const res = await apiPost("/api/proofread", { text });
 
     // Non-fatal notice (e.g. Ollama not running → fell back to Mistral). Shown
     // unobtrusively in the status bar; the suggestions still render normally.
@@ -5434,23 +5409,10 @@ async function runProofread(usePeel = false) {
         list.innerHTML =
           "<li style='color: var(--text-secondary); padding: 16px;'>No suggestions found — excellent work!</li>";
       } else {
-        for (const item of res.suggestions) {
+        for (const item of sortByPositionInText(res.suggestions)) {
           list.appendChild(buildSuggestionItem(item));
         }
       }
-      loading.style.display = "none";
-      suggestions.style.display = "";
-      return;
-    }
-
-    if (usePeel) {
-      // PEEL responses are a labelled prose critique, not edit suggestions —
-      // render as a single readable, non-interactive block (no Apply action).
-      const analysis = res.result || "";
-      const li = document.createElement("li");
-      li.className = "proofread-peel-result";
-      li.textContent = analysis.trim() || "No analysis returned.";
-      list.appendChild(li);
       loading.style.display = "none";
       suggestions.style.display = "";
       return;
@@ -5573,17 +5535,44 @@ async function runTranslate() {
   }
 }
 
+// Proofread items come back grouped loosely by kind; list them in the order
+// their passages appear in the text (unlocatable ones last).
+function sortByPositionInText(items) {
+  const pos = (item) => findProofreadSnippetRange(item.original)?.start ?? Infinity;
+  return items
+    .map((item) => ({ item, at: pos(item) }))
+    .sort((a, b) => a.at - b.at)
+    .map((x) => x.item);
+}
+
+// Labels for the kinds of proofread findings (translate items have no type).
+const PROOFREAD_TYPE_LABELS = {
+  correction: "Language",
+  passive: "Passive voice",
+  structure: "Structure (PEE)",
+};
+
 // Build a clickable suggestion <li> from a structured proofread item. The exact
 // source passage and its replacement are stashed in the dataset so a click can
 // locate it (highlight) and the Apply button can swap it in.
 function buildSuggestionItem(item) {
   const li = document.createElement("li");
   li.className = "proofread-item";
+  const label = PROOFREAD_TYPE_LABELS[item.type];
+  if (label) li.classList.add(`proofread-type-${item.type}`);
+  // Passive-voice and structure findings with an empty suggestion are warnings
+  // only: there is nothing to apply. (An empty correction is a deletion.)
+  const isWarning = (item.type === "passive" || item.type === "structure") && !item.suggestion;
   if (item.original) li.dataset.original = item.original;
-  if (item.suggestion != null) li.dataset.suggestion = item.suggestion;
+  if (item.suggestion != null && !isWarning) li.dataset.suggestion = item.suggestion;
   const comment = item.comment || item.suggestion || "";
-  let html = `<div class="proofread-comment">${escapeHtml(comment)}</div>`;
-  if (item.original || item.suggestion) {
+  let html = label ? `<span class="proofread-type">${label}</span>` : "";
+  html += `<div class="proofread-comment">${escapeHtml(comment)}</div>`;
+  if (isWarning && item.original) {
+    // Just show which passage it's about (for structure: the paragraph opening).
+    const quote = item.type === "structure" ? `${item.original}…` : item.original;
+    html += `<div class="proofread-change"><span class="proofread-quote">${escapeHtml(quote)}</span></div>`;
+  } else if (item.original || item.suggestion) {
     html +=
       `<div class="proofread-change">` +
       `<span class="proofread-original">${escapeHtml(item.original || "")}</span>` +
@@ -5592,7 +5581,7 @@ function buildSuggestionItem(item) {
   }
   // Apply button — replaces the original passage with the suggestion. Only shown
   // when there's an actual change to make.
-  if (item.original && item.suggestion != null && item.suggestion !== item.original) {
+  if (!isWarning && item.original && item.suggestion != null && item.suggestion !== item.original) {
     html +=
       `<div class="proofread-actions">` +
       `<button type="button" class="proofread-apply">Apply</button>` +

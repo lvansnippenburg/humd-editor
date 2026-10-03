@@ -1693,9 +1693,31 @@ dialog h2 {
     margin-bottom: 4px;
 }
 
-.proofread-peel-result {
-    white-space: pre-wrap;
-    line-height: 1.5;
+.proofread-type {
+    display: inline-block;
+    margin-bottom: 3px;
+    padding: 0 6px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    border-radius: 8px;
+    color: var(--text-secondary);
+    background: var(--hover-bg);
+}
+
+.proofread-type-passive .proofread-type {
+    color: #b45309;
+    background: rgba(245, 158, 11, 0.15);
+}
+
+.proofread-type-structure .proofread-type {
+    color: #6d28d9;
+    background: rgba(139, 92, 246, 0.15);
+}
+
+.proofread-quote {
+    font-style: italic;
 }
 
 .proofread-change {

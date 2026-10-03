@@ -833,9 +833,13 @@ def export_docx(markdown: str, source_path: str | None = None) -> bytes:
 # edits); the fallback keeps proofreading working if the file is missing.
 _PROOFREAD_FALLBACK = (
     "Proofread the following Markdown text for grammar, punctuation, clarity and "
-    "British spelling, ignoring Markdown syntax. Return a JSON array of objects "
-    "with string fields 'original', 'suggestion' and 'comment' (an empty array if "
-    "there are no changes)."
+    "British spelling, ignoring Markdown syntax. Also flag passive-voice "
+    "constructions, with an active rewrite where the agent is clear, and check "
+    "each body paragraph for a Point, Evidence and an Explanation (PEE). Return "
+    "a JSON array of objects with string fields 'type' ('correction', 'passive' "
+    "or 'structure'), 'original' (verbatim from the text), 'suggestion' (the "
+    "replacement, or an empty string for a warning only) and 'comment' (an "
+    "empty array if there is nothing to report)."
 )
 
 
@@ -848,21 +852,40 @@ def _read_prompt_file(name: str) -> str | None:
 
 PROOFREAD_SYSTEM = _read_prompt_file("PROOFREAD_SYSTEM.md") or _PROOFREAD_FALLBACK
 
-# The PEEL-framework check prompt lives in src/PEELFRAMEWORK_SYSTEM.md, loaded
-# the same way. It returns free-form prose (a labelled Point/Evidence/
-# Explanation/Link/Verdict critique), not the JSON array PROOFREAD_SYSTEM asks
-# for, so callers must pass no schema to _ai_complete (see peel_check_text).
-_PEEL_FALLBACK = (
-    "You are reviewing a paragraph from an academic text for structural "
-    "adherence to the PEEL framework (Point, Evidence, Explanation, Link). "
-    "Analyze the paragraph and respond with a labelled critique covering "
-    "each of the four elements plus an overall verdict. Be specific and "
-    "critical; do not soften weaknesses."
-)
-PEEL_SYSTEM = _read_prompt_file("PEELFRAMEWORK_SYSTEM.md") or _PEEL_FALLBACK
-
-# Schema forcing Mistral to emit the structured suggestion list the client expects.
+# Proofreading returns one list mixing three kinds of findings, told apart by
+# `type`: language corrections, passive-voice warnings, and PEE (Point,
+# Evidence, Explanation) paragraph-structure notes. Passive and structure items
+# may have an empty `suggestion`: a warning without a ready-made rewrite.
+PROOFREAD_TYPES = ["correction", "passive", "structure"]
 PROOFREAD_SCHEMA = {
+    "type": "ARRAY",
+    "items": {
+        "type": "OBJECT",
+        "properties": {
+            "type": {"type": "STRING", "enum": PROOFREAD_TYPES},
+            "original": {"type": "STRING"},
+            "suggestion": {"type": "STRING"},
+            "comment": {"type": "STRING"},
+        },
+        "required": ["type", "original", "suggestion", "comment"],
+    },
+}
+PROOFREAD_JSON_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string", "enum": PROOFREAD_TYPES},
+            "original": {"type": "string"},
+            "suggestion": {"type": "string"},
+            "comment": {"type": "string"},
+        },
+        "required": ["type", "original", "suggestion", "comment"],
+    },
+}
+
+# Schema forcing Mistral to emit the structured translation list the client expects.
+TRANSLATE_SCHEMA = {
     "type": "ARRAY",
     "items": {
         "type": "OBJECT",
@@ -876,7 +899,7 @@ PROOFREAD_SCHEMA = {
 }
 
 # Same schema in standard (lowercase) JSON Schema for Ollama's `format` field.
-PROOFREAD_JSON_SCHEMA = {
+TRANSLATE_JSON_SCHEMA = {
     "type": "array",
     "items": {
         "type": "object",
@@ -1243,17 +1266,11 @@ def proofread_text(text: str) -> tuple[str, str | None]:
     )
 
 
-def peel_check_text(text: str) -> tuple[str, str | None]:
-    """Check `text` against the PEEL framework. Returns (raw, warning); raw is
-    free-form prose (no schema forced), which the /api/proofread handler falls
-    back to returning as `result` since it won't parse as JSON."""
-    return _ai_complete(PEEL_SYSTEM, text, None, None, load_settings())
-
-
 # The translation system prompt lives in src/TRANSLATE_SYSTEM.md so it can be
 # edited without touching code. It carries a {{TARGET_LANGUAGE}} placeholder the
-# server fills in per request. Translations reuse the proofread suggestion schema
-# (original / suggestion / comment) so the client renders them the same way.
+# server fills in per request. Translations use the same item shape as proofread
+# suggestions (original / suggestion / comment, without `type`) so the client
+# renders them the same way.
 _TRANSLATE_FALLBACK = (
     "You are a scholarly translator. Translate the supplied Markdown text into "
     "{{TARGET_LANGUAGE}} using a formal, academic register, leaving Markdown "
@@ -1275,7 +1292,7 @@ def translate_text(text: str, target_lang: str) -> tuple[str, str | None]:
     target = (target_lang or "").strip() or "English"
     system = TRANSLATE_SYSTEM.replace("{{TARGET_LANGUAGE}}", target)
     return _ai_complete(
-        system, text, PROOFREAD_SCHEMA, PROOFREAD_JSON_SCHEMA, load_settings()
+        system, text, TRANSLATE_SCHEMA, TRANSLATE_JSON_SCHEMA, load_settings()
     )
 
 
@@ -1934,10 +1951,7 @@ class Handler(SimpleHTTPRequestHandler):
                 text = (data.get("text") or "").strip()
                 if not text:
                     raise ValueError("Nothing to proofread")
-                if data.get("mode") == "peel":
-                    raw, warning = peel_check_text(text)
-                else:
-                    raw, warning = proofread_text(text)
+                raw, warning = proofread_text(text)
                 # The model is asked for a JSON array of suggestions. Parse it so
                 # the client gets structured data; fall back to the raw string if
                 # the response isn't valid JSON (so something is still shown).
