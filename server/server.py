@@ -11,6 +11,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -25,8 +26,10 @@ SETTINGS_PATH = Path.home() / ".humd-editor" / "settings.json"
 # (sys._MEIPASS); otherwise it's the sibling folder in the source tree.
 if getattr(sys, "frozen", False):
     SRC_DIR = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "src"
+    PANDOC_ITEMS_DIR = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "pandoc items"
 else:
     SRC_DIR = Path(__file__).parent.parent / "src"
+    PANDOC_ITEMS_DIR = Path(__file__).parent.parent / "pandoc items"
 
 
 def _compute_version() -> str:
@@ -913,27 +916,45 @@ def export_docx(markdown: str, source_path: str | None = None) -> bytes:
     vault = settings.get("vaultPath")
     if vault:
         markdown = inline_wikilinks(markdown, vault, source_path)
-    # the command to export to pdf
-    cmd = [
-        _find_pandoc(),
-        "-C",  # citeproc
-        f"--bibliography={bib_path}",
-        f"--csl={csl_path}",
-        "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables+lists_without_preceding_blankline+hard_line_breaks-yaml_metadata_block-multiline_tables",
-        "--to=docx",
-    ]
-    # the command to export to pdf
-    if ref_doc_path:
-        cmd.append(f"--reference-doc={ref_doc_path}")
+    # The command to export to docx. The DOCX goes to a temporary file rather
+    # than stdout, because zotero.lua print()s status messages to stdout.
+    with tempfile.TemporaryDirectory() as tmp:
+        out_path = Path(tmp) / "document.docx"
+        # citeproc (-C) must run before zotero.lua: the filter uses each
+        # citation's text as the field's placeholder until Zotero refreshes
+        # it, so without citeproc Word shows the raw "[@key, 12]".
+        cmd = [
+            _find_pandoc(),
+            "-C",  # citeproc
+            f"--bibliography={bib_path}",
+            f"--csl={csl_path}",
+            # the bibliography is inserted from Zotero in Word instead
+            "--metadata=suppress-bibliography=true",
+            f"--lua-filter={zotero_lua_path(csl_path)}",
+            "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables+lists_without_preceding_blankline+hard_line_breaks-yaml_metadata_block-multiline_tables",
+            "--to=docx",
+            f"--output={out_path}",
+        ]
+        if ref_doc_path:
+            cmd.append(f"--reference-doc={ref_doc_path}")
 
-    result = subprocess.run(
-        cmd,
-        input=markdown.encode(),
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.decode())
-    return result.stdout
+        result = subprocess.run(
+            cmd,
+            input=markdown.encode(),
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.decode())
+        return out_path.read_bytes()
+
+
+def zotero_lua_path(csl_path: str) -> Path:
+    """The zotero.lua Pandoc filter for the Word export: the one next to the
+    CSL style if there is one, otherwise the copy in `pandoc items/`."""
+    beside_csl = Path(csl_path).expanduser().parent / "zotero.lua"
+    if beside_csl.is_file():
+        return beside_csl
+    return PANDOC_ITEMS_DIR / "zotero.lua"
 
 
 # ---------------------------------------------------------------------------

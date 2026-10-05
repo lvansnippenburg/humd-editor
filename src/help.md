@@ -212,4 +212,4 @@ Commit messages are generated from the changes. If a push fails — usually beca
 
 **Citations.** With a bibliography configured in Settings, type `@` to open the Zotero (Better BibTeX) picker, or write citations like `[@key]` yourself. They are resolved in the preview and when you export to Word.
 
-**Export.** Use the **Export to Word** button to produce a `.docx` (this uses Pandoc, with your chosen citation style and reference document if configured).
+**Export.** Use the **Export to Word** button to produce a `.docx` (this uses Pandoc, with your chosen citation style and reference document if configured). Citations become live Zotero citations through Better BibTeX's `zotero.lua` filter: with Zotero running, press **Refresh** in Word's Zotero tab to finish them, and use **Add/Edit Bibliography** there to insert the bibliography (the export doesn't add one). The editor uses the `zotero.lua` in the same folder as your citation style, or its own copy if there is none there.

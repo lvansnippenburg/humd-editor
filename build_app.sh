@@ -79,6 +79,7 @@ date +%Y%m%d-%H%M%S > src/build_id.txt
     --clean \
     --add-data "src:src" \
     --add-data "server/mdsearch.py:server" \
+    --add-data "pandoc items/zotero.lua:pandoc items" \
     --icon "src/assets/icon.icns" \
     --collect-all webview \
     server/desktop.py
