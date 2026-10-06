@@ -643,6 +643,8 @@ async function initialize() {
     currentOllamaUrl = settings.ollamaUrl || "";
     currentOllamaModel = settings.ollamaModel || "";
     currentDocumentLanguage = settings.documentLanguage || "English";
+    searchZotero = settings.searchZotero ?? true;
+    document.getElementById("search-zotero").checked = searchZotero;
     currentGraphFolderColors = settings.graphFolderColors || [
       {folder: "annotations", color: "#52c41a"},
       {folder: "thesis", color: "#e94b3c"},
@@ -999,6 +1001,7 @@ function setupEventListeners() {
   document.querySelectorAll("#search-mode button").forEach((btn) => {
     btn.addEventListener("click", () => setSearchMode(btn.dataset.mode));
   });
+  document.getElementById("search-zotero").addEventListener("change", onSearchZoteroChange);
 
   document.getElementById("new-file-btn").addEventListener("click", promptNewFile);
   document.getElementById("new-folder-btn").addEventListener("click", promptNewFolder);
@@ -3856,6 +3859,7 @@ function switchSidebarTab(tab) {
 
 let searchDebounceTimer = null;
 let searchMode = "words"; // "words" (live substring search) | "llm" (ask on Enter)
+let searchZotero = true; // LLM mode: also ask ZotSeek for sources in Zotero
 
 function onSearchInput() {
   if (searchMode !== "words") return;
@@ -3878,9 +3882,19 @@ function setSearchMode(mode) {
   const input = document.getElementById("search-input");
   input.placeholder = mode === "llm" ? "Ask a question about your notes… (Enter)" : "Search notes…";
   input.focus();
+  document.getElementById("search-zotero-option").hidden = mode !== "llm";
   document.getElementById("search-results").innerHTML = "";
   if (mode === "words") runSearch();
   else resumeLlmSearch();
+}
+
+async function onSearchZoteroChange(e) {
+  searchZotero = e.target.checked;
+  try {
+    await apiPost("/api/settings", { searchZotero });
+  } catch (err) {
+    console.warn("Failed to save search setting:", err);
+  }
 }
 
 // ----- LLM search -----
@@ -3888,6 +3902,10 @@ function setSearchMode(mode) {
 // from the vault. One question at a time; progress is polled.
 
 let llmPollGen = 0;
+let lastLlmJob = null; // last status from the server, re-rendered with the Zotero results
+// ZotSeek results for the last question:
+// { query, state: "loading" | "done" | "error", results, error }
+let llmZotero = null;
 
 function apiErrorMessage(error) {
   const msg = error.message || String(error);
@@ -3901,13 +3919,34 @@ function apiErrorMessage(error) {
 async function runLlmSearch() {
   const query = document.getElementById("search-input").value.trim();
   if (!query || !currentVaultPath) return;
+  llmZotero = null;
+  if (searchZotero) runLlmZoteroSearch(query);
   try {
     await apiPost("/api/llm-search", { vault_path: currentVaultPath, q: query });
   } catch (error) {
     showStatus(apiErrorMessage(error), true);
+    // The Zotero results can still be shown without an answer from the notes.
+    lastLlmJob = null;
+    renderLlmJob(null);
     return;
   }
   pollLlmSearch();
+}
+
+// Ask ZotSeek for sources on the same question; shown below the answer.
+async function runLlmZoteroSearch(query) {
+  const entry = { query, state: "loading", results: [], error: "" };
+  llmZotero = entry;
+  if (searchMode === "llm") renderLlmJob(lastLlmJob);
+  try {
+    const res = await apiPost("/api/zotseek-search", { query });
+    entry.results = res.results;
+    entry.state = "done";
+  } catch (error) {
+    entry.error = apiErrorMessage(error);
+    entry.state = "error";
+  }
+  if (llmZotero === entry && searchMode === "llm") renderLlmJob(lastLlmJob);
 }
 
 // Show the current/last answer when switching to LLM mode (e.g. after
@@ -3915,9 +3954,9 @@ async function runLlmSearch() {
 async function resumeLlmSearch() {
   try {
     const job = await apiFetch("/api/llm-search-status");
-    if (job.state === "idle" || searchMode !== "llm") return;
+    if (searchMode !== "llm") return;
     if (job.state === "running") pollLlmSearch();
-    else renderLlmJob(job);
+    else if (job.state !== "idle" || llmZotero) renderLlmJob(job.state === "idle" ? null : job);
   } catch {
     /* nothing to show */
   }
@@ -3962,8 +4001,37 @@ function renderLlmAnswer(text, sources) {
 }
 
 function renderLlmJob(job) {
+  lastLlmJob = job;
   const results = document.getElementById("search-results");
   results.innerHTML = "";
+  if (job) renderLlmAnswerBox(results, job);
+  renderLlmZotero(results);
+}
+
+// Sources from Zotero (ZotSeek) for the same question.
+function renderLlmZotero(results) {
+  const z = llmZotero;
+  if (!z || (lastLlmJob && lastLlmJob.query && lastLlmJob.query !== z.query)) return;
+  const head = document.createElement("li");
+  head.className = "llm-sources-head";
+  head.textContent = "Zotero (ZotSeek)";
+  results.appendChild(head);
+  if (z.state !== "done" || !z.results.length) {
+    const li = document.createElement("li");
+    li.className = z.state === "error" ? "llm-error" : "llm-status";
+    li.textContent =
+      z.state === "loading"
+        ? "Searching your Zotero library…"
+        : z.state === "error"
+          ? z.error
+          : "No matching sources found in your Zotero library.";
+    results.appendChild(li);
+    return;
+  }
+  for (const r of z.results) results.appendChild(buildZotSeekItem(r, insertCitationAtCursor));
+}
+
+function renderLlmAnswerBox(results, job) {
   const box = document.createElement("li");
   box.className = "llm-result";
 
@@ -5620,7 +5688,9 @@ async function runZotSeek() {
   }
 }
 
-function buildZotSeekItem(r) {
+// `cite(citekey)` inserts the citation and returns true if it did: after the
+// searched sentence (ZotSeek action) or at the cursor (Search panel).
+function buildZotSeekItem(r, cite = insertZotSeekCitation) {
   const li = document.createElement("li");
   li.className = "zotseek-item";
   const who = [r.authors, r.year].filter(Boolean).join(" ");
@@ -5654,7 +5724,7 @@ function buildZotSeekItem(r) {
     (r.pdfUrl ? ` <button type="button" class="proofread-apply zs-pdf">PDF</button>` : "") +
     `</div>`;
   li.querySelector(".zs-cite").addEventListener("click", (e) => {
-    if (insertZotSeekCitation(r.citekey)) e.target.textContent = "Cited ✓";
+    if (cite(r.citekey)) e.target.textContent = "Cited ✓";
   });
   li.querySelector(".zs-open")?.addEventListener("click", () => openExternalUrl(r.selectUrl));
   li.querySelector(".zs-pdf")?.addEventListener("click", () => openExternalUrl(r.pdfUrl));
@@ -5700,6 +5770,20 @@ function insertZotSeekCitation(citekey) {
   } else {
     editorReplace(editor, pos, pos, ` [@${citekey}]`);
   }
+  showStatus(`Cited @${citekey}`);
+  return true;
+}
+
+// Insert [@key] at the editor's cursor (Cite in the Search panel's Zotero results).
+function insertCitationAtCursor(citekey) {
+  if (!currentFilePath) {
+    showStatus("Open a document first", true);
+    return false;
+  }
+  const editor = document.getElementById("editor");
+  const { selectionStart: start, selectionEnd: end } = editor;
+  const space = start > 0 && !/\s/.test(editor.value[start - 1]) ? " " : "";
+  editorReplace(editor, start, end, `${space}[@${citekey}]`);
   showStatus(`Cited @${citekey}`);
   return true;
 }

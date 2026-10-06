@@ -140,11 +140,13 @@ Open the **Search** panel in the sidebar. The two buttons at the top choose how 
 
 ### Words
 
-Finds every note containing the text you type (case-insensitive), with the matching lines underneath. Results update as you type. Click a note name to open it, or a matching line to jump straight to that line.
+Finds every note in your vault containing the text you type (case-insensitive), with the matching lines underneath. Only your Markdown notes are searched, not Zotero. Results update as you type. Click a note name to open it, or a matching line to jump straight to that line.
 
 ### LLM search
 
 Ask a question in your own words — for example *"Why did the glassmakers move to Murano?"* — and press `Enter`. A language model running **locally on your Mac** reads the passages from your notes that best match the question and writes an answer, citing its sources as `[note.md:12]`. Click a citation, or one of the **Sources** listed under the answer, to open the note at that line. Nothing leaves your computer and your notes are never changed.
+
+**Also search Zotero (ZotSeek)**, the option under the buttons, sends the same question to your Zotero library as well (see [ZotSeek](#zotseek-find-sources-in-zotero)). The matching publications are listed under **Zotero (ZotSeek)**, below the answer; they appear even when the local model isn't available. Their **Cite** button inserts the citation at the cursor in the editor. Turn the option off to search only your notes; the choice is remembered.
 
 How it finds passages: keyword matching (good for names and exact terms) combined with *semantic* matching, which also finds passages that say the same thing in other words, in several languages. The model only uses those passages: if they don't contain the answer, it says so — which means the retrieved passages lack it, not necessarily your notes.
 

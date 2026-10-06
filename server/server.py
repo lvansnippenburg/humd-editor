@@ -928,8 +928,6 @@ def export_docx(markdown: str, source_path: str | None = None) -> bytes:
             "-C",  # citeproc
             f"--bibliography={bib_path}",
             f"--csl={csl_path}",
-            # the bibliography is inserted from Zotero in Word instead
-            "--metadata=suppress-bibliography=true",
             f"--lua-filter={zotero_lua_path(csl_path)}",
             "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables+lists_without_preceding_blankline+hard_line_breaks-yaml_metadata_block-multiline_tables",
             "--to=docx",
