@@ -42,12 +42,8 @@ let currentBibPath = null;
 let currentCslPath = null;
 let currentPandocRefDocPath = null;
 let currentUserNickname = "";
-let currentMistralKey = "";
-let currentMistralModel = "";
-let currentProofreadProvider = "mistral"; // "mistral" | "ollama"
+let currentProofreadProvider = ""; // "<provider>/<model>" from currentLlmConfigs
 let currentLlmConfigs = [];
-let currentOllamaUrl = "";
-let currentOllamaModel = "";
 let currentDocumentLanguage = "English"; // target language for translation (vault-wide setting)
 let currentGraphFolderColors = []; // array of {folder, color} for graph visualization
 let vaultIsGitRepo = false; // is the current vault a git working tree?
@@ -637,11 +633,7 @@ async function initialize() {
     currentCslPath = settings.cslStylePath || null;
     currentPandocRefDocPath = settings.pandocRefDocPath || null;
     currentUserNickname = settings.userNickname || "";
-    currentMistralKey = settings.mistralApiKey || "";
-    currentMistralModel = settings.mistralModel || "mistral-large-latest";
-    currentProofreadProvider = settings.proofreadProvider || "mistral";
-    currentOllamaUrl = settings.ollamaUrl || "";
-    currentOllamaModel = settings.ollamaModel || "";
+    currentProofreadProvider = settings.proofreadProvider || "";
     currentDocumentLanguage = settings.documentLanguage || "English";
     searchZotero = settings.searchZotero ?? true;
     document.getElementById("search-zotero").checked = searchZotero;
@@ -1015,11 +1007,10 @@ function setupEventListeners() {
       if (e.target.value === "__add_new__") {
         e.target.value = currentProofreadProvider;
         openLlmConfigDialog();
-      } else {
-        updateProofreadProviderVisibility();
       }
     });
 
+  document.getElementById("remove-llmconfig-btn").addEventListener("click", removeLlmConfig);
   document.getElementById("close-llmconfig").addEventListener("click", closeLlmConfigDialog);
   document.getElementById("cancel-llmconfig-btn").addEventListener("click", closeLlmConfigDialog);
   document.getElementById("save-llmconfig-btn").addEventListener("click", saveLlmConfig);
@@ -4938,6 +4929,7 @@ async function openSettingsDialog() {
   try {
     const configsRes = await apiFetch("/api/llm-configs");
     currentLlmConfigs = configsRes.configs || [];
+    currentProofreadProvider = configsRes.selected || "";
   } catch (err) {
     console.error("Failed to load LLM configs:", err);
   }
@@ -4956,8 +4948,6 @@ async function openSettingsDialog() {
     cslPath: currentCslPath,
     pandocRefDocPath: currentPandocRefDocPath,
     proofreadProvider: currentProofreadProvider,
-    ollamaUrl: currentOllamaUrl,
-    ollamaModel: currentOllamaModel,
   };
   document.getElementById("vault-path-display").textContent = currentVaultPath;
   document.getElementById("css-editor").value = currentUserCss;
@@ -4972,20 +4962,14 @@ async function openSettingsDialog() {
   document.getElementById("pandoc-ref-doc-display").textContent =
     currentPandocRefDocPath || "None selected";
   document.getElementById("nickname-input").value = currentUserNickname;
-  document.getElementById("mistral-key-input").value = currentMistralKey;
-  document.getElementById("mistral-model-input").value = currentMistralModel;
-  document.getElementById("proofread-provider-select").value = currentProofreadProvider;
-  document.getElementById("ollama-url-input").value = currentOllamaUrl;
-  document.getElementById("ollama-model-input").value = currentOllamaModel;
   document.getElementById("document-language-input").value = currentDocumentLanguage;
   document.getElementById("preview-position-select").value = previewPosition;
-  updateProofreadProviderVisibility();
   initGraphFolderSettings();
   document.getElementById("settings-dialog").showModal();
 
   // If no configs exist, give the option to add one
   if (currentLlmConfigs.length === 0) {
-    const addFirst = await confirmDialog("No LLM configurations found in ~/.llmconfig. Would you like to add one now?");
+    const addFirst = await confirmDialog("No AI providers are configured yet. Would you like to add one now?");
     if (addFirst) {
       openLlmConfigDialog();
     }
@@ -5027,49 +5011,49 @@ function confirmDialog(message) {
   });
 }
 
+const LLM_PROVIDER_NAMES = {
+  gemini: "Gemini",
+  anthropic: "Anthropic",
+  mistral: "Mistral",
+  ollama: "Ollama (local)",
+};
+
+// The Provider list: the configured providers (settings.json "llmConfigs"),
+// then an entry that opens the Add dialog.
 function populateLlmProviderSelect() {
   const select = document.getElementById("proofread-provider-select");
-  const currentVal = select.value || currentProofreadProvider;
-  
   select.innerHTML = "";
-  
-  const optMistral = document.createElement("option");
-  optMistral.value = "mistral";
-  optMistral.textContent = "Mistral (remote)";
-  select.appendChild(optMistral);
-  
-  const optOllama = document.createElement("option");
-  optOllama.value = "ollama";
-  optOllama.textContent = "Ollama (local)";
-  select.appendChild(optOllama);
-  
-  currentLlmConfigs.forEach((cfg) => {
+
+  if (currentLlmConfigs.length === 0) {
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "No AI provider set up yet";
+    none.disabled = true;
+    select.appendChild(none);
+  }
+  for (const cfg of currentLlmConfigs) {
     const opt = document.createElement("option");
-    const val = `${cfg.provider}/${cfg.model}`;
-    opt.value = val;
-    const providerDisp = cfg.provider.charAt(0).toUpperCase() + cfg.provider.slice(1);
-    opt.textContent = `${providerDisp} (${cfg.model})`;
+    opt.value = `${cfg.provider}/${cfg.model}`;
+    const name = LLM_PROVIDER_NAMES[cfg.provider] || cfg.provider;
+    opt.textContent = `${name}: ${cfg.model}${cfg.url ? ` (${cfg.url})` : ""}`;
     select.appendChild(opt);
-  });
-  
+  }
   const optAdd = document.createElement("option");
   optAdd.value = "__add_new__";
-  optAdd.textContent = "➕ Add new LLM configuration...";
+  optAdd.textContent = "➕ Add new LLM configuration…";
   select.appendChild(optAdd);
-  
-  if (Array.from(select.options).some(o => o.value === currentVal)) {
-    select.value = currentVal;
-  } else if (currentLlmConfigs.length > 0) {
-    select.value = `${currentLlmConfigs[0].provider}/${currentLlmConfigs[0].model}`;
-  } else {
-    select.value = "mistral";
-  }
+
+  const values = currentLlmConfigs.map((c) => `${c.provider}/${c.model}`);
+  select.value = values.includes(currentProofreadProvider)
+    ? currentProofreadProvider
+    : values[0] || "";
 }
 
 function openLlmConfigDialog() {
   document.getElementById("llmconfig-provider").value = "gemini";
   document.getElementById("llmconfig-model").value = "";
   document.getElementById("llmconfig-key").value = "";
+  document.getElementById("llmconfig-url").value = "";
   updateLlmConfigKeyVisibility();
   document.getElementById("llmconfig-dialog").showModal();
 }
@@ -5078,64 +5062,64 @@ function closeLlmConfigDialog() {
   document.getElementById("llmconfig-dialog").close();
 }
 
+// Ollama needs a URL instead of an API key.
 function updateLlmConfigKeyVisibility() {
   const provider = document.getElementById("llmconfig-provider").value;
   document.getElementById("llmconfig-key-group").style.display =
     provider === "ollama" ? "none" : "";
-  
-  const modelInput = document.getElementById("llmconfig-model");
-  if (provider === "gemini") {
-    modelInput.placeholder = "e.g. gemini-2.5-flash";
-  } else if (provider === "anthropic") {
-    modelInput.placeholder = "e.g. claude-3-5-sonnet-latest";
-  } else if (provider === "mistral") {
-    modelInput.placeholder = "e.g. mistral-large-latest";
-  } else if (provider === "ollama") {
-    modelInput.placeholder = "e.g. llama3.1";
-  }
+  document.getElementById("llmconfig-url-group").style.display =
+    provider === "ollama" ? "" : "none";
+  const examples = {
+    gemini: "gemini-2.5-flash",
+    anthropic: "claude-opus-5-5",
+    mistral: "mistral-small-latest",
+    ollama: "llama3.1",
+  };
+  document.getElementById("llmconfig-model").placeholder = `e.g. ${examples[provider]}`;
 }
 
 async function saveLlmConfig() {
   const provider = document.getElementById("llmconfig-provider").value;
   const model = document.getElementById("llmconfig-model").value.trim();
   const apiKey = document.getElementById("llmconfig-key").value.trim();
-  
-  if (!model) {
-    alert("Model name is required.");
-    return;
-  }
-  if (provider !== "ollama" && !apiKey) {
-    alert("API key is required for " + provider);
-    return;
-  }
-  
+  const url = document.getElementById("llmconfig-url").value.trim();
+
   try {
-    const res = await apiPost("/api/add-llm-config", { provider, model, apiKey });
-    if (res.ok) {
-      closeLlmConfigDialog();
-      showStatus("LLM configuration added successfully");
-      
-      const configsRes = await apiFetch("/api/llm-configs");
-      currentLlmConfigs = configsRes.configs || [];
-      populateLlmProviderSelect();
-      
-      document.getElementById("proofread-provider-select").value = `${provider}/${model}`;
-      updateProofreadProviderVisibility();
-    } else {
-      showStatus("Failed to add LLM configuration", true);
-    }
+    await apiPost("/api/add-llm-config", {
+      provider,
+      model,
+      apiKey: provider === "ollama" ? "" : apiKey,
+      url: provider === "ollama" ? url : "",
+    });
   } catch (err) {
-    showStatus(`Error adding LLM configuration: ${err.message || err}`, true);
+    alert(apiErrorMessage(err));
+    return;
   }
+  closeLlmConfigDialog();
+  showStatus(`Added ${LLM_PROVIDER_NAMES[provider] || provider}: ${model}`);
+  const configsRes = await apiFetch("/api/llm-configs");
+  currentLlmConfigs = configsRes.configs || [];
+  // Select the new one; it's used once the settings are saved.
+  currentProofreadProvider = `${provider}/${model}`;
+  populateLlmProviderSelect();
 }
 
-// Show only the fields relevant to the selected proofreading provider.
-function updateProofreadProviderVisibility() {
-  const provider = document.getElementById("proofread-provider-select").value;
-  document.getElementById("mistral-settings-group").style.display =
-    provider === "mistral" ? "" : "none";
-  document.getElementById("ollama-settings-group").style.display =
-    provider === "ollama" ? "" : "none";
+async function removeLlmConfig() {
+  const select = document.getElementById("proofread-provider-select");
+  const cfg = currentLlmConfigs.find((c) => `${c.provider}/${c.model}` === select.value);
+  if (!cfg) return;
+  const name = `${LLM_PROVIDER_NAMES[cfg.provider] || cfg.provider}: ${cfg.model}`;
+  if (!(await confirmDialog(`Remove ${name}, with its API key?`))) return;
+  try {
+    await apiPost("/api/remove-llm-config", { provider: cfg.provider, model: cfg.model });
+  } catch (err) {
+    showStatus(apiErrorMessage(err), true);
+    return;
+  }
+  currentLlmConfigs = currentLlmConfigs.filter((c) => c !== cfg);
+  if (currentProofreadProvider === select.value) currentProofreadProvider = "";
+  populateLlmProviderSelect();
+  showStatus(`Removed ${name}`);
 }
 
 function closeSettingsDialog() {
@@ -5260,11 +5244,8 @@ async function saveSettings() {
       pandocRefDocDisplay && pandocRefDocDisplay !== "None selected" ? pandocRefDocDisplay : null;
 
     const newNickname = document.getElementById("nickname-input").value.trim();
-    const newMistralKey = document.getElementById("mistral-key-input").value.trim();
-    const newMistralModel = document.getElementById("mistral-model-input").value.trim();
-    const newProofreadProvider = document.getElementById("proofread-provider-select").value;
-    const newOllamaUrl = document.getElementById("ollama-url-input").value.trim();
-    const newOllamaModel = document.getElementById("ollama-model-input").value.trim();
+    const providerValue = document.getElementById("proofread-provider-select").value;
+    const newProofreadProvider = providerValue === "__add_new__" ? "" : providerValue;
     const newDocumentLanguage =
       document.getElementById("document-language-input").value.trim() || "English";
     const newPreviewPosition = document.getElementById("preview-position-select").value;
@@ -5289,11 +5270,7 @@ async function saveSettings() {
       cslStylePath: newCslPath,
       pandocRefDocPath: newPandocRefDocPath,
       userNickname: newNickname,
-      mistralApiKey: newMistralKey,
-      mistralModel: newMistralModel,
       proofreadProvider: newProofreadProvider,
-      ollamaUrl: newOllamaUrl,
-      ollamaModel: newOllamaModel,
       documentLanguage: newDocumentLanguage,
       graphFolderColors: currentGraphFolderColors,
       previewPosition: newPreviewPosition,
@@ -5312,11 +5289,7 @@ async function saveSettings() {
     currentAutoSave = newAutoSave;
     currentSmartQuotes = newSmartQuotes;
     currentUserNickname = newNickname;
-    currentMistralKey = newMistralKey;
-    currentMistralModel = newMistralModel;
     currentProofreadProvider = newProofreadProvider;
-    currentOllamaUrl = newOllamaUrl;
-    currentOllamaModel = newOllamaModel;
     currentDocumentLanguage = newDocumentLanguage;
     document.getElementById("editor").spellcheck = newSpellCheck;
 
@@ -5409,7 +5382,7 @@ async function runSuggestTags() {
     editorReplace(editor, pos, pos, insert); // undoable; triggers preview/dirty
     showStatus(`Added tags: ${newTags.map((t) => `#${t}`).join(" ")}`);
   } catch (err) {
-    showStatus(`Suggest tags failed: ${err.message || err}`, true);
+    showStatus(`Suggest tags failed: ${apiErrorMessage(err)}`, true);
   } finally {
     btn.disabled = false;
   }
@@ -5419,7 +5392,7 @@ function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// ===== PROOFREADING (Mistral) =====
+// ===== PROOFREADING =====
 
 // Proofread the selection (or whole document). One request returns language
 // corrections, passive-voice warnings and PEE paragraph-structure notes (see
@@ -5530,7 +5503,7 @@ async function runProofread() {
     loading.style.display = "none";
     suggestions.style.display = "";
   } catch (err) {
-    loading.innerHTML = `<p style="color: var(--text-secondary); margin: 0; padding: 12px 16px; font-size: 12px;">Error: ${escapeHtml(err.message || err)}</p>`;
+    loading.innerHTML = `<p style="color: var(--text-secondary); margin: 0; padding: 12px 16px; font-size: 12px;">${escapeHtml(apiErrorMessage(err))}</p>`;
   }
 }
 
@@ -5600,7 +5573,7 @@ async function runTranslate() {
     loading.style.display = "none";
     suggestions.style.display = "";
   } catch (err) {
-    loading.innerHTML = `<p style="color: var(--text-secondary); margin: 0; padding: 12px 16px; font-size: 12px;">Error: ${escapeHtml(err.message || err)}</p>`;
+    loading.innerHTML = `<p style="color: var(--text-secondary); margin: 0; padding: 12px 16px; font-size: 12px;">${escapeHtml(apiErrorMessage(err))}</p>`;
   }
 }
 

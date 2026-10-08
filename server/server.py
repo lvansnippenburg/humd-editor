@@ -988,19 +988,8 @@ PROOFREAD_SYSTEM = _read_prompt_file("PROOFREAD_SYSTEM.md") or _PROOFREAD_FALLBA
 # Evidence, Explanation) paragraph-structure notes. Passive and structure items
 # may have an empty `suggestion`: a warning without a ready-made rewrite.
 PROOFREAD_TYPES = ["correction", "passive", "structure"]
-PROOFREAD_SCHEMA = {
-    "type": "ARRAY",
-    "items": {
-        "type": "OBJECT",
-        "properties": {
-            "type": {"type": "STRING", "enum": PROOFREAD_TYPES},
-            "original": {"type": "STRING"},
-            "suggestion": {"type": "STRING"},
-            "comment": {"type": "STRING"},
-        },
-        "required": ["type", "original", "suggestion", "comment"],
-    },
-}
+# JSON Schemas for the responses, passed to the providers that can enforce
+# them (Gemini's responseSchema, Ollama's format); Mistral only gets JSON mode.
 PROOFREAD_JSON_SCHEMA = {
     "type": "array",
     "items": {
@@ -1015,21 +1004,6 @@ PROOFREAD_JSON_SCHEMA = {
     },
 }
 
-# Schema forcing Mistral to emit the structured translation list the client expects.
-TRANSLATE_SCHEMA = {
-    "type": "ARRAY",
-    "items": {
-        "type": "OBJECT",
-        "properties": {
-            "original": {"type": "STRING"},
-            "suggestion": {"type": "STRING"},
-            "comment": {"type": "STRING"},
-        },
-        "required": ["original", "suggestion", "comment"],
-    },
-}
-
-# Same schema in standard (lowercase) JSON Schema for Ollama's `format` field.
 TRANSLATE_JSON_SCHEMA = {
     "type": "array",
     "items": {
@@ -1050,206 +1024,292 @@ class OllamaUnavailable(RuntimeError):
     """Raised when the local Ollama service can't be reached (not running)."""
 
 
-# --- Config parsing for ~/.llmconfig ---------------------------------------
+# --- LLM configurations (settings.json "llmConfigs") -----------------------
+#
+# The AI providers for Settings → Proofreading & translation, stored in
+# settings.json as [{"provider", "model", "apiKey"}], one per provider/model;
+# Ollama entries have a "url" instead of a key. "proofreadProvider" holds the
+# selected one as "<provider>/<model>".
+#
+# Older versions kept providers elsewhere, imported once by load_llm_configs:
+# ~/.llmconfig ("provider/model|api_key" lines; the file is then no longer
+# read) and the built-in Mistral and Ollama settings mistralApiKey,
+# mistralModel, ollamaUrl and ollamaModel (removed from settings.json).
+
+LEGACY_LLMCONFIG_PATH = Path.home() / ".llmconfig"
+LEGACY_PROVIDER_KEYS = ("mistralApiKey", "mistralModel", "ollamaUrl", "ollamaModel")
+LLM_PROVIDERS = ("gemini", "anthropic", "mistral", "ollama")
 
 
-def load_llm_configs() -> list[dict]:
-    path = Path.home() / ".llmconfig"
-    if not path.exists():
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                "# ~/.llmconfig\n"
-                "# Format: provider/model|api_key\n"
-                "# Example: gemini/gemini-2.5-flash|AIzaSyYourApiKeyHere\n"
-                "# Example: anthropic/claude-3-5-sonnet-latest|sk-ant-YourApiKeyHere\n"
-                "# Example: mistral/mistral-large-latest|your_mistral_api_key\n"
-                "# Example: ollama/llama3.1|\n",
-                encoding="utf-8"
-            )
-        except Exception:
-            pass
-        return []
+def _llm_config_entry(provider: str, model: str, api_key: str = "", url: str = "") -> dict:
+    provider = provider.strip().lower()
+    if provider == "mistal":  # a typo older versions accepted
+        provider = "mistral"
+    entry = {"provider": provider, "model": model.strip(), "apiKey": api_key.strip()}
+    if url.strip():
+        entry["url"] = url.strip().rstrip("/")
+    return entry
 
-    configs = []
+
+def _upsert_llm_config(configs: list[dict], entry: dict) -> list[dict]:
+    """configs with `entry` added, replacing one for the same provider/model."""
+    same = lambda c: (c["provider"], c["model"]) == (entry["provider"], entry["model"])
+    if any(same(c) for c in configs):
+        return [entry if same(c) else c for c in configs]
+    return configs + [entry]
+
+
+def _read_legacy_llmconfig() -> list[dict]:
+    configs: list[dict] = []
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-        for line in lines:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "|" in line:
-                left, api_key = line.split("|", 1)
-            else:
-                left = line
-                api_key = ""
-
-            if "/" in left:
-                provider, model = left.split("/", 1)
-            else:
-                provider = left
-                model = ""
-
-            configs.append({
-                "provider": provider.strip().lower(),
-                "model": model.strip(),
-                "apiKey": api_key.strip()
-            })
-    except Exception:
-        pass
+        lines = LEGACY_LLMCONFIG_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return configs
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        left, _, api_key = line.partition("|")
+        provider, _, model = left.partition("/")
+        # A later line for the same provider/model wins (the newest key).
+        configs = _upsert_llm_config(configs, _llm_config_entry(provider, model, api_key))
     return configs
 
 
-def add_llm_config(provider: str, model: str, api_key: str) -> None:
-    path = Path.home() / ".llmconfig"
-    line = f"{provider}/{model}|{api_key}\n"
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        content = ""
-        if path.exists():
-            content = path.read_text(encoding="utf-8")
+def _migrate_llm_settings(settings: dict) -> bool:
+    """Move older provider settings into llmConfigs (see above). Returns
+    whether `settings` changed."""
+    changed = False
+    configs = settings.get("llmConfigs")
+    if not isinstance(configs, list):
+        configs = _read_legacy_llmconfig()
+        changed = True
+    selected = settings.get("proofreadProvider")
+    if settings.get("mistralApiKey"):
+        entry = _llm_config_entry(
+            "mistral", settings.get("mistralModel") or DEFAULT_MISTRAL_MODEL, settings["mistralApiKey"]
+        )
+        if not any(c["provider"] == "mistral" and c["model"] == entry["model"] for c in configs):
+            configs = configs + [entry]
+        if selected == "mistral":
+            selected = f"mistral/{entry['model']}"
+    if settings.get("ollamaModel"):
+        url = settings.get("ollamaUrl") or ""
+        entry = _llm_config_entry("ollama", settings["ollamaModel"], url=url)
+        if entry.get("url") == DEFAULT_OLLAMA_URL:
+            del entry["url"]
+        if not any(c["provider"] == "ollama" and c["model"] == entry["model"] for c in configs):
+            configs = configs + [entry]
+        if selected == "ollama":
+            selected = f"ollama/{entry['model']}"
+    if selected in ("mistral", "ollama"):  # selected, but never set up
+        selected = None
+    for key in LEGACY_PROVIDER_KEYS:
+        if key in settings:
+            del settings[key]
+            changed = True
+    if selected != settings.get("proofreadProvider"):
+        if selected:
+            settings["proofreadProvider"] = selected
+        else:
+            settings.pop("proofreadProvider", None)
+        changed = True
+    settings["llmConfigs"] = configs
+    return changed
 
-        if content and not content.endswith("\n"):
-            line = "\n" + line
 
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(line)
-    except Exception as e:
-        raise RuntimeError(f"Failed to write ~/.llmconfig: {e}")
+def load_llm_configs() -> list[dict]:
+    """The configured providers. The first call after an upgrade imports the
+    older provider settings (see above) into llmConfigs."""
+    settings = load_settings()
+    if isinstance(settings.get("llmConfigs"), list) and not any(
+        k in settings for k in LEGACY_PROVIDER_KEYS
+    ):
+        return [c for c in settings["llmConfigs"] if isinstance(c, dict) and c.get("provider")]
+    with _lock:
+        settings = load_settings()
+        if _migrate_llm_settings(settings):
+            save_settings(settings)
+    return settings["llmConfigs"]
 
 
-# --- Generic provider plumbing (shared by proofreading and tag suggestion) ----
+def add_llm_config(provider: str, model: str, api_key: str = "", url: str = "") -> None:
+    """Add a provider/model, or replace the settings of an existing one."""
+    entry = _llm_config_entry(provider, model, api_key, url)
+    if entry["provider"] not in LLM_PROVIDERS:
+        raise ValueError(f"Unknown provider '{provider}' (supported: {', '.join(LLM_PROVIDERS)})")
+    if not entry["model"]:
+        raise ValueError("A model name is required")
+    if entry["provider"] != "ollama" and not entry["apiKey"]:
+        raise ValueError(f"An API key is required for {entry['provider'].capitalize()}")
+    load_llm_configs()  # import older settings first, so they aren't skipped later
+    with _lock:
+        settings = load_settings()
+        settings["llmConfigs"] = _upsert_llm_config(settings.get("llmConfigs") or [], entry)
+        save_settings(settings)
+
+
+def remove_llm_config(provider: str, model: str) -> None:
+    """Remove a provider/model, and the selection if it was the selected one."""
+    load_llm_configs()
+    with _lock:
+        settings = load_settings()
+        settings["llmConfigs"] = [
+            c for c in settings.get("llmConfigs") or []
+            if (c["provider"], c["model"]) != (provider, model)
+        ]
+        if settings.get("proofreadProvider") == f"{provider}/{model}":
+            settings.pop("proofreadProvider")
+        save_settings(settings)
+
+
+# --- Generic provider plumbing (proofreading, translation, tag suggestion) ---
 
 
 def _ai_complete(
-    system: str, user: str, mistral_schema: dict | None, json_schema: dict | None, settings: dict
+    system: str, user: str, json_schema: dict | None, settings: dict
 ) -> tuple[str, str | None]:
-    """Run one structured AI completion with the configured provider. Returns
-    (raw_response, warning); raw_response is a JSON string matching the schema,
-    or free-form text if both schema args are None.
-    When Ollama is selected but not running, transparently falls back to
-    Mistral and reports it via the warning."""
-    selected = settings.get("proofreadProvider") or "mistral"
+    """Run one AI completion with the selected provider. Returns
+    (raw_response, warning); raw_response should be JSON matching json_schema
+    (see parse_json_list), or free-form text if json_schema is None.
 
-    # Try to load ~/.llmconfig configs
+    The provider is settings["proofreadProvider"], "<provider>/<model>" from
+    the LLM configurations. When Ollama is selected but not running, falls
+    back to a configured Mistral model and says so in the warning."""
     configs = load_llm_configs()
-    matched_config = None
-    for c in configs:
-        cfg_key = f"{c['provider']}/{c['model']}"
-        if cfg_key == selected:
-            matched_config = c
-            break
-
-    if matched_config:
-        provider = matched_config["provider"]
-        model = matched_config["model"]
-        api_key = matched_config["apiKey"]
-
-        if provider == "gemini":
-            return _gemini_complete(system, user, json_schema, settings, api_key, model), None
-        elif provider == "anthropic":
-            return _anthropic_complete(system, user, settings, api_key, model), None
-        elif provider in ("mistral", "mistal"):
-            return _mistral_complete(system, user, mistral_schema, settings, api_key, model), None
-        elif provider == "ollama":
-            try:
-                return _ollama_complete(system, user, json_schema, settings, model), None
-            except OllamaUnavailable:
-                # Fallback logic for ollama: if there is a mistral config in .llmconfig, use it.
-                # Otherwise, fall back to mistral settings.
-                mistral_cfg = None
-                for c in configs:
-                    if c["provider"] in ("mistral", "mistal"):
-                        mistral_cfg = c
-                        break
-                try:
-                    if mistral_cfg:
-                        result = _mistral_complete(
-                            system, user, mistral_schema, settings, mistral_cfg["apiKey"], mistral_cfg["model"]
-                        )
-                    else:
-                        result = _mistral_complete(system, user, mistral_schema, settings)
-                except Exception as me:
-                    raise RuntimeError(
-                        f"Ollama is not running, and the Mistral fallback failed: {me}"
-                    )
-                return result, "Ollama not running — used Mistral instead."
-
-    # Backward compatibility fallback using settings directly
-    provider = selected
+    if not configs:
+        raise RuntimeError(
+            "No AI provider is set up. Add one under Settings → Proofreading & translation."
+        )
+    # load_llm_configs may have just migrated the selection, so read it again.
+    selected = load_settings().get("proofreadProvider") or settings.get("proofreadProvider")
+    cfg = next((c for c in configs if f"{c['provider']}/{c['model']}" == selected), None)
+    if cfg is None:
+        if selected:
+            raise RuntimeError(
+                f"The selected AI provider '{selected}' is not set up any more. "
+                "Choose another one under Settings → Proofreading & translation."
+            )
+        cfg = configs[0]
+    provider, model, api_key = cfg["provider"], cfg["model"], cfg.get("apiKey", "")
+    if provider == "gemini":
+        return _gemini_complete(system, user, json_schema, api_key, model), None
+    if provider == "anthropic":
+        return _anthropic_complete(system, user, settings, api_key, model), None
+    if provider == "mistral":
+        return _mistral_complete(system, user, json_schema, api_key, model), None
     if provider == "ollama":
+        return _ollama_or_mistral(system, user, json_schema, cfg, configs)
+    raise RuntimeError(
+        f"Unknown AI provider '{provider}' (supported: {', '.join(LLM_PROVIDERS)})."
+    )
+
+
+def _ollama_or_mistral(
+    system: str, user: str, json_schema: dict | None, cfg: dict, configs: list[dict]
+) -> tuple[str, str | None]:
+    """Ollama, or the first configured Mistral model when Ollama isn't running."""
+    try:
+        return _ollama_complete(system, user, json_schema, cfg["model"], cfg.get("url")), None
+    except OllamaUnavailable as e:
+        mistral = next((c for c in configs if c["provider"] == "mistral"), None)
+        if not mistral:
+            raise
         try:
-            return _ollama_complete(system, user, json_schema, settings), None
-        except OllamaUnavailable:
-            try:
-                result = _mistral_complete(system, user, mistral_schema, settings)
-            except Exception as me:
-                raise RuntimeError(
-                    f"Ollama is not running, and the Mistral fallback failed: {me}"
-                )
-            return result, "Ollama not running — used Mistral instead."
-    return _mistral_complete(system, user, mistral_schema, settings), None
+            result = _mistral_complete(system, user, json_schema, mistral["apiKey"], mistral["model"])
+        except Exception as me:
+            raise RuntimeError(f"{e} The Mistral fallback failed too: {me}")
+        return result, f"Ollama is not running — used Mistral ({mistral['model']}) instead."
 
 
-def _gemini_complete(system: str, user: str, json_schema: dict | None, settings: dict, api_key: str, model: str) -> str:
-    """One structured completion via Gemini REST API. json_schema=None asks for
+def _api_error(name: str, e: urllib.error.HTTPError) -> RuntimeError:
+    """A readable error for a provider's HTTP error: its own message rather
+    than the raw JSON body, with a hint for the common cases."""
+    body = e.read().decode("utf-8", "replace")
+    message = body
+    try:
+        data = json.loads(body)
+        err = data.get("error", data)
+        if isinstance(err, dict):
+            message = err.get("message") or err.get("detail") or body
+        elif isinstance(err, str):
+            message = err
+        elif data.get("message"):
+            message = data["message"]
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    message = " ".join(str(message).split())[:400].rstrip()
+    if message and message[-1] not in ".!?":
+        message += "."
+    hints = {
+        401: "Check the API key.",
+        403: "Check the API key, or choose a model your account can use.",
+        429: "Rate limit or quota reached — wait a moment and try again.",
+    }
+    hint = hints.get(e.code) or ("The service has a problem; try again later." if e.code >= 500 else "")
+    return RuntimeError(f"{name} error {e.code}: {message}" + (f" {hint}" if hint else ""))
+
+
+def _gemini_complete(system: str, user: str, json_schema: dict | None, api_key: str, model: str) -> str:
+    """One completion via the Gemini REST API. json_schema=None asks for
     free-form text instead of forcing a JSON response shape."""
     if not api_key:
-        raise RuntimeError("No Gemini API key specified in ~/.llmconfig.")
+        raise RuntimeError("This Gemini configuration has no API key. Add it again with its key in Settings.")
     if not model:
         model = "gemini-2.5-flash"
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-    payload_data = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [{"text": user}]
-            }
-        ],
-        "systemInstruction": {
-            "parts": [{"text": system}]
-        },
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    body = {
+        "contents": [{"role": "user", "parts": [{"text": user}]}],
+        "systemInstruction": {"parts": [{"text": system}]},
     }
     if json_schema is not None:
-        payload_data["generationConfig"] = {
+        body["generationConfig"] = {
             "responseMimeType": "application/json",
-            "responseSchema": json_schema
+            "responseSchema": json_schema,
         }
-    payload = json.dumps(payload_data).encode("utf-8")
     req = urllib.request.Request(
         url,
-        data=payload,
+        data=json.dumps(body).encode("utf-8"),
         method="POST",
-        headers={"Content-Type": "application/json"}
+        # The key goes in a header, not the URL, so it can't end up in errors.
+        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
     )
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=300) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")
-        raise RuntimeError(f"Gemini API error {e.code}: {detail[:500]}")
+        raise _api_error("Gemini", e)
     except urllib.error.URLError as e:
         raise RuntimeError(f"Could not reach Gemini: {e.reason}")
 
     candidates = data.get("candidates") or []
     if not candidates:
-        raise RuntimeError(f"Gemini returned no candidates: {json.dumps(data)[:400]}")
-
-    parts = candidates[0].get("content", {}).get("parts") or []
-    if not parts:
-        raise RuntimeError("Gemini response candidate contains no parts.")
-
-    out = (parts[0].get("text") or "").strip()
+        reason = (data.get("promptFeedback") or {}).get("blockReason")
+        raise RuntimeError(
+            f"Gemini refused the request ({reason})." if reason else "Gemini returned no answer."
+        )
+    candidate = candidates[0]
+    # Join the answer's text parts, skipping any "thought" parts.
+    parts = (candidate.get("content") or {}).get("parts") or []
+    out = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+    finish = candidate.get("finishReason")
+    if finish == "MAX_TOKENS":
+        raise RuntimeError(
+            "Gemini's answer was cut off because it got too long. "
+            "Select a smaller part of the text and try again."
+        )
     if not out:
-        raise RuntimeError("Gemini returned an empty response.")
+        raise RuntimeError(
+            f"Gemini returned an empty answer ({finish})." if finish else "Gemini returned an empty answer."
+        )
     return out
 
 
 def _anthropic_complete(system: str, user: str, settings: dict, api_key: str, model: str) -> str:
     """One structured completion via Anthropic REST API."""
     if not api_key:
-        raise RuntimeError("No Anthropic API key specified in ~/.llmconfig.")
+        raise RuntimeError("This Anthropic configuration has no API key. Add it again with its key in Settings.")
     if not model:
         model = "claude-3-5-sonnet-latest"
 
@@ -1293,31 +1353,30 @@ def _anthropic_complete(system: str, user: str, settings: dict, api_key: str, mo
 
 
 def _mistral_complete(
-    system: str, user: str, schema: dict | None, settings: dict, api_key: str | None = None, model: str | None = None
+    system: str, user: str, schema: dict | None, api_key: str, model: str
 ) -> str:
-    """One structured completion via the Mistral REST API. schema=None asks for
-    free-form text instead of forcing a JSON response shape."""
-    api_key = api_key or settings.get("mistralApiKey")
+    """One completion via the Mistral REST API. schema=None asks for free-form
+    text. Otherwise JSON mode is used: it doesn't take a schema and only
+    allows an object at the top level, so the array the prompts ask for may
+    come back wrapped in one (parse_json_list unwraps it)."""
     if not api_key:
         raise RuntimeError(
-            "No Mistral API key set. Add one under Settings -> Proofreading."
+            "This Mistral configuration has no API key. Add it again with its key in Settings."
         )
-    model = model or settings.get("mistralModel") or DEFAULT_MISTRAL_MODEL
-    url = "https://api.mistral.ai/v1/chat/completions"
+    model = model or DEFAULT_MISTRAL_MODEL
     body = {
         "model": model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        "temperature": 0.7,
+        "temperature": 0.3,  # proofreading and translation want faithful, not creative
     }
     if schema is not None:
         body["response_format"] = {"type": "json_object"}
-    payload = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
-        url,
-        data=payload,
+        "https://api.mistral.ai/v1/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
         method="POST",
         headers={
             "Content-Type": "application/json",
@@ -1325,36 +1384,36 @@ def _mistral_complete(
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=300) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")
-        raise RuntimeError(f"Mistral API error {e.code}: {detail[:500]}")
+        raise _api_error("Mistral", e)
     except urllib.error.URLError as e:
         raise RuntimeError(f"Could not reach Mistral: {e.reason}")
 
     choices = data.get("choices") or []
     if not choices:
-        # Often a safety block or empty response; surface what we can.
-        raise RuntimeError(f"Mistral returned no result: {json.dumps(data)[:400]}")
+        raise RuntimeError("Mistral returned no answer.")
+    if choices[0].get("finish_reason") == "length":
+        raise RuntimeError(
+            "Mistral's answer was cut off because it got too long. "
+            "Select a smaller part of the text and try again."
+        )
     out = (choices[0].get("message", {}).get("content") or "").strip()
     if not out:
-        raise RuntimeError("Mistral returned an empty response.")
+        raise RuntimeError("Mistral returned an empty answer.")
     return out
 
 
 def _ollama_complete(
-    system: str, user: str, json_schema: dict | None, settings: dict, model: str | None = None
+    system: str, user: str, json_schema: dict | None, model: str, url: str | None = None
 ) -> str:
-    """One structured completion via a local Ollama /api/chat call. json_schema
-    =None asks for free-form text instead of forcing a JSON response shape."""
-    model = model or settings.get("ollamaModel")
+    """One completion via a local Ollama /api/chat call (at `url`, default
+    DEFAULT_OLLAMA_URL). json_schema=None asks for free-form text instead of
+    forcing a JSON response shape."""
     if not model:
-        raise RuntimeError(
-            "No Ollama model set. Add one under Settings -> Proofreading."
-        )
-    base = (settings.get("ollamaUrl") or DEFAULT_OLLAMA_URL).rstrip("/")
-    url = f"{base}/api/chat"
+        raise RuntimeError("This Ollama configuration has no model.")
+    base = (url or DEFAULT_OLLAMA_URL).rstrip("/")
     body = {
         "model": model,
         "messages": [
@@ -1365,10 +1424,9 @@ def _ollama_complete(
     }
     if json_schema is not None:
         body["format"] = json_schema
-    payload = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
-        url,
-        data=payload,
+        f"{base}/api/chat",
+        data=json.dumps(body).encode("utf-8"),
         method="POST",
         headers={"Content-Type": "application/json"},
     )
@@ -1376,25 +1434,40 @@ def _ollama_complete(
         with urllib.request.urlopen(req, timeout=300) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")
-        raise RuntimeError(f"Ollama API error {e.code}: {detail[:500]}")
+        err = _api_error("Ollama", e)
+        if e.code == 404:
+            # Ollama answers 404 for a model it doesn't have; anything else
+            # answering 404 here isn't an Ollama server.
+            if "not found" in str(err) and model in str(err):
+                raise RuntimeError(
+                    f"Ollama doesn't have the model '{model}'. "
+                    f"Download it with `ollama pull {model}`, or add another model in Settings."
+                )
+            raise RuntimeError(
+                f"The server at {base} is not Ollama (it has no /api/chat). "
+                "Add the Ollama model again with the right URL in Settings; Ollama's default is http://localhost:11434."
+            )
+        raise err
     except urllib.error.URLError as e:
         raise OllamaUnavailable(
-            f"Could not reach Ollama at {base} - is 'ollama serve' running? ({e.reason})"
+            f"Could not reach Ollama at {base} — is 'ollama serve' running? ({e.reason})"
         )
 
-    out = (data.get("message", {}).get("content") or "").strip()
+    out = ((data.get("message") or {}).get("content") or "").strip()
+    if data.get("done_reason") == "length":
+        raise RuntimeError(
+            "Ollama's answer was cut off because it got too long. "
+            "Select a smaller part of the text and try again."
+        )
     if not out:
-        raise RuntimeError("Ollama returned an empty response.")
+        raise RuntimeError("Ollama returned an empty answer.")
     return out
 
 
 def proofread_text(text: str) -> tuple[str, str | None]:
     """Proofread `text` with the configured provider. Returns (raw, warning);
     raw is the JSON-array string the /api/proofread handler parses."""
-    return _ai_complete(
-        PROOFREAD_SYSTEM, text, PROOFREAD_SCHEMA, PROOFREAD_JSON_SCHEMA, load_settings()
-    )
+    return _ai_complete(PROOFREAD_SYSTEM, text, PROOFREAD_JSON_SCHEMA, load_settings())
 
 
 # The translation system prompt lives in src/TRANSLATE_SYSTEM.md so it can be
@@ -1422,9 +1495,7 @@ def translate_text(text: str, target_lang: str) -> tuple[str, str | None]:
     parses (same shape as proofreading)."""
     target = (target_lang or "").strip() or "English"
     system = TRANSLATE_SYSTEM.replace("{{TARGET_LANGUAGE}}", target)
-    return _ai_complete(
-        system, text, TRANSLATE_SCHEMA, TRANSLATE_JSON_SCHEMA, load_settings()
-    )
+    return _ai_complete(system, text, TRANSLATE_JSON_SCHEMA, load_settings())
 
 
 SUGGEST_TAGS_SYSTEM = (
@@ -1436,7 +1507,6 @@ SUGGEST_TAGS_SYSTEM = (
     "relevant first, at most 3. If none of the existing tags fit, return an "
     "empty array."
 )
-TAGS_SCHEMA = {"type": "ARRAY", "items": {"type": "STRING"}}
 TAGS_JSON_SCHEMA = {"type": "array", "items": {"type": "string"}}
 
 
@@ -1445,9 +1515,35 @@ def suggest_tags_text(text: str, existing_tags: list) -> tuple[str, str | None]:
     (raw, warning); raw is a JSON array of tag strings."""
     tag_list = ", ".join(existing_tags) if existing_tags else "(none)"
     user = f"Existing tags:\n{tag_list}\n\n---\n\nDocument:\n{text}"
-    return _ai_complete(
-        SUGGEST_TAGS_SYSTEM, user, TAGS_SCHEMA, TAGS_JSON_SCHEMA, load_settings()
-    )
+    return _ai_complete(SUGGEST_TAGS_SYSTEM, user, TAGS_JSON_SCHEMA, load_settings())
+
+
+def parse_json_list(raw: str) -> list | None:
+    """The JSON array in a model response, or None if there is none. Accepts
+    a ```json fence, text around the array, and an array wrapped in an object
+    ({"suggestions": [...]}) — what JSON mode returns, since it only allows
+    objects at the top level."""
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+        text = re.sub(r"\n?```$", "", text).strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("["), text.rfind("]")
+        if start == -1 or end < start:
+            return None
+        try:
+            data = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+    if isinstance(data, dict):
+        lists = [v for v in data.values() if isinstance(v, list)]
+        if len(lists) == 1:
+            data = lists[0]
+        elif not lists and {"original", "suggestion"} <= data.keys():
+            data = [data]  # a single item instead of a list of one
+    return data if isinstance(data, list) else None
 
 
 # ---------------------------------------------------------------------------
@@ -1690,8 +1786,10 @@ class Handler(SimpleHTTPRequestHandler):
 
         if path == "/api/llm-configs":
             try:
-                configs = load_llm_configs()
-                self.send_json({"configs": configs})
+                configs = load_llm_configs()  # may migrate the selection too
+                self.send_json(
+                    {"configs": configs, "selected": load_settings().get("proofreadProvider")}
+                )
             except Exception as e:
                 self.send_error_json(str(e))
                 return
@@ -1831,12 +1929,20 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/add-llm-config":
             try:
                 data = self.read_body()
-                provider = data.get("provider") or ""
-                model = data.get("model") or ""
-                api_key = data.get("apiKey") or ""
-                if not provider:
-                    raise ValueError("Provider is required")
-                add_llm_config(provider, model, api_key)
+                add_llm_config(
+                    data.get("provider") or "",
+                    data.get("model") or "",
+                    data.get("apiKey") or "",
+                    data.get("url") or "",
+                )
+                self.send_json({"ok": True})
+            except Exception as e:
+                self.send_error_json(str(e))
+                return
+        elif path == "/api/remove-llm-config":
+            try:
+                data = self.read_body()
+                remove_llm_config(data.get("provider") or "", data.get("model") or "")
                 self.send_json({"ok": True})
             except Exception as e:
                 self.send_error_json(str(e))
@@ -1844,6 +1950,8 @@ class Handler(SimpleHTTPRequestHandler):
         elif path == "/api/settings":
             try:
                 data = self.read_body()
+                for key in LEGACY_PROVIDER_KEYS:  # sent by an older, cached page
+                    data.pop(key, None)
                 with _lock:
                     existing = load_settings()
                     existing.update(data)
@@ -2095,19 +2203,9 @@ class Handler(SimpleHTTPRequestHandler):
                 raw, warning = proofread_text(text)
                 # The model is asked for a JSON array of suggestions. Parse it so
                 # the client gets structured data; fall back to the raw string if
-                # the response isn't valid JSON (so something is still shown).
-                stripped = raw.strip()
-                if stripped.startswith("```"):
-                    # Strip a ```json … ``` fence the model occasionally adds.
-                    stripped = re.sub(r"^```[a-zA-Z]*\n?", "", stripped)
-                    stripped = re.sub(r"\n?```$", "", stripped).strip()
-                try:
-                    suggestions = json.loads(stripped)
-                    if not isinstance(suggestions, list):
-                        raise ValueError("not a list")
-                    resp = {"suggestions": suggestions}
-                except (json.JSONDecodeError, ValueError):
-                    resp = {"result": raw}
+                # there is none (so something is still shown).
+                suggestions = parse_json_list(raw)
+                resp = {"suggestions": suggestions} if suggestions is not None else {"result": raw}
                 if warning:
                     resp["warning"] = warning
                 self.send_json(resp)
@@ -2130,17 +2228,8 @@ class Handler(SimpleHTTPRequestHandler):
                 raw, warning = translate_text(text, target_lang)
                 # Same JSON-array contract as proofreading: parse it into
                 # structured suggestions, falling back to the raw string.
-                stripped = raw.strip()
-                if stripped.startswith("```"):
-                    stripped = re.sub(r"^```[a-zA-Z]*\n?", "", stripped)
-                    stripped = re.sub(r"\n?```$", "", stripped).strip()
-                try:
-                    suggestions = json.loads(stripped)
-                    if not isinstance(suggestions, list):
-                        raise ValueError("not a list")
-                    resp = {"suggestions": suggestions}
-                except (json.JSONDecodeError, ValueError):
-                    resp = {"result": raw}
+                suggestions = parse_json_list(raw)
+                resp = {"suggestions": suggestions} if suggestions is not None else {"result": raw}
                 if warning:
                     resp["warning"] = warning
                 self.send_json(resp)
@@ -2155,16 +2244,7 @@ class Handler(SimpleHTTPRequestHandler):
                     raise ValueError("Nothing to analyse")
                 existing = data.get("existing_tags") or []
                 raw, warning = suggest_tags_text(text, existing)
-                stripped = raw.strip()
-                if stripped.startswith("```"):
-                    stripped = re.sub(r"^```[a-zA-Z]*\n?", "", stripped)
-                    stripped = re.sub(r"\n?```$", "", stripped).strip()
-                try:
-                    parsed = json.loads(stripped)
-                    if not isinstance(parsed, list):
-                        raise ValueError("not a list")
-                except (json.JSONDecodeError, ValueError):
-                    parsed = []
+                parsed = parse_json_list(raw) or []
                 # Constrain to the existing tags (case-insensitive) so a model
                 # can't introduce new ones, and return their canonical spelling.
                 canon = {

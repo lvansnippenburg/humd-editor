@@ -751,15 +751,17 @@
             <div class="settings-section">
                 <h3>Proofreading &amp; translation</h3>
                 <p class="settings-hint">
-                    Proofread or translate the document (or a selection) with Mistral (remote) or a
-                    local Ollama service. Settings are stored locally; with Ollama your text never
-                    leaves your machine.
+                    Proofread, translate or suggest tags with an AI provider: Gemini, Anthropic or
+                    Mistral (remote), or a local Ollama service, with which your text never leaves
+                    your machine. Add providers with “Add new LLM configuration” in the list below.
                 </p>
                 <label class="settings-label">Provider</label>
-                <select id="proofread-provider-select" class="settings-input">
-                    <option value="mistral">Mistral (remote)</option>
-                    <option value="ollama">Ollama (local)</option>
-                </select>
+                <div class="file-path-container">
+                    <select id="proofread-provider-select" class="settings-input" style="flex: 1"></select>
+                    <button id="remove-llmconfig-btn" type="button" title="Remove the selected AI provider">
+                        Remove
+                    </button>
+                </div>
 
                 <label class="settings-label" style="margin-top: 10px">Translation language</label>
                 <input
@@ -774,54 +776,6 @@
                     Target language the Translate button renders into (default English).
                 </p>
 
-                <div id="mistral-settings-group">
-                    <p class="settings-hint" style="margin-top: 10px">
-                        Get an API key at <code>console.mistral.ai</code>. The key is sent only to
-                        Mistral when you proofread or translate.
-                    </p>
-                    <label class="settings-label">Mistral API key</label>
-                    <input
-                        type="password"
-                        id="mistral-key-input"
-                        class="settings-input"
-                        placeholder="Paste your Mistral API key"
-                        autocomplete="off"
-                    />
-                    <label class="settings-label" style="margin-top: 10px">Model (optional)</label>
-                    <input
-                        type="text"
-                        id="mistral-model-input"
-                        class="settings-input"
-                        placeholder="mistral-large-latest"
-                        autocomplete="off"
-                        spellcheck="false"
-                    />
-                </div>
-
-                <div id="ollama-settings-group">
-                    <p class="settings-hint" style="margin-top: 10px">
-                        Requires <code>ollama serve</code> running locally and a pulled model (e.g.
-                        <code>ollama pull llama3.1</code>).
-                    </p>
-                    <label class="settings-label">Ollama URL</label>
-                    <input
-                        type="text"
-                        id="ollama-url-input"
-                        class="settings-input"
-                        placeholder="http://localhost:11434"
-                        autocomplete="off"
-                        spellcheck="false"
-                    />
-                    <label class="settings-label" style="margin-top: 10px">Model</label>
-                    <input
-                        type="text"
-                        id="ollama-model-input"
-                        class="settings-input"
-                        placeholder="llama3.1"
-                        autocomplete="off"
-                        spellcheck="false"
-                    />
-                </div>
             </div>
 
             <div class="settings-section">
@@ -868,7 +822,8 @@
             </header>
             <div class="settings-section">
                 <p class="settings-hint">
-                    Add a new configuration to your <code>~/.llmconfig</code> file.
+                    Add an AI provider and model. It is saved with your other settings; adding a
+                    provider and model that already exist replaces its API key (or URL).
                 </p>
 
                 <label class="settings-label" for="llmconfig-provider">Provider</label>
@@ -897,6 +852,18 @@
                         class="settings-input"
                         placeholder="Enter API key"
                         autocomplete="off"
+                    />
+                </div>
+
+                <div id="llmconfig-url-group">
+                    <label class="settings-label" for="llmconfig-url" style="margin-top: 10px;">Ollama URL</label>
+                    <input
+                        type="text"
+                        id="llmconfig-url"
+                        class="settings-input"
+                        placeholder="http://localhost:11434"
+                        autocomplete="off"
+                        spellcheck="false"
                     />
                 </div>
             </div>

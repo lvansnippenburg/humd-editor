@@ -172,7 +172,9 @@ This needs Zotero to be running with the **ZotSeek** plugin (with its MCP server
 
 ## AI assistance
 
-Three buttons in the toolbar use an AI model to help with the document you have open. The provider is configured under **Settings → Proofreading & translation** — choose either **Mistral** (remote; needs an API key) or **Ollama** (local; needs `ollama serve` running and a model pulled, so your text never leaves your machine). If Ollama is selected but not running, the app quietly falls back to Mistral and tells you so.
+Three buttons in the toolbar use an AI model to help with the document you have open. The AI provider is chosen under **Settings → Proofreading & translation**: **Gemini**, **Anthropic** or **Mistral** (remote; each needs an API key) or **Ollama** (local; needs `ollama serve` running and the model pulled, so your text never leaves your machine). If Ollama is selected but not running, the app falls back to a Mistral model you've set up, and tells you so.
+
+Add a provider with **➕ Add new LLM configuration…** at the bottom of the Provider list: choose the provider, enter the model name and its API key (for Ollama: its URL, if it isn't the default `http://localhost:11434`). Adding the same provider and model again replaces its key. **Remove** deletes the selected one. They are saved with your other settings in `~/.humd-editor/settings.json`, under `llmConfigs`. (Older versions kept these in `~/.llmconfig`, and Mistral and Ollama in separate settings; these are imported once, after which `~/.llmconfig` can be deleted.)
 
 ### Proofread
 
