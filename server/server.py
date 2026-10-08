@@ -533,12 +533,19 @@ def _find_python() -> str:
     return found
 
 
+# The worker keeps the model loaded (several GB) between questions. After this
+# many seconds without a request it is stopped, which frees that memory; the
+# next question starts a new one and loads the model again.
+LLM_WORKER_IDLE_TIMEOUT = 5 * 60
+
+
 class LlmSearch:
     def __init__(self):
         self.lock = threading.Lock()
         self.proc = None
         self.job = {"state": "idle"}
         self.job_id = 0
+        self.idle_timer = None
 
     def _spawn(self):
         self.proc = subprocess.Popen(
@@ -575,11 +582,14 @@ class LlmSearch:
                     if ev.get("answer"):
                         job["answer"] = ev["answer"]
                     job["state"] = "done"
+                    self._arm_idle_timer(proc)
                 elif kind in ("error", "fatal"):
                     job["state"] = "error"
                     job["error"] = ev.get("message", "LLM search failed")
                     if kind == "fatal":
                         fatal = job["error"]
+                    else:
+                        self._arm_idle_timer(proc)
         proc.wait()
         with self.lock:
             if self.proc is proc:
@@ -590,8 +600,37 @@ class LlmSearch:
                     f"The LLM search process stopped unexpectedly (exit code {proc.returncode})."
                 )
 
+    def _arm_idle_timer(self, proc):
+        """(Re)start the countdown to stopping an idle worker. Called with
+        self.lock held, whenever a request has finished."""
+        if self.idle_timer:
+            self.idle_timer.cancel()
+        self.idle_timer = threading.Timer(
+            LLM_WORKER_IDLE_TIMEOUT, self._stop_idle_worker, args=(proc, self.job_id)
+        )
+        self.idle_timer.daemon = True
+        self.idle_timer.start()
+
+    def _stop_idle_worker(self, proc, job_id):
+        with self.lock:
+            # Only if no request came in since the timer was armed.
+            if self.proc is not proc or self.job_id != job_id or self.job.get("state") == "running":
+                return
+            self.proc = None
+            self.idle_timer = None
+        try:
+            proc.stdin.close()  # the worker ends at end of input
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        except Exception:
+            pass
+
     def start(self, vault: str, query: str, model: str | None):
         with self.lock:
+            if self.idle_timer:
+                self.idle_timer.cancel()
+                self.idle_timer = None
             if self.job.get("state") == "running":
                 raise RuntimeError("Still answering the previous question — please wait.")
             self.job_id += 1

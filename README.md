@@ -63,7 +63,7 @@ The first question also downloads the language model (several GB) and a small em
 ```
 "llmSearchModel": "mlx-community/Qwen2.5-3B-Instruct-4bit"
 ```
-Any MLX chat model on Hugging Face (or a local model folder) works; the default is `mlx-community/Qwen2.5-7B-Instruct-4bit`. Smaller models answer faster and use less memory, larger ones answer better.
+Any MLX chat model on Hugging Face (or a local model folder) works; the default is `mlx-community/Qwen2.5-7B-Instruct-4bit`. Smaller models answer faster and use less memory, larger ones answer better. The model stays in memory between questions and is unloaded after 5 minutes without one (`LLM_WORKER_IDLE_TIMEOUT` in `server/server.py`).
 
 **Command line.** The same search also works in Terminal, without the editor:
 ```

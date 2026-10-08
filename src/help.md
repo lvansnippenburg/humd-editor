@@ -153,7 +153,7 @@ How it finds passages: keyword matching (good for names and exact terms) combine
 Good to know:
 
 - **Requirements:** a Mac with Apple silicon (M1 or later) and Python 3.9 or newer. See the README for details.
-- **First use takes a while.** The needed Python packages are installed automatically (about a minute), and the language model (several GB) and a small search model are downloaded once. The panel shows what is happening. Later questions start much faster: the model stays loaded until you quit the app.
+- **First use takes a while.** The needed Python packages are installed automatically (about a minute), and the language model (several GB) and a small search model are downloaded once. The panel shows what is happening. Later questions start much faster, because the model stays loaded (it takes about 5 GB of memory). After 5 minutes without a question it is unloaded to free that memory; the next question then takes a few seconds longer while the model loads again.
 - **If installing fails**, the panel shows the error and the exact commands to install the packages by hand in Terminal.
 - One question is answered at a time. You can switch back to **Words** while an answer is being written; switching to **LLM Search** again shows it.
 - Notes in hidden folders (such as `.trash`) are not searched.
