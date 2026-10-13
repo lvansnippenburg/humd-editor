@@ -43,6 +43,35 @@ The **ZotSeek** text action finds sources in your Zotero library for a selected 
 
 Nothing else has to be installed in the editor, and all searching happens locally in Zotero.
 
+## apfel: Apple's on-device model (optional)
+
+Proofread, Translate and Suggest tags can use the language model built into macOS, through [apfel](https://github.com/Arthur-Ficial/apfel). Your text never leaves your Mac, and no account or API key is needed. It requires:
+
+- macOS 26 (Tahoe) or newer on a Mac with Apple silicon (M1 or later), and
+- Apple Intelligence turned on (System Settings → Apple Intelligence & Siri).
+
+Install apfel with Homebrew, and check that the model is available:
+```
+brew install apfel
+apfel --model-info        # should show "available: yes"
+```
+
+Then add it in the editor: **Settings → Proofreading & translation → Provider → ➕ Add new LLM configuration…**, choose **apfel**, leave the URL empty, and click **Add Configuration**. Select it as the provider and save the settings.
+
+**Starting apfel.** With the URL left empty, nothing has to be started: the editor runs the `apfel` command for each request (it looks in `/opt/homebrew/bin`, `/usr/local/bin` and your `PATH`). The model itself is kept loaded by macOS, so this is as fast as a server.
+
+To use apfel as a server instead — for example on another Mac — start it and enter its URL in the configuration:
+```
+apfel --serve                     # in a Terminal window, until you close it
+brew services start apfel         # or: in the background, also after a restart
+brew services stop apfel          # stop the background server
+```
+The server listens on `http://127.0.0.1:11434/v1`, the port Ollama also uses; both can run side by side, as apfel only listens on `127.0.0.1`. To keep them apart, start apfel with `apfel --serve --port 11435` and use `http://127.0.0.1:11435/v1` as the URL. If no URL is set and the `apfel` command isn't found, the editor tries that default server address.
+
+**Limits.** The model is small. It translates a few paragraphs well, but proofreading is weaker than with the remote providers. Each request — instructions, your text and the answer together — must fit in about 4,000 tokens (8,000 on macOS 27 with an M3 or newer and 12 GB of memory; `apfel --model-info` shows yours). For translation that is roughly 4,000 characters of text at a time; select a part of a longer document. If the text is too long, the editor says so.
+
+**Updating and removing.** `brew upgrade apfel` updates it; `brew uninstall apfel` removes it (stop the background server first, if you started one).
+
 ## LLM search (optional)
 
 The **LLM Search** option in the Search panel answers questions about your notes with a language model that runs locally (see [Help.md](src/help.md#llm-search) for how to use it). It is implemented by [`server/mdsearch.py`](server/mdsearch.py) and needs:

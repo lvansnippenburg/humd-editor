@@ -5015,7 +5015,9 @@ const LLM_PROVIDER_NAMES = {
   gemini: "Gemini",
   anthropic: "Anthropic",
   mistral: "Mistral",
+  openai: "OpenAI",
   ollama: "Ollama (local)",
+  apfel: "apfel (local)",
 };
 
 // The Provider list: the configured providers (settings.json "llmConfigs"),
@@ -5062,20 +5064,35 @@ function closeLlmConfigDialog() {
   document.getElementById("llmconfig-dialog").close();
 }
 
-// Ollama needs a URL instead of an API key.
+// Per provider: its URL default (if it has a URL), whether it takes no or an
+// optional API key, and an example model.
+const LLM_PROVIDER_FIELDS = {
+  gemini: { model: "gemini-2.5-flash" },
+  anthropic: { model: "claude-opus-5-5" },
+  mistral: { model: "mistral-small-latest" },
+  openai: { model: "gpt-5-mini", url: "https://api.openai.com/v1" },
+  ollama: { model: "llama3.1", url: "http://localhost:11434", noKey: true },
+  // Empty URL: the server runs the `apfel` command; a URL means `apfel --serve`.
+  apfel: { model: "apple-foundationmodel", url: "empty: runs the apfel command", keyOptional: true },
+};
+
 function updateLlmConfigKeyVisibility() {
   const provider = document.getElementById("llmconfig-provider").value;
-  document.getElementById("llmconfig-key-group").style.display =
-    provider === "ollama" ? "none" : "";
-  document.getElementById("llmconfig-url-group").style.display =
-    provider === "ollama" ? "" : "none";
-  const examples = {
-    gemini: "gemini-2.5-flash",
-    anthropic: "claude-opus-5-5",
-    mistral: "mistral-small-latest",
-    ollama: "llama3.1",
-  };
-  document.getElementById("llmconfig-model").placeholder = `e.g. ${examples[provider]}`;
+  const f = LLM_PROVIDER_FIELDS[provider];
+  document.getElementById("llmconfig-key-group").style.display = f.noKey ? "none" : "";
+  document.getElementById("llmconfig-key-label").textContent =
+    provider === "openai"
+      ? "API Key (optional for servers other than OpenAI)"
+      : f.keyOptional
+        ? "API Key (only if the server requires a token)"
+        : "API Key";
+  document.getElementById("llmconfig-url-group").style.display = f.url ? "" : "none";
+  document.getElementById("llmconfig-url").placeholder = f.url || "";
+  const modelInput = document.getElementById("llmconfig-model");
+  modelInput.placeholder = `e.g. ${f.model}`;
+  // apfel serves a single model.
+  if (provider === "apfel") modelInput.value = f.model;
+  else if (modelInput.value === LLM_PROVIDER_FIELDS.apfel.model) modelInput.value = "";
 }
 
 async function saveLlmConfig() {
@@ -5088,8 +5105,8 @@ async function saveLlmConfig() {
     await apiPost("/api/add-llm-config", {
       provider,
       model,
-      apiKey: provider === "ollama" ? "" : apiKey,
-      url: provider === "ollama" ? url : "",
+      apiKey: LLM_PROVIDER_FIELDS[provider].noKey ? "" : apiKey,
+      url: LLM_PROVIDER_FIELDS[provider].url ? url : "",
     });
   } catch (err) {
     alert(apiErrorMessage(err));

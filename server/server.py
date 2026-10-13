@@ -819,7 +819,7 @@ def rename_wikilink_targets(vault_path: str, old_stem: str, new_stem: str) -> in
 # Common install locations to check beyond PATH. A .app launched from Finder
 # inherits a minimal PATH that omits Homebrew/MacPorts/~/.local, so we can't
 # rely on PATH alone to locate pandoc.
-_PANDOC_DIRS = [
+_TOOL_DIRS = [
     "/opt/homebrew/bin",
     "/usr/local/bin",
     "/opt/local/bin",
@@ -828,12 +828,18 @@ _PANDOC_DIRS = [
 ]
 
 
-def _find_pandoc() -> str:
+def _find_tool(name: str) -> str | None:
+    """A command-line tool on PATH or in the usual install folders (an app
+    started from Finder doesn't get the shell's PATH)."""
     search = os.environ.get("PATH", "")
-    for d in _PANDOC_DIRS:
+    for d in _TOOL_DIRS:
         if d not in search.split(os.pathsep):
             search += os.pathsep + d
-    found = shutil.which("pandoc", path=search)
+    return shutil.which(name, path=search)
+
+
+def _find_pandoc() -> str:
+    found = _find_tool("pandoc")
     if not found:
         raise FileNotFoundError(
             "pandoc not found. Install it (e.g. `brew install pandoc`) or turn "
@@ -1057,6 +1063,16 @@ TRANSLATE_JSON_SCHEMA = {
 }
 DEFAULT_MISTRAL_MODEL = "mistral-large-latest"
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
+DEFAULT_OPENAI_URL = "https://api.openai.com/v1"
+# apfel (https://github.com/Arthur-Ficial/apfel) gives access to Apple's
+# on-device model. Without a URL the `apfel` command is run per request (no
+# server needed; the model itself stays loaded in a macOS service, so this is
+# as fast as the server). With a URL, or if the command isn't installed,
+# `apfel --serve` is used through the OpenAI API. Its default port is
+# Ollama's, but it only listens on 127.0.0.1 (IPv4), so this reaches it even
+# when Ollama runs too.
+DEFAULT_APFEL_URL = "http://127.0.0.1:11434/v1"
+APFEL_MODEL = "apple-foundationmodel"
 
 
 class OllamaUnavailable(RuntimeError):
@@ -1066,8 +1082,10 @@ class OllamaUnavailable(RuntimeError):
 # --- LLM configurations (settings.json "llmConfigs") -----------------------
 #
 # The AI providers for Settings → Proofreading & translation, stored in
-# settings.json as [{"provider", "model", "apiKey"}], one per provider/model;
-# Ollama entries have a "url" instead of a key. "proofreadProvider" holds the
+# settings.json as [{"provider", "model", "apiKey", "url"}], one per
+# provider/model. "url" is only used by Ollama, OpenAI and apfel (default
+# DEFAULT_*_URL); Ollama and apfel need no API key, and neither does an
+# OpenAI-compatible server at another URL. "proofreadProvider" holds the
 # selected one as "<provider>/<model>".
 #
 # Older versions kept providers elsewhere, imported once by load_llm_configs:
@@ -1077,7 +1095,15 @@ class OllamaUnavailable(RuntimeError):
 
 LEGACY_LLMCONFIG_PATH = Path.home() / ".llmconfig"
 LEGACY_PROVIDER_KEYS = ("mistralApiKey", "mistralModel", "ollamaUrl", "ollamaModel")
-LLM_PROVIDERS = ("gemini", "anthropic", "mistral", "ollama")
+LLM_PROVIDER_NAMES = {
+    "gemini": "Gemini",
+    "anthropic": "Anthropic",
+    "mistral": "Mistral",
+    "openai": "OpenAI",
+    "ollama": "Ollama",
+    "apfel": "apfel",
+}
+LLM_PROVIDERS = tuple(LLM_PROVIDER_NAMES)
 
 
 def _llm_config_entry(provider: str, model: str, api_key: str = "", url: str = "") -> dict:
@@ -1179,8 +1205,13 @@ def add_llm_config(provider: str, model: str, api_key: str = "", url: str = "") 
         raise ValueError(f"Unknown provider '{provider}' (supported: {', '.join(LLM_PROVIDERS)})")
     if not entry["model"]:
         raise ValueError("A model name is required")
-    if entry["provider"] != "ollama" and not entry["apiKey"]:
-        raise ValueError(f"An API key is required for {entry['provider'].capitalize()}")
+    if entry["provider"] == "apfel" and not entry["model"]:
+        entry["model"] = APFEL_MODEL
+    key_needed = entry["provider"] in ("gemini", "anthropic", "mistral") or (
+        entry["provider"] == "openai" and entry.get("url", DEFAULT_OPENAI_URL) == DEFAULT_OPENAI_URL
+    )
+    if key_needed and not entry["apiKey"]:
+        raise ValueError(f"An API key is required for {LLM_PROVIDER_NAMES[entry['provider']]}")
     load_llm_configs()  # import older settings first, so they aren't skipped later
     with _lock:
         settings = load_settings()
@@ -1237,6 +1268,17 @@ def _ai_complete(
         return _anthropic_complete(system, user, settings, api_key, model), None
     if provider == "mistral":
         return _mistral_complete(system, user, json_schema, api_key, model), None
+    if provider == "openai":
+        url = cfg.get("url") or DEFAULT_OPENAI_URL
+        name = "OpenAI" if url == DEFAULT_OPENAI_URL else f"The server at {url}"
+        return _openai_complete(system, user, json_schema, api_key, model, url, name), None
+    if provider == "apfel":
+        if not cfg.get("url"):
+            apfel = _find_tool("apfel")
+            if apfel:
+                return _apfel_cli_complete(apfel, system, user, json_schema), None
+        url = cfg.get("url") or DEFAULT_APFEL_URL
+        return _openai_complete(system, user, json_schema, api_key, model, url, "apfel"), None
     if provider == "ollama":
         return _ollama_or_mistral(system, user, json_schema, cfg, configs)
     raise RuntimeError(
@@ -1444,6 +1486,137 @@ def _mistral_complete(
     return out
 
 
+def _openai_complete(
+    system: str,
+    user: str,
+    json_schema: dict | None,
+    api_key: str,
+    model: str,
+    url: str,
+    name: str,
+) -> str:
+    """One completion via the OpenAI chat completions API, at `url`: OpenAI
+    itself or a compatible server such as apfel. json_schema=None asks for
+    free-form text. The schema is wrapped in an object, as structured output
+    requires one at the top level (parse_json_list unwraps it); a server
+    that rejects structured output is asked again with JSON mode, then
+    without either."""
+    base = url.rstrip("/")
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    }
+    formats = [None]
+    if json_schema is not None:
+        wrapped = {"type": "object", "properties": {"items": json_schema}, "required": ["items"]}
+        formats = [
+            {"type": "json_schema", "json_schema": {"name": "result", "schema": wrapped, "strict": False}},
+            {"type": "json_object"},
+            None,
+        ]
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    for i, fmt in enumerate(formats):
+        if fmt:
+            body["response_format"] = fmt
+        else:
+            body.pop("response_format", None)
+        req = urllib.request.Request(
+            f"{base}/chat/completions",
+            data=json.dumps(body).encode("utf-8"),
+            method="POST",
+            headers=headers,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as e:
+            err = _api_error(name, e)
+            if any(t in str(err) for t in ("context window", "context overflow", "context_length")):
+                raise RuntimeError(
+                    f"The text is too long for {name}'s model. "
+                    "Select a smaller part of the text and try again."
+                )
+            if e.code in (400, 422) and i < len(formats) - 1 and "response_format" in body:
+                continue  # try a simpler response format
+            if e.code == 404:
+                raise RuntimeError(
+                    f"{err} Check the URL ({base}) and the model name ('{model}')."
+                )
+            raise err
+        except urllib.error.URLError as e:
+            hint = " — is `apfel --serve` running?" if name == "apfel" else ""
+            raise RuntimeError(f"Could not reach {name} at {base}{hint} ({e.reason})")
+
+    choices = data.get("choices") or []
+    if not choices:
+        raise RuntimeError(f"{name} returned no answer.")
+    if choices[0].get("finish_reason") == "length":
+        raise RuntimeError(
+            f"{name}'s answer was cut off because it got too long. "
+            "Select a smaller part of the text and try again."
+        )
+    out = (choices[0].get("message", {}).get("content") or "").strip()
+    if not out:
+        raise RuntimeError(f"{name} returned an empty answer.")
+    return out
+
+
+# apfel's exit codes (`apfel --help`).
+_APFEL_EXIT_MESSAGES = {
+    3: "Apple's model declined this text (content guardrails).",
+    4: "The text is too long for apfel's model. Select a smaller part of the text and try again.",
+    5: "Apple's on-device model isn't available. Turn on Apple Intelligence in System Settings.",
+    6: "Apple's on-device model is busy. Try again in a moment.",
+}
+
+
+def _apfel_cli_complete(apfel: str, system: str, user: str, json_schema: dict | None) -> str:
+    """One completion by running the `apfel` command. The text goes in on
+    stdin; with json_schema, --schema makes the model return JSON in that
+    shape, wrapped in an object as with the OpenAI API."""
+    cmd = [apfel, "-q", "-s", system]
+    schema_file = None
+    try:
+        if json_schema is not None:
+            wrapped = {"type": "object", "properties": {"items": json_schema}, "required": ["items"]}
+            schema_file = tempfile.NamedTemporaryFile(
+                "w", suffix=".json", delete=False, encoding="utf-8"
+            )
+            json.dump(wrapped, schema_file)
+            schema_file.close()
+            cmd += ["--schema", schema_file.name]
+        try:
+            result = subprocess.run(
+                cmd, input=user, capture_output=True, text=True, encoding="utf-8", timeout=300
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("apfel took longer than 5 minutes and was stopped.")
+    finally:
+        if schema_file:
+            os.unlink(schema_file.name)
+    err = " ".join(result.stderr.split())
+    if result.returncode != 0:
+        raise RuntimeError(
+            _APFEL_EXIT_MESSAGES.get(result.returncode)
+            or f"apfel failed (exit code {result.returncode}): {err[:300] or 'no message'}"
+        )
+    if "finish_reason=length" in err:
+        raise RuntimeError(
+            "apfel's answer was cut off because it got too long. "
+            "Select a smaller part of the text and try again."
+        )
+    out = result.stdout.strip()
+    if not out:
+        raise RuntimeError("apfel returned an empty answer.")
+    return out
+
+
 def _ollama_complete(
     system: str, user: str, json_schema: dict | None, model: str, url: str | None = None
 ) -> str:
@@ -1599,11 +1772,7 @@ def parse_json_list(raw: str) -> list | None:
 def _find_git() -> str | None:
     """Locate the git executable, checking common install dirs beyond PATH
     (a Finder-launched .app inherits a minimal PATH). None if not installed."""
-    search = os.environ.get("PATH", "")
-    for d in _PANDOC_DIRS:
-        if d not in search.split(os.pathsep):
-            search += os.pathsep + d
-    return shutil.which("git", path=search)
+    return _find_tool("git")
 
 
 def _git(args: list, vault: Path, timeout: int = 60) -> subprocess.CompletedProcess:
