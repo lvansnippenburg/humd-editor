@@ -5,6 +5,9 @@
 //   ^superscript^   <->  <sup>            (ProseMirror mark)
 //   ~subscript~     <->  <sub>            (ProseMirror mark)
 //   [[wikilink]]    <->  <a class=wikilink href="file://…">   (inline atom node)
+//   [@key, p. 4]    <->  <span class=citation-ref data-raw="@key, p. 4">
+//                        (inline atom node; the Pandoc citation is kept
+//                        verbatim, the app shows it as "(Author, year, p. 4)")
 //   ^[footnote]     <->  <sup class=footnote-ref>             (inline atom node,
 //                        content lives in an attribute, shown/edited in the
 //                        sidebar, never inline)  — GFM [^id] references are
@@ -38,6 +41,10 @@ const SUP_RE = /(?<!\[)\^(?!\[)(?=\S)([^\^\n]+?)\^/g;
 const INLINE_FOOTNOTE_RE = /\^\[((?:[^[\]]|\[[^\]]*\])*)\]/g;
 // [[target]] or [[target|label]]
 const WIKILINK_RE = /\[\[([^\]|\n]+?)(?:\|([^\]\n]+?))?\]\]/g;
+// Pandoc citation: [@key], [see @a, p. 4; -@b], … — not a link ([x](…)) or a
+// span ([x]{…}); the @ must start a key (so [me@example.org] isn't one).
+const CITATION_RE = /\[([^[\]\n]*@[^[\]\n]*)\](?![({])/g;
+const isCitation = (inner) => /(^|[\s;\-])@[\w]/.test(inner);
 
 const textChildren = (value) => [{ type: "text", value }];
 
@@ -74,6 +81,10 @@ const remarkHumd = $remark("remarkHumdSyntax", () => () => (tree) => {
       INLINE_FOOTNOTE_RE,
       (_m, inner) => ({ type: "footnote", content: inner.trim(), children: [] }),
     ],
+    [
+      CITATION_RE,
+      (_m, inner) => (isCitation(inner) ? { type: "citation", raw: inner, children: [] } : false),
+    ],
     [SUP_RE, (_m, inner) => ({ type: "sup", children: textChildren(inner) })],
     [SUB_RE, (_m, inner) => ({ type: "sub", children: textChildren(inner) })],
     [
@@ -91,16 +102,21 @@ const remarkHumd = $remark("remarkHumdSyntax", () => () => (tree) => {
 // Serialisers: `toMarkdown` handlers registered on the remark instance so the
 // `state.withMark` / `state.addNode` calls in the schema runners land as real
 // Markdown. Modelled on mdast-util-gfm-strikethrough's handler.
-const wrapHandler = (delim) => {
+// `noSpaces`: Pandoc's ^superscript^ and ~subscript~ may not contain spaces,
+// so they are written as non-breaking spaces (which Pandoc accepts, and which
+// look the same).
+const wrapHandler = (delim, noSpaces = false) => {
   const handle = (node, _parent, state, info) => {
     const tracker = state.createTracker(info);
     const exit = state.enter(node.type);
     let value = tracker.move(delim);
-    value += state.containerPhrasing(node, {
+    let inner = state.containerPhrasing(node, {
       ...tracker.current(),
       before: value,
       after: delim[0],
     });
+    if (noSpaces) inner = inner.replace(/ /g, "\u00a0");
+    value += inner;
     value += tracker.move(delim);
     exit();
     return value;
@@ -114,11 +130,12 @@ const remarkHumdStringify = $remark("remarkHumdStringify", () => function () {
   list.push({
     handlers: {
       highlight: wrapHandler("=="),
-      sup: wrapHandler("^"),
-      sub: wrapHandler("~"),
+      sup: wrapHandler("^", true),
+      sub: wrapHandler("~", true),
       wikilink: (node) =>
         node.label ? `[[${node.target}|${node.label}]]` : `[[${node.target}]]`,
       footnote: (node) => `^[${node.content ?? ""}]`,
+      citation: (node) => `[${node.raw ?? ""}]`, // verbatim: never escaped
     },
   });
   this.data("toMarkdownExtensions", list);
@@ -180,6 +197,7 @@ export const wikilinkSchema = $nodeSchema("wikilink", () => ({
   parseDOM: [
     {
       tag: "a.wikilink",
+      priority: 60, // before the link mark's `a[href]` rule (e.g. when pasting)
       getAttrs: (dom) => ({
         target: dom.getAttribute("data-target") || dom.textContent || "",
         label: dom.getAttribute("data-label") || null,
@@ -261,6 +279,41 @@ export const footnoteSchema = $nodeSchema("footnote", () => ({
 }));
 
 // Everything the editor needs to `.use(...)`, in dependency order.
+export const citationSchema = $nodeSchema("citation", () => ({
+  inline: true,
+  group: "inline",
+  atom: true,
+  selectable: true,
+  draggable: false,
+  marks: "",
+  attrs: { raw: { default: "", validate: "string" } },
+  parseDOM: [
+    {
+      tag: "span.citation-ref[data-raw]",
+      priority: 60,
+      getAttrs: (dom) => ({ raw: dom.getAttribute("data-raw") || "" }),
+    },
+  ],
+  // The app replaces the text with "(Author, year, p. 4)" (see wysiwyg.js).
+  toDOM: (node) => [
+    "span",
+    { class: "citation-ref", "data-raw": node.attrs.raw, title: `[${node.attrs.raw}]` },
+    `[${node.attrs.raw}]`,
+  ],
+  parseMarkdown: {
+    match: ({ type }) => type === "citation",
+    runner: (state, node, type) => {
+      state.addNode(type, { raw: node.raw });
+    },
+  },
+  toMarkdown: {
+    match: (node) => node.type.name === "citation",
+    runner: (state, node) => {
+      state.addNode("citation", undefined, undefined, { raw: node.attrs.raw });
+    },
+  },
+}));
+
 export const humdSyntaxPlugins = [
   remarkHumd,
   remarkHumdStringify,
@@ -269,4 +322,5 @@ export const humdSyntaxPlugins = [
   subSchema,
   wikilinkSchema,
   footnoteSchema,
+  citationSchema,
 ].flat();

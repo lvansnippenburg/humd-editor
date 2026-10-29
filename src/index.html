@@ -294,7 +294,7 @@
 
             <div class="resize-handle" id="sidebar-resize"></div>
 
-            <!-- Editor + preview; flex direction depends on preview position -->
+            <!-- Editor (Markdown source or the formatted Milkdown view, ⌘/) -->
             <div id="main-area">
             <!-- Editor Pane -->
             <section id="editor-pane">
@@ -470,43 +470,9 @@
                         </button>
 
                         <button
-                            class="icon-btn split-pane-btn"
-                            title="Split pane horizontally"
-                            aria-label="Split pane"
-                        >
-                            <svg
-                                width="14"
-                                height="14"
-                                viewBox="0 0 16 16"
-                                fill="none"
-                                xmlns="http://www.w3.org/2000/svg"
-                            >
-                                <rect
-                                    x="2"
-                                    y="2"
-                                    width="12"
-                                    height="12"
-                                    rx="1.5"
-                                    stroke="currentColor"
-                                    stroke-width="1.5"
-                                    fill="none"
-                                />
-                                <line
-                                    x1="2"
-                                    y1="8"
-                                    x2="14"
-                                    y2="8"
-                                    stroke="currentColor"
-                                    stroke-width="1.5"
-                                />
-                            </svg>
-                        </button>
-
-                        <button
-                            class="icon-btn close-pane-btn"
-                            title="Close this split"
-                            aria-label="Close pane"
-                            style="display: none"
+                            class="icon-btn print-btn"
+                            title="Print (or save as PDF)"
+                            aria-label="Print"
                         >
                             <svg
                                 width="14"
@@ -516,18 +482,16 @@
                                 xmlns="http://www.w3.org/2000/svg"
                             >
                                 <path
-                                    d="M4 4l8 8M12 4l-8 8"
-                                    stroke="currentColor"
-                                    stroke-width="1.5"
-                                    stroke-linecap="round"
+                                    d="M4 1.5h8v3.5H4V1.5zm-1.5 4A1.5 1.5 0 0 0 1 7v4a1.5 1.5 0 0 0 1.5 1.5H4V15h8v-2.5h1.5A1.5 1.5 0 0 0 15 11V7a1.5 1.5 0 0 0-1.5-1.5h-11zM5 11h6v3H5v-3zm7-3.25a.75.75 0 1 1 0 1.5.75.75 0 0 1 0-1.5z"
+                                    fill="currentColor"
                                 />
                             </svg>
                         </button>
 
                         <button
                             class="icon-btn wysiwyg-toggle-btn"
-                            title="Switch to rich-text (WYSIWYG) editing"
-                            aria-label="Toggle rich-text editing"
+                            title="Show the formatted document (⌘/)"
+                            aria-label="Switch between formatted document and Markdown"
                         >
                             <svg
                                 width="14"
@@ -545,26 +509,6 @@
                             </svg>
                         </button>
 
-                        <button
-                            class="icon-btn preview-toggle-btn active"
-                            title="Hide preview (⌘E)"
-                            aria-label="Toggle preview"
-                        >
-                            <svg
-                                width="14"
-                                height="14"
-                                viewBox="0 0 15 15"
-                                fill="none"
-                                xmlns="http://www.w3.org/2000/svg"
-                            >
-                                <path
-                                    d="M7.5 11C4.80285 11 2.52952 9.62184 1.09622 7.50001C2.52952 5.37816 4.80285 4 7.5 4C10.1971 4 12.4705 5.37816 13.9038 7.50001C12.4705 9.62183 10.1971 11 7.5 11ZM7.5 3C4.30786 3 1.65639 4.70638 0.0760002 7.23501C-0.0253338 7.39715 -0.0253334 7.60288 0.0760014 7.76501C1.65639 10.2936 4.30786 12 7.5 12C10.6921 12 13.3436 10.2936 14.924 7.76501C15.0253 7.60288 15.0253 7.39715 14.924 7.23501C13.3436 4.70638 10.6921 3 7.5 3ZM7.5 9.5C8.60457 9.5 9.5 8.60457 9.5 7.5C9.5 6.39543 8.60457 5.5 7.5 5.5C6.39543 5.5 5.5 6.39543 5.5 7.5C5.5 8.60457 6.39543 9.5 7.5 9.5Z"
-                                    fill="currentColor"
-                                    fill-rule="evenodd"
-                                    clip-rule="evenodd"
-                                />
-                            </svg>
-                        </button>
                     </div>
                     <div class="note-tags"></div>
                     <textarea
@@ -585,42 +529,13 @@
                         "
                     ></div>
                     <div class="media-container"></div>
+                    <div class="editor-status-line">
+                        <span class="doc-stats"></span>
+                        <span class="doc-mode"></span>
+                    </div>
                 </div>
             </template>
 
-            <div class="resize-handle" id="editor-resize"></div>
-
-            <!-- Preview Pane -->
-            <section id="preview-pane">
-                <div id="preview-header">
-                    <span>Preview</span>
-                    <span id="preview-stats"></span>
-                    <button
-                        id="print-preview-btn"
-                        class="icon-btn"
-                        aria-label="Print preview"
-                        title="Print preview"
-                    >
-                        <svg
-                            width="14"
-                            height="14"
-                            viewBox="0 0 16 16"
-                            fill="none"
-                            xmlns="http://www.w3.org/2000/svg"
-                        >
-                            <path
-                                d="M4 1.5h8v3.5H4V1.5zm-1.5 4A1.5 1.5 0 0 0 1 7v4a1.5 1.5 0 0 0 1.5 1.5H4V15h8v-2.5h1.5A1.5 1.5 0 0 0 15 11V7a1.5 1.5 0 0 0-1.5-1.5h-11zM5 11h6v3H5v-3zm7-3.25a.75.75 0 1 1 0 1.5.75.75 0 0 1 0-1.5z"
-                                fill="currentColor"
-                            />
-                        </svg>
-                    </button>
-                </div>
-                <iframe
-                    id="preview"
-                    title="Markdown preview"
-                    sandbox="allow-scripts allow-same-origin allow-modals"
-                ></iframe>
-            </section>
             </div>
         </div>
 
@@ -682,29 +597,16 @@
                     alone.
                 </p>
                 <label class="settings-toggle" style="margin-top: 8px">
-                    <input type="checkbox" id="use-pandoc-toggle" />
-                    <span>Use Pandoc for rendering preview</span>
-                </label>
-                <p class="settings-hint">
-                    Renders the preview using the system Pandoc installation instead of the built-in
-                    renderer. Pandoc produces more accurate output for complex documents but
-                    requires Pandoc to be installed.
-                </p>
-                <label class="settings-toggle" style="margin-top: 8px">
                     <input type="checkbox" id="number-sections-toggle" />
                     <span>Number chapter and paragraph titles</span>
                 </label>
                 <p class="settings-hint">
-                    Number headings (1, 1.1, 1.1.1, …) in the preview. Override per document via
+                    Number headings (1, 1.1, 1.1.1, …) in the formatted document and when
+                    printing. Override per document via
                     YAML front matter:
                     <code>output: html_document: number_sections: true</code> (or
                     <code>false</code>).
                 </p>
-                <label class="settings-label" style="margin-top: 10px">Preview position</label>
-                <select id="preview-position-select" class="settings-input">
-                    <option value="right">Right of the editor</option>
-                    <option value="bottom">Below the editor</option>
-                </select>
             </div>
 
             <div class="settings-section">
@@ -961,7 +863,6 @@
         <nav id="tab-bar">
             <button class="tab-btn" data-tab="files">Files</button>
             <button class="tab-btn" data-tab="editor">Edit</button>
-            <button class="tab-btn" data-tab="preview">Preview</button>
             <button class="tab-btn" id="settings-tab-btn">Settings</button>
         </nav>
 

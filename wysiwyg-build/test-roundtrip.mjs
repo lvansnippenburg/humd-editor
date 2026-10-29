@@ -29,6 +29,9 @@ const samples = [
   "| A | B |\n| - | - |\n| 1 | 2 |",
   "- [ ] task\n- [x] done",
   "**bold** and _em_ and `code` and ~~strike~~ unchanged.",
+  "A citation [@abulafia2014, 12] and [see @a2020, p. 5; -@b2019, chap. 3].",
+  "Not citations: [me@example.org], [a link](https://x.org) and [span]{.smallcaps}.",
+  "Narrative @abulafia2014 says so.",
 ];
 
 let pass = 0,
@@ -56,6 +59,8 @@ function acceptable(src, out) {
   if (src.includes("[^a]")) return out.includes("^[Reference footnote body.]") && !out.includes("[^a]");
   if (src.includes("- [ ] task")) return /[-*]\s*\[ \]\s*task/.test(out) && /[-*]\s*\[x\]\s*done/i.test(out);
   if (src.includes("| A | B |")) return out.includes("| A") && out.includes("B |") && out.includes("1") && out.includes("2");
+  // Not a citation, so Milkdown escapes the brackets as before (harmless).
+  if (src.includes("[span]")) return out.includes("[me@example.org]") || out.includes("\\[me@example.org]");
   if (src.includes("_em_")) return /\bbold\b/.test(out) && /\bem\b/.test(out) && out.includes("`code`") && out.includes("~~strike~~");
   return false;
 }

@@ -3,7 +3,7 @@
 - [Links](#links)
 - [Footnotes](#footnotes)
 - [Tables](#tables)
-- [Rich-text editing](#rich-text-editing)
+- [Formatted view and Markdown](#formatted-view-and-markdown)
 - [Searching](#searching)
 - [AI assistance](#ai-assistance)
 - [Version control](#version-control)
@@ -11,24 +11,30 @@
 
 ## Shortcuts 
 
+All shortcuts work both in the formatted view and in the Markdown source (`⌘/` switches).
+
 | Shortcut | Action |
 | --- | --- |
 | `⌘S` | Save the current file |
-| `⌘E` | Toggle the preview pane |
+| `⌘/` | Switch between the formatted document and its Markdown source |
 | `⌘Z` | Undo ^[Note that undo is not reliable when "autosave" is activated in the settings]|
 | `⌘Y` or `⌘⇧Z` | Redo |
 | `⌘B` | Bold the selection (`**…**`) |
-| `⌘I` | Italicise the selection (`_…_`) |
-| `Ctrl 1` | Make the line a level-1 heading (`# `) |
-| `Ctrl 2` | Make the line a level-2 heading (`## `) |
-| `Ctrl 3` | Make the line a level-3 heading (`### `) |
+| `⌘I` | Italicise the selection (`_…_`; the formatted view writes `*…*`) |
+| `^` with text selected | Superscript the selection (`^…^`); again to undo |
+| `~` with text selected | Subscript the selection (`~…~`); again to undo |
+| `=` with text selected | Highlight the selection (`==…==`); again to undo |
+| `⌘⇧X` | Strike the selection through (`~~…~~`); again to undo |
+| `Ctrl 1` or `⌘1` | Make the line a level-1 heading (`# `) |
+| `Ctrl 2` or `⌘2` | Make the line a level-2 heading (`## `) |
+| `Ctrl 3` or `⌘3` | Make the line a level-3 heading (`### `) |
 | `\@` | Open the Zotero (Better BibTeX) citation picker |
 | `⌘⇧M` | Insert a comment |
 | `⌘⇧T` | Insert a table (choose rows, columns and column alignment) |
-| `⌘⇧P` | Proofread (selection or whole document) |
-| `⌘⇧L` | Translate (selection or whole document) |
+| `⌘⇧P` | Proofread (selection or whole document; in the formatted view, the whole paragraphs the selection touches) |
+| `⌘⇧L` | Translate (selection or whole document; idem) |
 | `⌘⇧G` | Suggest tags from the vault |
-| `⌘F` | Search |
+| `⌘F` | Search (in the formatted view: the text as shown) |
 | `⌘H` | Search and replace |
 | `↑` / `↓` in the file browser | Open the previous / next file |
 | `[[` | Suggests note names (for linking) |
@@ -38,12 +44,12 @@
 | `Esc` | Dismiss the popup |
 | `Enter` | Confirm (rename, new file) |
 | `Esc` | Cancel / close / Dismiss the popup (rename, new file, settings) |
-| `⌘`-click (or `Ctrl`-click) | Open the URL under the cursor in the editor |
+| `⌘`-click (or `Ctrl`-click) | Open the URL under the cursor (Markdown) or the clicked link (formatted view) |
 
 
 ## Markdown
 
-A single return (one press of the enter key) starts a new line in the preview. To start a new *paragraph* — with a little space above it — leave a blank line by hitting the enter key twice.
+A single return (one press of the enter key) starts a new line in the formatted document. To start a new *paragraph* — with a little space above it — leave a blank line by hitting the enter key twice.
 It is also possible to add a \\ before the return to add a blank line without breaking the paragraph flow.
 
 ### Formatting
@@ -66,6 +72,8 @@ To use one of these special characters literally instead of as formatting, put a
 
 Text between `~~` (two tildes) will render as strike-through. Which is great to use if you make correction in someone else's text.
 
+You don't have to type these markers yourself: select the text and press `^` (superscript), `~` (subscript) or `=` (highlight), or `⌘⇧X` (strike-through); press it again to remove it. This works in the formatted view and in the Markdown source. Superscript and subscript may not contain ordinary spaces (Pandoc, which prints and exports your documents, then leaves the markers as they are), so spaces in the selection are turned into non-breaking spaces, which look the same.
+
 Underline is not directly supported in Markdown. However if needed you can put your text between `<u>` and '</u>`.
 
 ### Links
@@ -76,7 +84,7 @@ Create a link to an external source (eg. a webpage) looks like `[my link descrip
 
 An internal link can be created using the headers of the document. By replacing the spaces in the headers with a dash ('the header' -> 'the-header') and adding a hash-sign in front, they become internal links. A link to the section on footnotes in this document would look like: `[About footnotes in Markdown](#footnote)`, which would render as [About footnotes in Markdown](#footnote)
 
-You don't have to switch to the preview to follow a link: hold `⌘` (or `Ctrl`) and click a URL directly in the editor to open it in your browser or the matching app. This works for ordinary web links as well as app links such as `zotero://…`. (On macOS, `⌘`-click is the reliable gesture, since `Ctrl`-click is taken by the system menu.)
+To follow a link, hold `⌘` (or `Ctrl`) and click it — a link in the formatted view, or a URL in the Markdown source — to open it in your browser or the matching app; a `[[wikilink]]` in the formatted view opens with a plain click. This works for ordinary web links as well as app links such as `zotero://…`. (On macOS, `⌘`-click is the reliable gesture, since `Ctrl`-click is taken by the system menu.)
 
 ### Images
 
@@ -110,29 +118,31 @@ This will render as:
 |  123  |  123 |   123   |   123  |
 |    1  |    1 |     1   |     1  |
 
-## Rich-text editing
+## Formatted view and Markdown
 
-The **rich-text** button in the editor toolbar (just left of the preview toggle) swaps the Markdown source view for a **WYSIWYG** editor, where headings, bold, lists, quotes, tables, links and the humanities syntax below are shown formatted and edited directly. Click it again to return to the Markdown source. It is per editor pane.
+A document is shown **formatted** — headings, bold, lists, quotes, tables, images and links as they will look — and you can edit it right there. Press `⌘/` (or click the button at the right of the editor toolbar) to switch to its **Markdown source**, and again to switch back. The app remembers your choice for the next document and the next time you start it. The line at the bottom of the editor shows the number of words and characters, and which view you're in.
 
-The rich-text view uses the same styling as the preview — fonts, paragraph spacing, indentation of lists and quotes, and any CSS you entered under **Settings → Preview Styling** — so a document looks the same in both.
+The formatted view uses the styling under **Settings → Preview Styling** — fonts, paragraph spacing, indentation of lists and quotes, heading numbers — the same styling used when printing.
 
-The Markdown file stays the single source of truth: every rich-text edit is written straight back to it, so the preview, saving, autosave, the outline and version control all keep working. YAML front matter is kept intact (hidden while you edit, re-attached automatically).
+The Markdown file stays the single source of truth: edits in the formatted view are written back to it, so saving, autosave, the outline and version control all keep working. YAML front matter is kept intact (hidden in the formatted view). Only the paragraphs you edit are rewritten: the rest of the file keeps exactly the Markdown you wrote, and Pandoc citations (`[@key]`) and spans (`[text]{.smallcaps}`) stay as they are.
 
-The custom syntax round-trips through the rich-text view:
+The custom syntax in the formatted view:
 
-| Syntax | In rich-text |
+| Syntax | In the formatted view |
 | --- | --- |
 | `==highlight==` | highlighted text |
 | `^superscript^`, `~subscript~` | raised / lowered text |
 | `[[wikilink]]` | a link — click it to open the note |
-| `^[footnote]` and `[^ref]` footnotes | a small numbered marker; the text is shown and edited in the **Links** panel in the sidebar, not inline |
-| `#tags` | left as plain text |
+| `^[footnote]` and `[^ref]` footnotes | a small numbered marker; the text is shown and edited in the **Links** panel in the sidebar |
+| `[@key]` citations | shown as written; formatted when you print or export to Word |
+| `<!-- comments -->` | a small comment marker; point at it to read the comment, click it to open it |
+| `#tags` | plain text |
 
 Notes:
 
-- Reference-style footnotes (`[^id]` with a matching `[^id]:` line) are converted to inline `^[…]` footnotes the first time you edit the document in rich-text mode.
-- Switching to rich-text may lightly tidy Markdown (e.g. `*` vs `-` bullet markers). Meaning is unchanged.
-- `<!-- comments -->` and the `[[`/`#`/`\@` autocomplete popups are available in source mode only.
+- When you edit a paragraph in the formatted view, Milkdown (the editor behind it) writes that paragraph in its own style: a reference footnote (`[^id]` with its `[^id]:` line) becomes an inline `^[…]` footnote, `*` and `-` list markers or escaping may change, and inline HTML such as `<br>` is dropped. The meaning stays the same. Paragraphs you don't touch are left exactly as they were — use the Markdown view for anything that must stay character for character.
+- Smart quotes (Settings) and the protection of `--` against the Mac's automatic dashes apply when typing in the Markdown view.
+- **Print** (the printer button in the toolbar) produces the fully formatted document, with numbered citations and bibliography, through Pandoc.
 
 ## Searching
 
@@ -216,8 +226,8 @@ Commit messages are generated from the changes. If a push fails — usually beca
 
 **Browsing files.** Clicking a file in the Files panel opens it *in place of* the current tab if you haven't edited that document, so quickly looking through notes doesn't pile up tabs. A document you have edited — or one that was already open when the app started — keeps its tab, and the file opens in a new one. Images and PDFs you opened can't be edited, so they are always replaced (unless they were already open when the app started). After clicking in the Files panel you can also use `↑` / `↓` to open the previous or next file in the list (files inside collapsed folders are skipped).
 
-**Comments.** Press `⌘⇧M` to insert a comment. Comments are signed with the nickname you set under Settings, are shown as small markers in the margin of the preview, and never appear in exported documents.
+**Comments.** Press `⌘⇧M` to insert a comment. Comments are signed with the nickname you set under Settings, are shown as small markers in the margin of the Markdown view and in the text of the formatted view, and never appear in exported documents.
 
-**Citations.** With a bibliography configured in Settings, type `@` to open the Zotero (Better BibTeX) picker, or write citations like `[@key]` yourself. They are resolved in the preview and when you export to Word.
+**Citations.** With a bibliography configured in Settings, type `@` to open the Zotero (Better BibTeX) picker, or write citations like `[@key]` yourself. They are formatted when you print and when you export to Word.
 
 **Export.** Use the **Export to Word** button to produce a `.docx` (this uses Pandoc, with your chosen citation style and reference document if configured). Citations become live Zotero citations through Better BibTeX's `zotero.lua` filter: with Zotero running, press **Refresh** in Word's Zotero tab to finish them, and use **Add/Edit Bibliography** there to insert the bibliography (the export doesn't add one). The editor uses the `zotero.lua` in the same folder as your citation style, or its own copy if there is none there.

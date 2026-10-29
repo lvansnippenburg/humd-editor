@@ -165,3 +165,25 @@
   outline: none;
   border-color: var(--accent);
 }
+
+/* Review comments (<!-- … -->) shown as a small marker; the comment text is
+   its tooltip, a click opens it (see wysiwyg.js). */
+.milkdown .editor .mk-comment {
+    display: inline-block;
+    width: 15px; /* px: font-size is 0 to hide the raw <!-- … --> text */
+    height: 15px;
+    margin: 0 2px;
+    overflow: hidden;
+    vertical-align: -2px;
+    font-size: 0;
+    cursor: pointer;
+    background: currentColor;
+    opacity: 0.45;
+    -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M2 2.5A1.5 1.5 0 0 1 3.5 1h9A1.5 1.5 0 0 1 14 2.5v7a1.5 1.5 0 0 1-1.5 1.5H6l-3 3v-3h0.5A1.5 1.5 0 0 1 2 9.5z'/></svg>") center / contain no-repeat;
+    mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M2 2.5A1.5 1.5 0 0 1 3.5 1h9A1.5 1.5 0 0 1 14 2.5v7a1.5 1.5 0 0 1-1.5 1.5H6l-3 3v-3h0.5A1.5 1.5 0 0 1 2 9.5z'/></svg>") center / contain no-repeat;
+}
+
+.milkdown .editor .mk-comment:hover {
+    opacity: 0.8;
+}
+

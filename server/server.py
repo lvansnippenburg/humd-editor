@@ -882,7 +882,7 @@ def render_pandoc(markdown: str, file_path: str | None, number_sections: bool = 
     markdown = _FRONTMATTER_RE.sub("", markdown)
     cmd = [
         _find_pandoc(),
-        "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables+lists_without_preceding_blankline+hard_line_breaks-yaml_metadata_block-multiline_tables",
+        "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+mark+pipe_tables+lists_without_preceding_blankline+hard_line_breaks-yaml_metadata_block-multiline_tables",
         "--to=html5",
         "--standalone=false",
     ]
@@ -989,7 +989,7 @@ def export_docx(markdown: str, source_path: str | None = None) -> bytes:
             f"--bibliography={bib_path}",
             f"--csl={csl_path}",
             f"--lua-filter={zotero_lua_path(csl_path)}",
-            "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+pipe_tables+lists_without_preceding_blankline+hard_line_breaks-yaml_metadata_block-multiline_tables",
+            "--from=markdown+footnotes+wikilinks_title_after_pipe+strikeout+mark+pipe_tables+lists_without_preceding_blankline+hard_line_breaks-yaml_metadata_block-multiline_tables",
             "--to=docx",
             f"--output={out_path}",
         ]

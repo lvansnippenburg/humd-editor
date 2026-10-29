@@ -220,16 +220,29 @@ function applyInlineSpans(line) {
   return result;
 }
 
+// Code (fenced blocks and inline `spans`), whose [[…]] is meant literally.
+const CODE_RE = /```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]+`/g;
+
 function preprocessWikilinks(md) {
   // [[note-name|display text]] → [display text](./note-name.md)
   // [[note-name]] → [note-name](./note-name.md)
-  return md.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, target, display) => {
-    const text = display ? display.trim() : target.trim();
-    // Wrap the URL in angle brackets so targets containing spaces (or other
-    // special characters) still parse as a link in marked. Without this,
-    // `[Note](./My Note.md)` is left as literal text rather than an anchor.
-    return `[${text}](<./${target.trim()}.md>)`;
-  });
+  // A wikilink stays on one line, and code is left alone: otherwise a
+  // literal `[[` would pair with a `]]` anywhere further down the document.
+  const toLinks = (text) =>
+    text.replace(/\[\[([^\]|\n]+)(?:\|([^\]\n]+))?\]\]/g, (_, target, display) => {
+      const label = display ? display.trim() : target.trim();
+      // Wrap the URL in angle brackets so targets containing spaces (or other
+      // special characters) still parse as a link in marked. Without this,
+      // `[Note](./My Note.md)` is left as literal text rather than an anchor.
+      return `[${label}](<./${target.trim()}.md>)`;
+    });
+  let out = "";
+  let pos = 0;
+  for (const m of md.matchAll(CODE_RE)) {
+    out += toLinks(md.slice(pos, m.index)) + m[0];
+    pos = m.index + m[0].length;
+  }
+  return out + toLinks(md.slice(pos));
 }
 
 export function buildPreviewShell(userCss) {
@@ -300,53 +313,6 @@ document.addEventListener('click', function(e) {
     window.parent.postMessage({ type: 'open-url', href: href }, '*');
   } else {
     window.parent.postMessage({ type: 'wikilink', href: href }, '*');
-  }
-});
-var _scrollSyncTimer = null;
-var _ignoringScroll = false;
-function _getScrollInfo() {
-  var headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'));
-  var scrollTop = window.scrollY;
-  var scrollHeight = document.documentElement.scrollHeight;
-  var clientHeight = document.documentElement.clientHeight;
-  var maxScroll = Math.max(1, scrollHeight - clientHeight);
-  if (headings.length === 0) return { currentId: null, nextId: null, fraction: scrollTop / maxScroll };
-  var curIdx = -1;
-  for (var i = 0; i < headings.length; i++) { if (headings[i].offsetTop <= scrollTop + 2) curIdx = i; }
-  if (curIdx === -1) {
-    var firstTop = headings[0].offsetTop;
-    return { currentId: null, nextId: headings[0].id, fraction: firstTop > 0 ? Math.min(1, scrollTop / firstTop) : 0 };
-  }
-  var cur = headings[curIdx]; var nxt = headings[curIdx + 1] || null; var fraction;
-  if (nxt) { var range = nxt.offsetTop - cur.offsetTop; fraction = range > 0 ? (scrollTop - cur.offsetTop) / range : 0; }
-  else { var tail = scrollHeight - cur.offsetTop; fraction = tail > 0 ? (scrollTop - cur.offsetTop) / tail : 0; }
-  return { currentId: cur.id, nextId: nxt ? nxt.id : null, fraction: Math.max(0, Math.min(1, fraction)) };
-}
-window.addEventListener('scroll', function() {
-  if (_ignoringScroll) return;
-  clearTimeout(_scrollSyncTimer);
-  _scrollSyncTimer = setTimeout(function() {
-    var info = _getScrollInfo();
-    window.parent.postMessage({ type: 'preview-scroll', currentId: info.currentId, nextId: info.nextId, fraction: info.fraction }, '*');
-  }, 50);
-}, { passive: true });
-window.addEventListener('message', function(e) {
-  if (!e.data) return;
-  if (e.data.type === 'scroll-to-heading') { var el = document.getElementById(e.data.id); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
-  if (e.data.type === 'scroll-to-fraction') {
-    _ignoringScroll = true;
-    var scrollHeight = document.documentElement.scrollHeight;
-    var clientHeight = document.documentElement.clientHeight;
-    var maxScroll = Math.max(0, scrollHeight - clientHeight);
-    var cur = e.data.currentId ? document.getElementById(e.data.currentId) : null;
-    var nxt = e.data.nextId ? document.getElementById(e.data.nextId) : null;
-    var targetY;
-    if (!cur && !nxt) { targetY = e.data.fraction * maxScroll; }
-    else if (cur && nxt) { targetY = cur.offsetTop + e.data.fraction * (nxt.offsetTop - cur.offsetTop); }
-    else if (cur) { targetY = cur.offsetTop + e.data.fraction * (scrollHeight - cur.offsetTop); }
-    else { targetY = e.data.fraction * nxt.offsetTop; }
-    window.scrollTo(0, Math.max(0, Math.min(maxScroll, targetY)));
-    setTimeout(function() { _ignoringScroll = false; }, 150);
   }
 });
 <\/script>`;

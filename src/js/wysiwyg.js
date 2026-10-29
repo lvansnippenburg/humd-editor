@@ -3,8 +3,8 @@
 // The pane's <textarea> stays the single source of truth: Milkdown is mounted
 // over it, and every rich-text change is serialised straight back to Markdown
 // and written into the textarea. The caller (app.js) then routes that through
-// the textarea's normal `input` handling, so preview, dirty-tracking, autosave,
-// the outline and version control keep working unchanged.
+// the textarea's normal `input` handling, so dirty-tracking, autosave, the
+// outline and version control keep working unchanged.
 //
 // The humanities syntax the app adds on top of CommonMark is taught to Milkdown
 // in wysiwyg-build/src/syntax.js and survives a full round-trip:
@@ -18,6 +18,7 @@
 
 import { createEditor } from "/js/vendor/milkdown.bundle.js";
 import { ensurePreviewStyleLoaded } from "/js/preview-style.js";
+import { mergeEdit } from "/js/source-merge.js";
 
 // Split leading YAML front matter from the body. `frontMatter` keeps its
 // trailing newline; `frontMatter + "\n" + body` reproduces a blank-line
@@ -56,12 +57,32 @@ export function setWysiwygViewVisible(pane, visible) {
   if (pane._mkWrapEl) pane._mkWrapEl.style.display = visible ? "" : "none";
 }
 
-// Serialise the rich-text content back into the pane's textarea.
+// Remember the Markdown source the view was loaded from and Milkdown's own
+// serialisation of it (see source-merge.js), right after (re)loading.
+function rememberBaseline(pane, body) {
+  pane._mkSource = body;
+  pane._mkBase = pane._mkHandle.getMarkdown();
+}
+
+// Write edits made in the rich-text view back into the pane's textarea. Only
+// the edited blocks are taken from Milkdown; the rest keeps its exact source
+// (see source-merge.js). Returns whether the textarea changed.
 export function flushWysiwygToTextarea(pane) {
-  if (!pane._mkHandle) return;
-  const body = pane._mkHandle.getMarkdown();
-  const fm = pane._mkFrontMatter || "";
-  pane.editorEl.value = fm ? fm + "\n" + body : body;
+  if (!pane._mkHandle) return false;
+  const next = pane._mkHandle.getMarkdown();
+  if (next === pane._mkBase) return false; // nothing edited since the last write-back
+  // Merge into the textarea's current text, so anything the app changed
+  // there directly is kept too.
+  const { frontMatter, body: current } = splitFrontMatter(pane.editorEl.value);
+  const body = mergeEdit(current, pane._mkBase, next);
+  // The next edit is compared with this state, so only it gets replaced.
+  pane._mkSource = body;
+  pane._mkBase = next;
+  const fm = frontMatter || pane._mkFrontMatter || "";
+  const value = fm ? fm + "\n" + body : body;
+  if (pane.editorEl.value === value) return false;
+  pane.editorEl.value = value;
+  return true;
 }
 
 // Push the textarea's current Markdown into the rich-text view (tab switches,
@@ -72,14 +93,49 @@ export function syncWysiwygFromTextarea(pane) {
   pane._mkFrontMatter = frontMatter;
   pane._mkHandle.setMarkdown(body, { silent: true });
   pane._mkHandle.renumberFootnotes();
+  rememberBaseline(pane, body);
 }
 
-// Mirrors the preview's `#hp-body.no-numbering` toggle (the "Number chapter
-// and paragraph titles" setting, or a document's own front-matter override) so
-// heading numbering matches between the two views.
+// The "Number chapter and paragraph titles" setting (or a document's own
+// front-matter override): toggles `.no-numbering`, as on the printed page.
 export function setWysiwygNumberSections(pane, enabled) {
   const root = pane?._mkWrapEl?.querySelector(".editor");
   root?.classList.toggle("no-numbering", !enabled);
+}
+
+// The editing operations of the formatted view (see wysiwyg-build/src/
+// editor.js), or null when it isn't showing.
+export function getWysiwygHandle(pane) {
+  return pane?._mkHandle || null;
+}
+
+// The element holding the formatted document (headings, paragraphs, …).
+export function getWysiwygRoot(pane) {
+  return pane?._mkWrapEl?.querySelector(".editor") || null;
+}
+
+// Show HTML comments (<!-- … -->, used for review comments) as a small
+// marker with the comment text as tooltip, instead of the raw markup.
+function commentTooltip(value) {
+  const inner = value.replace(/^<!--\s*/, "").replace(/\s*-->$/, "");
+  try {
+    const thread = JSON.parse(inner);
+    if (Array.isArray(thread)) {
+      return thread.map((c) => `${c.creator || "Comment"}: ${c.comment || ""}`).join("\n");
+    }
+  } catch {
+    /* not a comment thread: show the text as is */
+  }
+  return inner;
+}
+
+function decorateComments(root) {
+  for (const el of root.querySelectorAll('[data-type="html"]:not(.mk-comment)')) {
+    const value = el.getAttribute("data-value") || "";
+    if (!value.trimStart().startsWith("<!--")) continue;
+    el.classList.add("mk-comment");
+    el.title = commentTooltip(value);
+  }
 }
 
 export function getWysiwygFootnotes(pane) {
@@ -89,10 +145,16 @@ export function setWysiwygFootnoteContent(pane, pos, content) {
   pane._mkHandle?.setFootnoteContent(pos, content);
 }
 
-export async function enableWysiwyg(pane, { onChange, onOpenWikilink, onFootnotesChanged }) {
+// onRender(rootEl) runs after the content is (re)drawn, e.g. to point image
+// paths at the server; onOpenUrl(href) for ⌘-clicked links; onOpenComment(el,
+// value) for a clicked comment marker.
+export async function enableWysiwyg(
+  pane,
+  { onChange, onOpenWikilink, onFootnotesChanged, onOpenUrl, onOpenComment, onRender },
+) {
   if (pane._mkHandle || pane._mkBusy) return;
   pane._mkBusy = true;
-  ensurePreviewStyleLoaded(); // same visual language as the Markdown preview
+  ensurePreviewStyleLoaded(); // same styling as the printed document
 
   const { frontMatter, body } = splitFrontMatter(pane.editorEl.value);
   pane._mkFrontMatter = frontMatter;
@@ -109,9 +171,11 @@ export async function enableWysiwyg(pane, { onChange, onOpenWikilink, onFootnote
       value: body,
       onChange: () => {
         if (!pane._mkHandle) return; // torn down mid-flight
-        flushWysiwygToTextarea(pane);
+        // Programmatic changes (loading, footnote renumbering) serialise to
+        // the baseline and don't touch the source or mark it edited.
+        const changed = flushWysiwygToTextarea(pane);
         pane._mkHandle.renumberFootnotes();
-        onChange?.();
+        if (changed) onChange?.();
         onFootnotesChanged?.();
       },
     });
@@ -123,13 +187,47 @@ export async function enableWysiwyg(pane, { onChange, onOpenWikilink, onFootnote
     }
     pane._mkHandle = handle;
     handle.renumberFootnotes();
+    rememberBaseline(pane, body);
 
-    // Wikilink + footnote-marker clicks (delegated; atoms have no cursor).
+    // Comment markers and resolved image paths, after every redraw. The
+    // changed attributes are on leaf nodes (images, comments), which
+    // ProseMirror ignores, so they never end up in the Markdown.
+    let decorateQueued = false;
+    const decorate = () => {
+      decorateQueued = false;
+      const root = wrap.querySelector(".editor");
+      if (!root) return;
+      decorateComments(root);
+      onRender?.(root);
+    };
+    pane._mkObserver = new MutationObserver(() => {
+      if (decorateQueued) return;
+      decorateQueued = true;
+      requestAnimationFrame(decorate);
+    });
+    pane._mkObserver.observe(wrap, { childList: true, subtree: true });
+    decorate();
+
+    // Wikilink, link, comment and footnote-marker clicks (delegated; atoms
+    // have no cursor).
     wrap.addEventListener("mousedown", (e) => {
       const wl = e.target.closest("a.wikilink");
       if (wl) {
         e.preventDefault();
         onOpenWikilink?.(wl.getAttribute("data-target") || wl.textContent || "");
+        return;
+      }
+      // Other links open with ⌘-click; a plain click places the cursor to edit.
+      const link = e.target.closest("a[href]");
+      if (link && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        onOpenUrl?.(link.getAttribute("href"));
+        return;
+      }
+      const comment = e.target.closest(".mk-comment");
+      if (comment) {
+        e.preventDefault();
+        onOpenComment?.(comment, comment.getAttribute("data-value") || "");
         return;
       }
       const fn = e.target.closest("sup.footnote-ref");
@@ -151,9 +249,13 @@ export async function disableWysiwyg(pane) {
   const wrap = pane._mkWrapEl;
   pane._mkHandle = null;
   pane._mkWrapEl = null;
+  pane._mkObserver?.disconnect();
+  pane._mkObserver = null;
 
   if (handle) {
+    pane._mkHandle = handle; // flush needs it, once more
     flushWysiwygToTextarea(pane);
+    pane._mkHandle = null;
     try {
       await handle.destroy();
     } catch {

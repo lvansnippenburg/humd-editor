@@ -24,7 +24,11 @@ import {
   getWysiwygFootnotes,
   setWysiwygFootnoteContent,
   setWysiwygNumberSections,
+  getWysiwygRoot,
+  getWysiwygHandle,
+  flushWysiwygToTextarea,
 } from "/js/wysiwyg.js";
+import { splitBlocks } from "/js/source-merge.js";
 import { setPreviewStyleUserCss } from "/js/preview-style.js";
 
 // ===== STATE =====
@@ -34,7 +38,6 @@ let currentVaultPath = null;
 let currentFilePath = null;
 let currentUserCss = "";
 let currentSpellCheck = true;
-let currentUsePandoc = false;
 let currentNumberSections = true;
 let currentAutoSave = false;
 let currentSmartQuotes = false;
@@ -52,22 +55,15 @@ let gitAuthErrorShown = false; // only nag about credentials once per session
 let gitAutoCommitTimer = null; // 60-min periodic commit interval handle
 let proofreadRange = null; // { start, end } in the editor that proofreading targets
 let suggestionPanelMode = "proofread"; // "proofread" | "translate" | "zotseek" — which feature owns the shared panel
-let previewVisible = true;
-let previewStale = false; // edits happened while preview was hidden; refresh on show
-let previewPosition = "right"; // "right" | "bottom" — where the preview pane sits
-let savedEditorFlexBasis = null; // editor width when the preview is on the right
-let savedEditorHeight = null; // editor height when the preview is at the bottom
 let isDirty = false;
 let isInitialized = false;
 let activeSidebarTab = "files";
-let previewDebounceTimer = null;
-let previewShellReady = false; // is the persistent preview document mounted?
-let previewShellCss = null; // userCss the current shell was built with
+let statsDebounceTimer = null;
+// Show documents formatted (Milkdown) rather than as Markdown source; ⌘/
+// switches. Remembered across documents and sessions.
+let richTextMode = true;
 let printIframe = null; // reused hidden iframe the print flow renders into
 let autoSaveDebounceTimer = null;
-let editorScrollTimer = null;
-let suppressEditorScroll = false;
-let suppressPreviewScroll = false;
 let tabs = [];
 let undoStack = [];
 let redoStack = [];
@@ -93,13 +89,7 @@ function queueWriteFile(path, content) {
 // Bumped on every tab switch / preview render; async continuations compare
 // their captured value after each await and bail if a newer run superseded them.
 let tabSwitchGen = 0;
-let previewGen = 0;
 
-// Rendered-preview cache (path -> {content, usePandoc, bodyHtml}), so switching
-// between unchanged documents (split panes, tab bouncing) skips the Pandoc
-// round-trip / markdown re-parse. Insertion-ordered; oldest entry is evicted.
-const previewRenderCache = new Map();
-const PREVIEW_CACHE_MAX = 4;
 
 class Pane {
   constructor(id, containerEl) {
@@ -136,6 +126,9 @@ let acType = null; // "wikilink" | "tag"
 let acStart = 0; // index in the editor value where the query begins
 let acItems = [];
 let acIndex = 0;
+let acTarget = "source"; // "source" (textarea) | "rich" (formatted view)
+let acQueryLen = 0; // formatted view: length of the typed query
+let acDismissedAt = null; // formatted view: text before the cursor when Esc closed the list
 
 // Citation engine state
 let citeBibData = null;
@@ -298,20 +291,6 @@ function addHoverRename(nameEl, path) {
 
 // ===== MULTI-PANE MANAGEMENT =====
 
-function updateSplitPaneButtons() {
-  const isSplitActive = panes.length >= 2;
-  panes.forEach((p) => {
-    const splitBtn = p.containerEl.querySelector(".split-pane-btn");
-    const closeBtn = p.containerEl.querySelector(".close-pane-btn");
-    if (splitBtn) {
-      splitBtn.style.display = isSplitActive ? "none" : "";
-    }
-    if (closeBtn) {
-      closeBtn.style.display = isSplitActive ? "" : "none";
-    }
-  });
-}
-
 function renderPaneTabBar(pane) {
   const bar = pane.tabBarEl;
   bar.innerHTML = "";
@@ -377,7 +356,6 @@ function createPane() {
   panes.push(pane);
 
   setupPaneEventListeners(pane);
-  updateSplitPaneButtons();
 
   if (panes.length === 1) {
     activePaneId = id;
@@ -398,7 +376,7 @@ function setupPaneEventListeners(pane) {
   const editor = pane.editorEl;
   editor.addEventListener("input", onEditorInput);
   editor.addEventListener("keydown", onEditorKeydown);
-  editor.addEventListener("scroll", onEditorScroll, { passive: true });
+  editor.addEventListener("scroll", scheduleCommentGutterRender, { passive: true });
   editor.addEventListener("blur", () => setTimeout(closeAutocomplete, 100));
   editor.addEventListener("blur", onEditorBlurCommit);
   editor.addEventListener("scroll", closeAutocomplete, { passive: true });
@@ -412,7 +390,6 @@ function setupPaneEventListeners(pane) {
     switchActivePane(pane.id);
   });
 
-  pane.containerEl.querySelector(".preview-toggle-btn").addEventListener("click", togglePreview);
   // mousedown + preventDefault (not click) so opening the menu never shifts
   // focus off the textarea — the editor's selection is never touched, rather
   // than relying on blur to preserve it (which isn't consistent everywhere).
@@ -428,6 +405,7 @@ function setupPaneEventListeners(pane) {
   });
   pane.containerEl.querySelector(".suggest-tags-btn").addEventListener("click", runSuggestTags);
   pane.containerEl.querySelector(".export-docx-btn").addEventListener("click", exportToWord);
+  pane.containerEl.querySelector(".print-btn").addEventListener("click", printPreview);
 
   pane.containerEl.querySelector(".wysiwyg-toggle-btn").addEventListener("click", (e) => {
     e.stopPropagation();
@@ -443,16 +421,6 @@ function setupPaneEventListeners(pane) {
     .addEventListener("click", () => scrollTabBar(1));
 
   pane.tabBarEl.addEventListener("scroll", updateTabScrollButtons, { passive: true });
-
-  pane.containerEl.querySelector(".split-pane-btn").addEventListener("click", (e) => {
-    e.stopPropagation();
-    splitPaneHorizontal(pane);
-  });
-
-  pane.containerEl.querySelector(".close-pane-btn").addEventListener("click", (e) => {
-    e.stopPropagation();
-    closePane(pane);
-  });
 }
 
 function saveActivePaneState() {
@@ -553,10 +521,8 @@ function switchActivePane(paneId) {
     switchToTab(nextPane.activeTabId);
   } else {
     renderTabBar();
-    resetPreview();
-    const stats = document.getElementById("preview-stats");
-    if (stats) stats.textContent = "";
     document.getElementById("editor").value = "";
+    updateDocumentStats();
   }
 
   // Focus the pane's editor only if focus isn't already inside the pane —
@@ -567,99 +533,6 @@ function switchActivePane(paneId) {
   }
 }
 
-async function splitPaneHorizontal(pane) {
-  if (panes.length >= 2) {
-    showStatus("Maximum 2 split panes allowed.");
-    return;
-  }
-
-  saveActivePaneState();
-
-  const resizer = document.createElement("div");
-  resizer.className = "pane-resize-handle";
-  const container = document.getElementById("editor-pane");
-  const searchPanel = document.getElementById("editor-search-panel");
-  container.insertBefore(resizer, searchPanel);
-
-  const newPane = createPane();
-
-  initPaneResizeHandle(resizer, pane.containerEl, newPane.containerEl);
-
-  updateSplitPaneButtons();
-
-  switchActivePane(newPane.id);
-
-  if (pane.currentFilePath) {
-    loadFile(pane.currentFilePath);
-  }
-}
-
-async function closePane(pane) {
-  if (panes.length <= 1) return;
-
-  saveActivePaneState();
-
-  const idx = panes.indexOf(pane);
-  if (idx === -1) return;
-
-  const remainingPane = panes.find((p) => p.id !== pane.id);
-
-  if (isWysiwygActive(pane)) disableWysiwyg(pane);
-  pane.containerEl.remove();
-
-  const resizer = document.querySelector(".pane-resize-handle");
-  if (resizer) resizer.remove();
-
-  panes.splice(idx, 1);
-
-  panes.forEach((p) => {
-    p.containerEl.style.flex = "1";
-  });
-  updateSplitPaneButtons();
-
-  activePaneId = null;
-  switchActivePane(remainingPane.id);
-
-  saveUiState();
-}
-
-function initPaneResizeHandle(resizer, topPaneEl, bottomPaneEl) {
-  let startY, startTopHeight, startBottomHeight;
-
-  function onMouseDown(e) {
-    e.preventDefault();
-    startY = e.clientY;
-    startTopHeight = topPaneEl.getBoundingClientRect().height;
-    startBottomHeight = bottomPaneEl.getBoundingClientRect().height;
-
-    resizer.classList.add("dragging");
-    document.body.classList.add("dragging-pane");
-
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-  }
-
-  function onMouseMove(e) {
-    const dy = e.clientY - startY;
-    const newTopHeight = Math.max(100, startTopHeight + dy);
-    const newBottomHeight = Math.max(100, startBottomHeight - dy);
-
-    topPaneEl.style.flex = `0 0 ${newTopHeight}px`;
-    bottomPaneEl.style.flex = `0 0 ${newBottomHeight}px`;
-  }
-
-  function onMouseUp() {
-    resizer.classList.remove("dragging");
-    document.body.classList.remove("dragging-pane");
-
-    document.removeEventListener("mousemove", onMouseMove);
-    document.removeEventListener("mouseup", onMouseUp);
-
-    saveUiState();
-  }
-
-  resizer.addEventListener("mousedown", onMouseDown);
-}
 
 // ===== INITIALIZATION =====
 
@@ -676,7 +549,7 @@ async function initialize() {
     currentUserCss = settings.userCss || "";
     setPreviewStyleUserCss(currentUserCss); // WYSIWYG shares the preview's CSS
     currentSpellCheck = settings.spellCheck ?? true;
-    currentUsePandoc = settings.usePandoc ?? false;
+    richTextMode = settings.richTextMode ?? true;
     currentNumberSections = settings.numberSections ?? true;
     currentAutoSave = settings.useAutoSave ?? false;
     currentSmartQuotes = settings.smartQuotes ?? false;
@@ -717,33 +590,9 @@ async function initialize() {
     setupEventListeners();
     restoreUiState(settings);
 
-    const panesLayout = settings.panesLayout || [];
-    const isSplitActive =
-      panes.length >= 2 ||
-      (settings.openFiles && settings.openFiles.length > 0 && settings.panesLayout); // Wait, we will save split layout under settings.panes
-    // Let's use settings.panes which will contain full layout details!
-    const savedPanes = settings.panes || [];
-    const isSplitSaved = savedPanes && savedPanes.length >= 2;
-
-    const openFiles = [];
-    if (isSplitActive || savedEditorFlexBasis) {
-      // Let's gather open files across all saved panes if present
-    }
-
-    // Let's support full settings restoration for multi-pane.
-    // If settings has a "panes" field, we can load it.
-    // Let's design settings.panes:
-    // "panes": [
-    //   { "id": "pane-0", "activeTabId": "...", "currentFilePath": "...", "openFiles": [...] },
-    //   ...
-    // ]
-    //
-    // For extreme simplicity, backwards compatibility, and robustness, let's design it so:
-    // settings.panes = [
-    //   { tabs: ["file1.md", "file2.md"], activeTab: "file1.md", height: 350 },
-    //   { tabs: ["file3.md"], activeTab: "file3.md", height: 350 }
-    // ]
-    // This is incredibly clean!
+    // Tabs to reopen: those of the saved pane(s) — a split layout saved by an
+    // older version opens all its tabs in the one pane — or the old
+    // openFiles/lastOpenFile settings.
     const layoutPanes = settings.panes || [];
     const openFilesToPrefetch = [];
     if (layoutPanes.length > 0) {
@@ -793,96 +642,7 @@ async function initialize() {
       });
     }
 
-    if (layoutPanes.length >= 2) {
-      // Restore split pane layout!
-      const resizer = document.createElement("div");
-      resizer.className = "pane-resize-handle";
-      const container = document.getElementById("editor-pane");
-      const searchPanel = document.getElementById("editor-search-panel");
-      container.insertBefore(resizer, searchPanel);
-
-      const pane0 = panes[0];
-      const pane1 = createPane();
-
-      initPaneResizeHandle(resizer, pane0.containerEl, pane1.containerEl);
-
-      // Restore sizes
-      if (layoutPanes[0].height) {
-        pane0.containerEl.style.flex = `0 0 ${layoutPanes[0].height}px`;
-      }
-      if (layoutPanes[1].height) {
-        pane1.containerEl.style.flex = `0 0 ${layoutPanes[1].height}px`;
-      }
-
-      // Populate tabs for both panes
-      [pane0, pane1].forEach((pane, idx) => {
-        const lp = layoutPanes[idx];
-        pane.tabs = [];
-        if (lp.tabs) {
-          lp.tabs.forEach((path) => {
-            const mediaType = mediaTypeForPath(path);
-            if (mediaType) {
-              pane.tabs.push({
-                id: `tab-${++tabCounter}`,
-                path,
-                isMedia: true,
-                mediaType,
-                isDirty: false,
-                edited: true, // restored from last session: keep on file-browser clicks
-                content: "",
-              });
-            } else {
-              const content = fileContents[path] || "";
-              pane.tabs.push({
-                id: `tab-${++tabCounter}`,
-                path,
-                isDirty: false,
-                edited: true, // restored from last session: keep on file-browser clicks
-                content,
-                undoStack: [{ value: content, start: 0, end: 0 }],
-                redoStack: [],
-              });
-            }
-          });
-        }
-
-        if (lp.activeTabPath) {
-          const matchingTab = pane.tabs.find((t) => t.path === lp.activeTabPath);
-          if (matchingTab) {
-            pane.activeTabId = matchingTab.id;
-            pane.currentFilePath = lp.activeTabPath;
-          }
-        }
-        if (!pane.activeTabId && pane.tabs.length > 0) {
-          pane.activeTabId = pane.tabs[pane.tabs.length - 1].id;
-          pane.currentFilePath = pane.tabs[pane.tabs.length - 1].path;
-        }
-
-        // Force render this pane's UI immediately on load so it displays correctly before any clicks!
-        renderPaneTabBar(pane);
-
-        const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
-        if (activeTab) {
-          if (activeTab.isMedia) {
-            pane.editorEl.style.display = "none";
-            showMediaContainerForPane(pane, activeTab);
-          } else {
-            pane.editorEl.value = activeTab.content;
-            pane.editorEl.style.display = "block";
-            if (pane.mediaContainerEl) pane.mediaContainerEl.style.display = "none";
-          }
-        } else {
-          pane.editorEl.value = "";
-        }
-      });
-
-      updateSplitPaneButtons();
-      const savedActiveId = settings.activePaneId === "pane-1" ? "pane-1" : "pane-0";
-      // Force loading active pane state to globals
-      activePaneId = null;
-      switchActivePane(savedActiveId);
-    } else {
-      // Single pane restore (falls back to old logic)
+    {
       const lastOpenFile = settings.lastOpenFile;
       const pane = panes[0];
       pane.tabs = [];
@@ -930,17 +690,14 @@ async function initialize() {
         : [];
       redoStack = [];
 
-      updateSplitPaneButtons();
       renderTabBar();
       updateTabScrollButtons();
 
       if (pane.activeTabId) {
         switchToTab(pane.activeTabId);
       } else {
-        resetPreview();
-        const stats = document.getElementById("preview-stats");
-        if (stats) stats.textContent = "";
         document.getElementById("editor").value = "";
+        updateDocumentStats();
       }
     }
 
@@ -989,9 +746,10 @@ function setupEventListeners() {
   document.getElementById("file-tree-container").addEventListener("keydown", onFileTreeKeydown);
 
   document.addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "e") {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key === "/") {
       e.preventDefault();
-      togglePreview();
+      const pane = panes.find((p) => p.id === activePaneId);
+      if (pane) toggleWysiwygForPane(pane);
     }
     if ((e.metaKey || e.ctrlKey) && e.key === "s") {
       e.preventDefault();
@@ -1051,7 +809,6 @@ function setupEventListeners() {
   document.getElementById("graph-btn").addEventListener("click", openGraphTab);
   document.getElementById("change-vault-btn").addEventListener("click", changeVaultFolder);
   document.getElementById("settings-btn").addEventListener("click", openSettingsDialog);
-  document.getElementById("print-preview-btn").addEventListener("click", printPreview);
   document
     .getElementById("proofread-provider-select")
     .addEventListener("change", (e) => {
@@ -1141,96 +898,6 @@ function setupEventListeners() {
     if (e.key === "Escape") closeSettingsDialog();
   });
 
-  // Messages from preview iframe
-  window.addEventListener("message", async (msg) => {
-    if (msg.data.type === "open-url") {
-      openExternalUrl(msg.data.href || "");
-      return;
-    }
-    if (msg.data.type === "wikilink") {
-      // marked percent-encodes spaces in the href (e.g. "./My%20Note.md"), so
-      // decode before resolving the note name.
-      const raw = (msg.data.href || "").replace(/^\.\//, "").replace(/\.md$/, "");
-      let stem = raw;
-      try {
-        stem = decodeURIComponent(raw);
-      } catch {}
-      const path = findNoteByName(stem);
-      if (path) await loadFile(path);
-      else showStatus(`Note not found: ${stem}`);
-      return;
-    }
-    if (msg.data.type === "open-tag") {
-      switchSidebarTab("tags");
-      expandTag(msg.data.tag);
-      return;
-    }
-    if (msg.data.type === "comment") {
-      const content = msg.data.content || "";
-      // Parse comment thread
-      let thread = [];
-      try {
-        const trimmed = content.trim();
-        if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-          thread = JSON.parse(trimmed);
-        }
-      } catch (e) {}
-      // Fallback for old format
-      if (thread.length === 0) {
-        const dm = content.match(/^(.*?)\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}):\s*(.*)/s);
-        if (dm) {
-          thread = [{ creator: dm[1].trim(), timestamp: dm[2], comment: dm[3] }];
-        } else {
-          thread = [{ creator: "Comment", timestamp: "", comment: content }];
-        }
-      }
-      // Find the matching comment balloon in the editor and open its popup
-      const editor = document.getElementById("editor");
-      const comments = findCommentLines(editor.value);
-      for (const c of comments) {
-        if (c.fullContent === content) {
-          // Found the matching comment - find its balloon in the gutter
-          const gutter = document.getElementById("editor-comment-gutter");
-          const balloons = gutter.querySelectorAll(".editor-comment-balloon");
-          if (balloons.length > 0) {
-            // Open popup for the first matching balloon
-            showCommentPopup(balloons[0], c.thread, c.fullContent, c.offset);
-          }
-          return;
-        }
-      }
-      // Fallback: show in status bar if we can't find the editor comment
-      showStatus("Comment: " + (thread[0]?.comment || content), false);
-      return;
-    }
-    if (msg.data.type === "preview-scroll") {
-      if (suppressPreviewScroll || !currentFilePath) return;
-      const { currentId, nextId, fraction } = msg.data;
-      const positions = getEditorHeadingPositions();
-      const editor = document.getElementById("editor");
-      let targetScrollTop;
-      if (positions.length === 0 || (currentId === null && nextId === null)) {
-        targetScrollTop = fraction * Math.max(0, editor.scrollHeight - editor.clientHeight);
-      } else {
-        const cur = currentId ? positions.find((h) => h.slug === currentId) : null;
-        const nxt = nextId ? positions.find((h) => h.slug === nextId) : null;
-        if (!cur && !nxt) {
-          targetScrollTop = fraction * Math.max(0, editor.scrollHeight - editor.clientHeight);
-        } else if (cur && nxt) {
-          targetScrollTop = cur.pixelTop + fraction * (nxt.pixelTop - cur.pixelTop);
-        } else if (cur) {
-          targetScrollTop = cur.pixelTop + fraction * (editor.scrollHeight - cur.pixelTop);
-        } else {
-          targetScrollTop = fraction * nxt.pixelTop;
-        }
-      }
-      suppressEditorScroll = true;
-      editor.scrollTop = targetScrollTop;
-      setTimeout(() => {
-        suppressEditorScroll = false;
-      }, 300);
-    }
-  });
 }
 
 // ===== FILE DRAG =====
@@ -1453,66 +1120,12 @@ function addFileMouseDrag(li, filePath, fileName, isDir = false) {
   });
 }
 
-// ===== TOGGLE PREVIEW =====
-
-function togglePreview() {
-  const editorPane = document.getElementById("editor-pane");
-  const isBottom = previewPosition === "bottom";
-  if (previewVisible) {
-    const rect = editorPane.getBoundingClientRect();
-    const size = isBottom ? rect.height : rect.width;
-    if (size > 0) {
-      if (isBottom) savedEditorHeight = size;
-      else savedEditorFlexBasis = size;
-    }
-    editorPane.style.flex = "";
-  } else {
-    const basis = isBottom ? savedEditorHeight : savedEditorFlexBasis;
-    if (basis) editorPane.style.flex = `0 0 ${basis}px`;
-  }
-  previewVisible = !previewVisible;
-  const pane = document.getElementById("preview-pane");
-  const editorHandle = document.getElementById("editor-resize");
-  pane.style.display = previewVisible ? "" : "none";
-  editorHandle.style.display = previewVisible ? "" : "none";
-  // The toggle button lives in the pane template (one per split pane), so it
-  // carries a class, not an id.
-  document.querySelectorAll(".preview-toggle-btn").forEach((btn) => {
-    btn.classList.toggle("active", previewVisible);
-    btn.title = previewVisible ? "Hide preview (⌘E)" : "Show preview (⌘E)";
-    btn.setAttribute("aria-label", previewVisible ? "Hide preview" : "Show preview");
-  });
-  // Re-showing a preview that went stale while hidden: render it now.
-  if (previewVisible && previewStale) {
-    previewStale = false;
-    updatePreview();
-  }
-  updateTabScrollButtons();
-  saveUiState();
-}
-
-// Reflect the previewPosition setting in the layout: flip the wrapper's flex
-// direction and re-apply the editor size remembered for that orientation.
-function applyPreviewPosition() {
-  const isBottom = previewPosition === "bottom";
-  document.getElementById("main-area").classList.toggle("preview-bottom", isBottom);
-  const editorPane = document.getElementById("editor-pane");
-  if (!previewVisible) {
-    editorPane.style.flex = "";
-    return;
-  }
-  const basis = isBottom ? savedEditorHeight : savedEditorFlexBasis;
-  editorPane.style.flex = basis ? `0 0 ${basis}px` : "";
-}
-
 // ===== RESIZE HANDLES =====
 
 function startDrag(handle, startPos, onDrag, onEnd, axis = "x") {
-  const iframe = document.getElementById("preview");
   handle.classList.add("dragging");
   document.body.style.cursor = axis === "y" ? "row-resize" : "col-resize";
   document.body.style.userSelect = "none";
-  if (iframe) iframe.style.pointerEvents = "none";
 
   function onMove(e) {
     onDrag((axis === "y" ? e.clientY : e.clientX) - startPos);
@@ -1521,7 +1134,6 @@ function startDrag(handle, startPos, onDrag, onEnd, axis = "x") {
     handle.classList.remove("dragging");
     document.body.style.cursor = "";
     document.body.style.userSelect = "";
-    if (iframe) iframe.style.pointerEvents = "";
     document.removeEventListener("mousemove", onMove);
     document.removeEventListener("mouseup", onUp);
     if (onEnd) onEnd();
@@ -1532,9 +1144,6 @@ function startDrag(handle, startPos, onDrag, onEnd, axis = "x") {
 
 function initResizableHandles() {
   const sidebar = document.getElementById("sidebar");
-  const editorPane = document.getElementById("editor-pane");
-  const app = document.getElementById("app");
-
   const sidebarHandle = document.getElementById("sidebar-resize");
   sidebarHandle.addEventListener("mousedown", (e) => {
     e.preventDefault();
@@ -1545,48 +1154,6 @@ function initResizableHandles() {
       (dx) => {
         const newWidth = Math.max(160, Math.min(480, startWidth + dx));
         sidebar.style.flex = `0 0 ${newWidth}px`;
-      },
-      () => {
-        updateTabScrollButtons();
-        saveUiState();
-      },
-    );
-  });
-
-  const editorHandle = document.getElementById("editor-resize");
-  editorHandle.addEventListener("mousedown", (e) => {
-    e.preventDefault();
-    if (previewPosition === "bottom") {
-      const startHeight = editorPane.getBoundingClientRect().height;
-      startDrag(
-        editorHandle,
-        e.clientY,
-        (dy) => {
-          const mainHeight = document.getElementById("main-area").getBoundingClientRect().height;
-          const maxHeight = mainHeight - 150 - 10;
-          const newHeight = Math.max(150, Math.min(maxHeight, startHeight + dy));
-          editorPane.style.flex = `0 0 ${newHeight}px`;
-          savedEditorHeight = newHeight;
-        },
-        () => {
-          updateTabScrollButtons();
-          saveUiState();
-        },
-        "y",
-      );
-      return;
-    }
-    const startWidth = editorPane.getBoundingClientRect().width;
-    startDrag(
-      editorHandle,
-      e.clientX,
-      (dx) => {
-        const appWidth = app.getBoundingClientRect().width;
-        const sidebarWidth = sidebar.getBoundingClientRect().width;
-        const maxWidth = appWidth - sidebarWidth - 200 - 10;
-        const newWidth = Math.max(200, Math.min(maxWidth, startWidth + dx));
-        editorPane.style.flex = `0 0 ${newWidth}px`;
-        savedEditorFlexBasis = newWidth;
       },
       () => {
         updateTabScrollButtons();
@@ -1903,7 +1470,6 @@ async function switchToTab(tabId) {
   const tab = tabs.find((t) => t.id === tabId);
 
   const editor = document.getElementById("editor");
-  const preview = document.getElementById("preview");
   const tabBar = document.getElementById("editor-tab-bar");
 
   const graphContainer = document.getElementById("graph-container");
@@ -1916,10 +1482,10 @@ async function switchToTab(tabId) {
     isDirty = false;
     editor.style.display = "none";
     setWysiwygViewVisible(activePaneForView, false);
-    preview.style.display = "none";
     if (graphContainer) graphContainer.style.display = "none";
     renderEditorCommentGutter(); // clear comment balloons from the previous doc
     showMediaContainer(tab);
+    updateDocumentStats();
     await revealFileInTree(tab.path);
     if (gen !== tabSwitchGen) return; // a newer switch took over
     document.querySelectorAll(".file-item").forEach((item) => {
@@ -1938,9 +1504,7 @@ async function switchToTab(tabId) {
     isDirty = false;
     renderEditorCommentGutter(); // clear comment balloons from the previous doc
 
-    // Render the graph (show preview if it was visible, hide otherwise)
-    // Actually, hide both editor and preview when showing graph to give it full space
-    preview.style.display = "none";
+    updateDocumentStats();
 
     // Render the graph
     const linkIndex = {
@@ -1965,7 +1529,6 @@ async function switchToTab(tabId) {
     redoStack = tab.redoStack ? tab.redoStack.slice() : [];
 
     editor.style.display = "block";
-    preview.style.display = previewVisible ? "flex" : "none";
     if (graphContainer) graphContainer.style.display = "none";
     if (mediaContainer) mediaContainer.style.display = "none";
 
@@ -1976,8 +1539,9 @@ async function switchToTab(tabId) {
     // re-exported from Zotero) since it was last loaded.
     await loadCitations();
     if (gen !== tabSwitchGen) return; // a newer switch took over
-    await updatePreview();
+    await applyRichTextMode();
     if (gen !== tabSwitchGen) return;
+    updateDocumentStats();
     renderEditorCommentGutter();
     await revealFileInTree(tab.path);
     if (gen !== tabSwitchGen) return;
@@ -2034,7 +1598,7 @@ async function closeTab(tabId, skipSave = false) {
       document.getElementById("editor").style.display = "block";
       const mediaContainer = document.getElementById("media-container");
       if (mediaContainer) mediaContainer.style.display = "none";
-      resetPreview();
+      updateDocumentStats();
       renderEditorCommentGutter();
       buildOutline();
       buildLinksPanel();
@@ -2043,13 +1607,6 @@ async function closeTab(tabId, skipSave = false) {
     }
   } else {
     renderTabBar();
-  }
-
-  if (tabs.length === 0 && panes.length > 1) {
-    const pane = panes.find((p) => p.id === activePaneId);
-    if (pane) {
-      closePane(pane);
-    }
   }
 }
 
@@ -2061,7 +1618,7 @@ function closeFile() {
   exitWysiwyg(panes.find((p) => p.id === activePaneId));
   document.getElementById("note-tags").innerHTML = "";
   document.getElementById("editor").value = "";
-  document.getElementById("preview").srcdoc = "<p>No file open</p>";
+  updateDocumentStats();
   renderEditorCommentGutter();
   buildOutline();
   buildLinksPanel();
@@ -2202,7 +1759,8 @@ async function loadFile(path, { replaceUnedited = false } = {}) {
     // Re-read the bibliography from disk in case it changed externally (e.g.
     // re-exported from Zotero) since it was last loaded.
     await loadCitations();
-    await updatePreview();
+    await applyRichTextMode();
+    updateDocumentStats();
     renderEditorCommentGutter();
     await revealFileInTree(path);
     document.querySelectorAll(".file-item").forEach((item) => {
@@ -2316,7 +1874,89 @@ async function promptNewFolder() {
 // ===== EDITOR =====
 
 function getEditorContent() {
+  flushRichText();
   return document.getElementById("editor").value;
+}
+
+// ===== FORMATTED VIEW: SHARED EDITING HELPERS =====
+
+// Set while the formatted view itself writes into the textarea, so
+// onEditorInput doesn't push that text straight back into the view.
+let richTextInput = false;
+
+function activePane() {
+  return panes.find((p) => p.id === activePaneId) || null;
+}
+
+// The formatted view's editing operations when it is showing, else null.
+function activeRichHandle() {
+  const pane = activePane();
+  return pane && isWysiwygActive(pane) ? getWysiwygHandle(pane) : null;
+}
+
+// Milkdown reports edits 200 ms after the last keystroke. Write them into
+// the textarea now, before the text is saved or used, so none get lost.
+function flushRichText() {
+  const pane = activePane();
+  if (!pane || !isWysiwygActive(pane)) return;
+  richTextInput = true;
+  try {
+    if (flushWysiwygToTextarea(pane)) onEditorInput();
+  } finally {
+    richTextInput = false;
+  }
+}
+
+// Letters and digits only, lowercased: to recognise formatted text in the
+// Markdown source. Footnotes, wikilinks and comments, which have no text of
+// their own in the formatted view, are dropped from the source first.
+function plainKey(text, isMarkdown) {
+  let t = text;
+  if (isMarkdown) {
+    t = t
+      .replace(/\^\[[^\]]*\]/g, "")
+      .replace(/\[\[[^\]]*\]\]/g, "")
+      .replace(/<!--[\s\S]*?-->/g, "");
+  }
+  return t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+// The Markdown source paragraphs covering the formatted view's selection:
+// { start, end } in the textarea, or null if they can't be found.
+function richSelectionToSource(handle) {
+  const value = document.getElementById("editor").value;
+  const { first, last } = handle.selectionBlocks();
+  const blocks = splitBlocks(value);
+  const find = (text, from) => {
+    const key = plainKey(text, false).slice(0, 40);
+    for (let i = from; i < blocks.length; i++) {
+      if (plainKey(blocks[i].text, true).includes(key)) return i;
+    }
+    return -1;
+  };
+  const i = find(first, 0);
+  const j = i < 0 ? -1 : find(last, i);
+  if (i < 0 || j < 0) return null;
+  return { start: blocks[i].start, end: blocks[j].end };
+}
+
+// The text an action (proofread, translate, ZotSeek) works on: the selection
+// or the whole document, as a range of the Markdown source. In the formatted
+// view a selection widens to the source paragraphs it touches; `text` is
+// what was selected there.
+function getActionSelection() {
+  const editor = document.getElementById("editor");
+  const handle = activeRichHandle();
+  if (!handle) {
+    const { selectionStart: start, selectionEnd: end } = editor;
+    return { start, end, isSelection: start !== end, text: editor.value.slice(start, end) };
+  }
+  flushRichText();
+  const text = handle.selectedText();
+  const whole = { start: 0, end: editor.value.length, isSelection: false, text: "" };
+  if (!text.trim()) return whole;
+  const range = richSelectionToSource(handle);
+  return range ? { ...range, isSelection: true, text } : whole;
 }
 
 // ===== RICH-TEXT (WYSIWYG) MODE =====
@@ -2343,49 +1983,83 @@ function wysiwygButton(pane) {
   return pane.containerEl.querySelector(".wysiwyg-toggle-btn");
 }
 
-// Leave rich-text mode (if on) and restore the toggle button. Used when a
-// document is closed out from under the pane.
+// Reflect the pane's mode on its toggle button and in the status line.
+function updateModeIndicators(pane) {
+  const rich = isWysiwygActive(pane);
+  const btn = wysiwygButton(pane);
+  if (btn) {
+    btn.classList.toggle("active", rich);
+    btn.title = rich ? "Show the Markdown source (⌘/)" : "Show the formatted document (⌘/)";
+  }
+  const mode = pane.containerEl.querySelector(".doc-mode");
+  if (mode) {
+    const doc = !!currentFilePath && pane.id === activePaneId;
+    mode.textContent = doc ? (rich ? "Formatted · ⌘/ for Markdown" : "Markdown · ⌘/ for formatted") : "";
+  }
+}
+
+// Leave rich-text mode (if on). Used when a document is closed out from under
+// the pane; the remembered mode (richTextMode) is kept for the next document.
 function exitWysiwyg(pane) {
   if (!pane || !isWysiwygActive(pane)) return;
   disableWysiwyg(pane);
-  const btn = wysiwygButton(pane);
-  if (btn) {
-    btn.classList.remove("active");
-    btn.title = "Switch to rich-text (WYSIWYG) editing";
-  }
+  updateModeIndicators(pane);
   if (activeSidebarTab === "links") buildLinksPanel();
 }
 
+// Show the active document in the remembered mode (formatted or Markdown).
+// Called whenever a document is shown in the pane.
+async function applyRichTextMode() {
+  const pane = panes.find((p) => p.id === activePaneId);
+  if (!pane) return;
+  if (currentFilePath && richTextMode && !isWysiwygActive(pane)) await enableRichText(pane);
+  else if ((!currentFilePath || !richTextMode) && isWysiwygActive(pane)) await disableWysiwyg(pane);
+  updateModeIndicators(pane);
+}
+
+// ⌘/ and the toolbar button: switch between the formatted document and its
+// Markdown source, and remember the choice.
 async function toggleWysiwygForPane(pane) {
-  const btn = wysiwygButton(pane);
   if (isWysiwygBusy(pane)) return;
-  if (isWysiwygActive(pane)) {
-    await disableWysiwyg(pane);
-    btn.classList.remove("active");
-    btn.title = "Switch to rich-text (WYSIWYG) editing";
-    pane.editorEl.focus();
-    if (activeSidebarTab === "links") buildLinksPanel();
-    return;
-  }
-  if (pane.id === activePaneId && !currentFilePath) {
+  if (!currentFilePath) {
     showStatus("Open a document first", true);
     return;
   }
-  btn.classList.add("active");
-  btn.title = "Switch to Markdown source editing";
+  const toRich = !isWysiwygActive(pane);
+  if (toRich) {
+    await enableRichText(pane);
+  } else {
+    await disableWysiwyg(pane);
+    pane.editorEl.focus();
+  }
+  richTextMode = isWysiwygActive(pane);
+  updateModeIndicators(pane);
+  if (activeSidebarTab === "links") buildLinksPanel();
+  apiPost("/api/settings", { richTextMode }).catch(() => {});
+}
+
+async function enableRichText(pane) {
   try {
     await enableWysiwyg(pane, {
       onChange: () => {
         // Only the active pane owns the shared editor state; route rich-text
         // edits through the textarea's input handler.
         if (pane.id !== activePaneId) return;
-        pane.editorEl.dispatchEvent(new Event("input", { bubbles: true }));
+        richTextInput = true;
+        try {
+          pane.editorEl.dispatchEvent(new Event("input", { bubbles: true }));
+        } finally {
+          richTextInput = false;
+        }
       },
       onOpenWikilink: (target) => {
         const path = findNoteByName(target);
         if (path) loadFile(path);
         else showStatus(`Note not found: ${target}`);
       },
+      onOpenUrl: (href) => openExternalUrl(href),
+      onOpenComment: (el, value) => openRichTextComment(el, value),
+      onRender: (root) => rewriteImageSources(root, currentFilePath),
       onFootnotesChanged: (focusNum) => {
         const clicked = typeof focusNum === "number" && focusNum > 0;
         if (clicked && activeSidebarTab !== "links") switchSidebarTab("links");
@@ -2397,16 +2071,39 @@ async function toggleWysiwygForPane(pane) {
     });
     const override = parseNumberSectionsOverride(pane.editorEl.value);
     setWysiwygNumberSections(pane, override ?? currentNumberSections);
+    // Shortcuts and [[ / # suggestions in the formatted view. Capture phase,
+    // so they run before Milkdown's own key handling.
+    const wrap = getWysiwygRoot(pane)?.closest(".milkdown-wrap");
+    if (wrap) {
+      wrap.addEventListener("keydown", (e) => onRichTextKeydown(e, pane), true);
+      wrap.addEventListener("keyup", onRichTextKeyup);
+      wrap.addEventListener("mousedown", closeAutocomplete);
+      wrap.addEventListener("focusout", () => setTimeout(closeAutocomplete, 100));
+    }
   } catch (err) {
     console.error("WYSIWYG init failed:", err);
-    showStatus("Rich-text editor failed to load", true);
-    btn.classList.remove("active");
-    btn.title = "Switch to rich-text (WYSIWYG) editing";
+    showStatus("The formatted view failed to load; showing Markdown", true);
   }
+}
+
+// A comment marker in the formatted view was clicked: open the same popup as
+// the comment balloons next to the Markdown source.
+function openRichTextComment(markerEl, value) {
+  const inner = value.replace(/^<!--\s*/, "").replace(/\s*-->$/, "");
+  const comment = findCommentLines(document.getElementById("editor").value).find(
+    (c) => c.fullContent === inner || c.fullContent.trim() === inner.trim(),
+  );
+  if (comment) showCommentPopup(markerEl, comment.thread, comment.fullContent, comment.offset);
 }
 
 function onEditorInput() {
   if (!currentFilePath) return;
+  // The app changed the text directly (a proofread suggestion, added tags, a
+  // table, …) while the formatted view shows: show the change there too.
+  if (!richTextInput) {
+    const pane = activePane();
+    if (pane && isWysiwygActive(pane)) syncWysiwygFromTextarea(pane);
+  }
   isDirty = true;
   const cur = getActiveTab();
   if (cur) cur.edited = true;
@@ -2418,13 +2115,14 @@ function onEditorInput() {
   clearTimeout(undoDebounceTimer);
   undoDebounceTimer = setTimeout(snapshotForUndo, 500);
 
-  updateAutocomplete();
+  // Typing in the Markdown view (the formatted view has its own, on keyup).
+  if (!richTextInput && !activeRichHandle()) updateAutocomplete();
 
   renderEditorCommentGutter();
 
-  clearTimeout(previewDebounceTimer);
-  previewDebounceTimer = setTimeout(() => {
-    updatePreview();
+  clearTimeout(statsDebounceTimer);
+  statsDebounceTimer = setTimeout(() => {
+    updateDocumentStats();
     if (activeSidebarTab === "outline") buildOutline();
     if (activeSidebarTab === "links") buildLinksPanel();
   }, 300);
@@ -2444,12 +2142,139 @@ function isCursorInCode(value, pos) {
   return inCode;
 }
 
+// Zotero Better BibTeX "cite as you write": open the picker and hand the
+// chosen citation (e.g. "[@key, p. 4]") to `insert`.
+async function pickZoteroCitation(insert) {
+  showStatus("Opening Zotero citation picker…");
+  try {
+    // Routed through the local server proxy (/api/zotero-cayw) instead of
+    // fetching Zotero cross-origin, which Safari drops mid-request.
+    const res = await apiFetch("/api/zotero-cayw?format=pandoc");
+    const raw = (res.citation || "").trim();
+    if (!raw) {
+      showStatus("No citation selected");
+      return;
+    }
+    insert(raw.startsWith("[") ? raw : `[${raw}]`);
+    showStatus("Citation inserted");
+  } catch {
+    showStatus("Zotero not available — is Zotero running with Better BibTeX?", true);
+  }
+}
+
+// ===== WRAP THE SELECTION: ^ ~ = and ⌘⇧X =====
+//
+// With text selected, typing ^ ~ or = formats it instead of replacing it:
+// superscript ^…^, subscript ~…~, highlight ==…==; ⌘⇧X strikes it through
+// (~~…~~). The same key again removes the formatting.
+
+const WRAP_FORMATS = {
+  "^": { marker: "^", mark: "sup", noSpaces: true },
+  "~": { marker: "~", mark: "sub", noSpaces: true },
+  "=": { marker: "==", mark: "highlight" },
+  strike: { marker: "~~", mark: "strike_through" },
+};
+
+// Which format a keydown asks for, or null. ^ and ~ are dead (accent) keys
+// on international keyboard layouts: then the key itself tells.
+function wrapFormatForKey(e) {
+  const isMeta = e.metaKey || e.ctrlKey;
+  if (isMeta && e.shiftKey && !e.altKey && (e.key === "x" || e.key === "X")) return WRAP_FORMATS.strike;
+  if (isMeta || e.altKey) return null;
+  if (e.key in WRAP_FORMATS) return WRAP_FORMATS[e.key];
+  if (e.key === "Dead" && e.shiftKey) {
+    const ch = { Digit6: "^", Backquote: "~" }[e.code];
+    return ch ? WRAP_FORMATS[ch] : null;
+  }
+  return null;
+}
+
+// Markdown view: wrap the selection in the format's markers, or unwrap it if
+// it already is; the text stays selected.
+function toggleWrapSelection(editor, { marker, noSpaces }) {
+  const { selectionStart: start, selectionEnd: end, value } = editor;
+  const selected = value.slice(start, end);
+  const m = marker.length;
+  // ~x~ must not be mistaken for (part of) ~~x~~, and vice versa.
+  const isMarker = (at) =>
+    value.slice(at, at + m) === marker &&
+    (marker !== "~" || (value[at - 1] !== "~" && value[at + 1] !== "~"));
+  snapshotForUndo();
+  if (start >= m && isMarker(start - m) && isMarker(end)) {
+    // Markers just outside the selection: remove them.
+    editorReplace(editor, start - m, end + m, selected);
+    editor.setSelectionRange(start - m, end - m);
+    return;
+  }
+  if (selected.length > 2 * m && selected.startsWith(marker) && selected.endsWith(marker)) {
+    const inner = selected.slice(m, -m);
+    editorReplace(editor, start, end, inner);
+    editor.setSelectionRange(start, start + inner.length);
+    return;
+  }
+  // Pandoc's ^…^ and ~…~ may not contain spaces: use non-breaking ones.
+  const inner = noSpaces ? selected.replace(/ /g, "\u00a0") : selected;
+  editorReplace(editor, start, end, marker + inner + marker);
+  editor.setSelectionRange(start + m, start + m + inner.length);
+}
+
+// Shortcuts in the formatted view that Milkdown doesn't provide itself
+// (⌘Z/⌘Y/⌘⇧Z, ⌘B and ⌘I are Milkdown's own), plus the [[ / # suggestions.
+function onRichTextKeydown(e, pane) {
+  const handle = getWysiwygHandle(pane);
+  if (!handle) return;
+  const isMeta = e.metaKey || e.ctrlKey;
+  const consume = () => {
+    e.preventDefault();
+    e.stopPropagation(); // keep it from Milkdown
+  };
+  if (acActive && acTarget === "rich") {
+    const escape = e.key === "Escape";
+    if (handleAutocompleteKeydown(e)) {
+      e.stopPropagation();
+      // Esc: stay closed until the text before the cursor changes.
+      if (escape) acDismissedAt = handle.textBeforeCursor();
+      return;
+    }
+  }
+  if (isMeta && !e.shiftKey && !e.altKey && ["1", "2", "3"].includes(e.key)) {
+    consume();
+    handle.setHeading(Number(e.key));
+    return;
+  }
+  const format = wrapFormatForKey(e);
+  if (format && handle.hasSelection()) {
+    consume();
+    handle.toggleMark(format.mark);
+    return;
+  }
+  if (e.key === "@" && !isMeta && !e.altKey && handle.textBeforeCursor().endsWith("\\")) {
+    consume();
+    handle.deleteBeforeCursor(1);
+    pickZoteroCitation((citation) => handle.insertText(citation));
+  }
+}
+
+function onRichTextKeyup(e) {
+  // Keys the open suggestion list uses itself.
+  if (acActive && ["ArrowUp", "ArrowDown", "Enter", "Tab", "Escape"].includes(e.key)) return;
+  updateRichAutocomplete();
+}
+
 function onEditorKeydown(e) {
   const editor = document.getElementById("editor");
   const isMeta = e.metaKey || e.ctrlKey;
 
   // Autocomplete navigation takes priority over everything else.
   if (handleAutocompleteKeydown(e)) return;
+
+  // ^ ~ = with a selection (and ⌘⇧X): format it rather than replace it.
+  const format = wrapFormatForKey(e);
+  if (format && editor.selectionStart !== editor.selectionEnd) {
+    e.preventDefault();
+    toggleWrapSelection(editor, format);
+    return;
+  }
 
   // Quotes: insert them ourselves so the app's smart-quotes setting is the sole
   // authority — this also prevents the macOS system-wide "Smart Quotes" text
@@ -2502,24 +2327,7 @@ function onEditorKeydown(e) {
       e.preventDefault();
       const insertPos = pos - 1;
       editorReplace(editor, insertPos, pos, "");
-      (async () => {
-        showStatus("Opening Zotero citation picker…");
-        try {
-          // Routed through the local server proxy (/api/zotero-cayw) instead of
-          // fetching Zotero cross-origin, which Safari drops mid-request.
-          const res = await apiFetch("/api/zotero-cayw?format=pandoc");
-          const raw = (res.citation || "").trim();
-          if (!raw) {
-            showStatus("No citation selected");
-            return;
-          }
-          const citation = raw.startsWith("[") ? raw : `[${raw}]`;
-          editorReplace(editor, insertPos, insertPos, citation);
-          showStatus("Citation inserted");
-        } catch {
-          showStatus("Zotero not available — is Zotero running with Better BibTeX?", true);
-        }
-      })();
+      pickZoteroCitation((citation) => editorReplace(editor, insertPos, insertPos, citation));
       return;
     }
   }
@@ -2567,6 +2375,15 @@ function onEditorKeydown(e) {
 }
 
 function editorReplace(editor, start, end, text) {
+  // Hidden behind the formatted view, the textarea can't take focus, so
+  // typing into it (execCommand) would land elsewhere: change the text
+  // directly; the input event shows the change in the formatted view.
+  if (editor.offsetParent === null) {
+    editor.value = editor.value.slice(0, start) + text + editor.value.slice(end);
+    editor.setSelectionRange(start + text.length, start + text.length);
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+    return;
+  }
   editor.focus();
   editor.setSelectionRange(start, end);
   document.execCommand("insertText", false, text);
@@ -2631,6 +2448,14 @@ function insertTableFromDialog() {
     document.getElementById("table-align-row").querySelectorAll("select"),
   ).map((s) => s.value);
   const md = buildTableMarkdown(rows, aligns);
+
+  const handle = activeRichHandle();
+  if (handle) {
+    closeTableDialog();
+    handle.insertMarkdown(md);
+    handle.focus();
+    return;
+  }
 
   const editor = document.getElementById("editor");
   const value = editor.value;
@@ -3079,6 +2904,15 @@ async function insertComment() {
   }
   const nick = await ensureNickname();
   if (!nick) return; // user cancelled the nickname prompt
+  const handle = activeRichHandle();
+  if (handle) {
+    // As in the Markdown view, the selected text becomes the comment.
+    const thread = [{ creator: nick, timestamp: commentTimestamp(), comment: handle.selectedText() }];
+    handle.insertMarkdown(`<!-- ${JSON.stringify(thread)} -->`, true);
+    handle.focus();
+    showStatus("Comment inserted");
+    return;
+  }
   const editor = document.getElementById("editor");
   const start = editor.selectionStart;
   const end = editor.selectionEnd;
@@ -3154,25 +2988,63 @@ function updateAutocomplete() {
   const pos = editor.selectionStart;
   const before = editor.value.slice(0, pos);
 
-  let type = null;
-  let query = "";
-  const wl = before.match(/\[\[([^\]\n|]*)$/);
-  if (wl) {
-    type = "wikilink";
-    query = wl[1];
-  } else {
-    const tg = before.match(/(?:^|[\s(>])#([A-Za-z][\w/-]*)?$/);
-    if (tg) {
-      type = "tag";
-      query = tg[1] || "";
-    }
-  }
+  const trigger = autocompleteTrigger(before);
+  const type = trigger ? trigger.type : null;
+  const query = trigger ? trigger.query : "";
 
   if (type === null) {
     closeAutocomplete();
     return;
   }
+  const items = autocompleteItems(type, query);
+  if (items.length === 0) {
+    closeAutocomplete();
+    return;
+  }
 
+  acActive = true;
+  acTarget = "source";
+  acType = type;
+  acStart = pos - query.length;
+  acItems = items;
+  acIndex = 0;
+  renderAutocomplete();
+}
+
+// Detect `[[query` / `#query` before the cursor: { type, query } or null.
+function autocompleteTrigger(before) {
+  const wl = before.match(/\[\[([^\]\n|]*)$/);
+  if (wl) return { type: "wikilink", query: wl[1] };
+  const tg = before.match(/(?:^|[\s(>])#([A-Za-z][\w/-]*)?$/);
+  if (tg) return { type: "tag", query: tg[1] || "" };
+  return null;
+}
+
+// The same suggestions in the formatted view, from the text before its cursor.
+function updateRichAutocomplete() {
+  const handle = activeRichHandle();
+  const before = handle ? handle.textBeforeCursor() : "";
+  if (acDismissedAt !== null) {
+    if (before === acDismissedAt) return;
+    acDismissedAt = null;
+  }
+  const trigger = handle ? autocompleteTrigger(before) : null;
+  const items = trigger ? autocompleteItems(trigger.type, trigger.query) : [];
+  if (items.length === 0) {
+    closeAutocomplete();
+    return;
+  }
+  acActive = true;
+  acTarget = "rich";
+  acType = trigger.type;
+  acQueryLen = trigger.query.length;
+  acItems = items;
+  acIndex = 0;
+  renderAutocomplete();
+}
+
+// Note names or tags matching `query`, best first.
+function autocompleteItems(type, query) {
   const q = query.toLowerCase();
   let items = [];
   if (type === "wikilink") {
@@ -3195,18 +3067,7 @@ function updateAutocomplete() {
       .slice(0, 12)
       .map((e) => ({ label: `#${e.name}`, insert: e.name, count: e.count }));
   }
-
-  if (items.length === 0) {
-    closeAutocomplete();
-    return;
-  }
-
-  acActive = true;
-  acType = type;
-  acStart = pos - query.length;
-  acItems = items;
-  acIndex = 0;
-  renderAutocomplete();
+  return items;
 }
 
 function renderAutocomplete() {
@@ -3234,10 +3095,17 @@ function renderAutocomplete() {
     popup.appendChild(li);
   });
 
+  popup.style.display = "block";
+  const handle = acTarget === "rich" ? activeRichHandle() : null;
+  if (handle) {
+    const c = handle.cursorCoords();
+    popup.style.left = Math.round(c.left) + "px";
+    popup.style.top = Math.round(c.bottom + 2) + "px";
+    return;
+  }
   const editor = document.getElementById("editor");
   const coords = getCaretCoords(editor, acStart);
   const rect = editor.getBoundingClientRect();
-  popup.style.display = "block";
   popup.style.left = Math.round(rect.left + coords.left - editor.scrollLeft) + "px";
   popup.style.top = Math.round(rect.top + coords.top - editor.scrollTop + coords.height + 2) + "px";
 }
@@ -3251,6 +3119,18 @@ function acceptAutocomplete() {
   const editor = document.getElementById("editor");
   const item = acItems[acIndex];
   if (!item) {
+    closeAutocomplete();
+    return;
+  }
+  const handle = acTarget === "rich" ? activeRichHandle() : null;
+  if (handle) {
+    if (acType === "wikilink") {
+      handle.deleteBeforeCursor(acQueryLen + 2); // the typed "[[" + query
+      handle.insertMarkdown(`[[${item.insert}]]`, true);
+    } else {
+      handle.deleteBeforeCursor(acQueryLen);
+      handle.insertText(item.insert);
+    }
     closeAutocomplete();
     return;
   }
@@ -3337,9 +3217,9 @@ function applyUndoSnapshot(editor, snap) {
       renderTabBar();
     }
   }
-  clearTimeout(previewDebounceTimer);
-  previewDebounceTimer = setTimeout(() => {
-    updatePreview();
+  clearTimeout(statsDebounceTimer);
+  statsDebounceTimer = setTimeout(() => {
+    updateDocumentStats();
     if (activeSidebarTab === "outline") buildOutline();
     if (activeSidebarTab === "links") buildLinksPanel();
   }, 100);
@@ -3460,213 +3340,43 @@ function findSelectionOccurrences() {
   updateEditorSearchResults();
 }
 
-// ===== PREVIEW =====
+// ===== DOCUMENT STATUS LINE =====
 
-function updatePreviewStats(html) {
+// Words and characters of the rendered text (so Markdown syntax isn't
+// counted), shown in the status line under the editor. Also keeps the
+// formatted view's heading numbering in line with the document's front matter.
+function updateDocumentStats() {
+  const pane = panes.find((p) => p.id === activePaneId);
+  if (!pane) return;
+  const statsEl = pane.containerEl.querySelector(".doc-stats");
+  const tab = getActiveTab();
+  if (!currentFilePath || !tab || tab.isMedia || tab.isGraph) {
+    if (statsEl) statsEl.textContent = "";
+    updateModeIndicators(pane);
+    return;
+  }
+  const content = document.getElementById("editor").value;
   const tmp = document.createElement("div");
-  tmp.innerHTML = html;
-  const text = tmp.innerText || tmp.textContent || "";
-  const lines = text.split(/\n/).filter((l) => l.trim().length > 0).length;
-  const words = text.trim() === "" ? 0 : text.trim().split(/\s+/).length;
+  tmp.innerHTML = renderMarkdownBody(content); // drops front matter; comments aren't text
+  const text = (tmp.textContent || "").trim();
+  const words = text === "" ? 0 : text.split(/\s+/).length;
   const chars = text.replace(/\s/g, "").length;
-  const charsWithSpaces = text.trim().length;
-  const el = document.getElementById("preview-stats");
-  if (el) el.textContent = `${words} words, ${charsWithSpaces} (${chars}) characters`;
-}
-
-// Reset to the empty state. Replacing srcdoc tears down the persistent shell,
-// so flag it for a rebuild on the next render.
-function resetPreview() {
-  previewShellReady = false;
-  document.getElementById("preview").srcdoc =
-    "<p style='font-family:sans-serif;color:#888;padding:20px'>No file open</p>";
-  const el = document.getElementById("preview-stats");
-  if (el) el.textContent = "";
-}
-
-// Mount the preview document once (styles + scripts + listeners). Subsequent
-// renders only swap the body, avoiding a full iframe reload per keystroke.
-function ensurePreviewShell(userCss) {
-  const iframe = document.getElementById("preview");
-  if (
-    previewShellReady &&
-    previewShellCss === userCss &&
-    iframe.contentDocument?.getElementById("hp-body")
-  ) {
-    return Promise.resolve();
+  if (statsEl) {
+    statsEl.textContent = `${words.toLocaleString()} words · ${text.length.toLocaleString()} characters (${chars.toLocaleString()} without spaces)`;
   }
-  previewShellReady = false;
-  previewShellCss = userCss;
-  return new Promise((resolve) => {
-    iframe.addEventListener(
-      "load",
-      () => {
-        previewShellReady = true;
-        resolve();
-      },
-      { once: true },
-    );
-    iframe.srcdoc = buildPreviewShell(userCss);
-  });
-}
-
-async function updatePreview() {
-  // While the preview pane is hidden, skip all rendering work (markdown/Pandoc,
-  // citation processing, shell build, stats). Mark it stale so it refreshes the
-  // moment it's shown again (see togglePreview).
-  if (!previewVisible) {
-    previewStale = true;
-    return;
+  if (isWysiwygActive(pane)) {
+    const override = parseNumberSectionsOverride(content);
+    setWysiwygNumberSections(pane, override ?? currentNumberSections);
   }
-  const iframe = document.getElementById("preview");
-  if (!currentFilePath) {
-    resetPreview();
-    return;
-  }
-  // Cancellation token: if a newer render starts (rapid pane/tab switches or
-  // fast typing), this run's post-await work bails instead of overwriting it.
-  const gen = ++previewGen;
-  try {
-    const content = document.getElementById("editor").value;
-    const filePath = currentFilePath;
-    let bodyHtml;
-
-    // A document's own front matter (output: html_document: number_sections:)
-    // overrides the global "Number chapter and paragraph titles" setting.
-    const numberSectionsOverride = parseNumberSectionsOverride(content);
-    const effectiveNumberSections = numberSectionsOverride ?? currentNumberSections;
-
-    // Extract citations before rendering to protect them from markdown processor.
-    // Use a placeholder format that won't be interpreted as markdown (no __, **, etc).
-    const citationRe = /\[@[^\]]+\]/g;
-    const citations = [];
-    const contentWithPlaceholders = content.replace(citationRe, (match) => {
-      citations.push(match);
-      return `ⓘCITATION_PLACEHOLDER_${citations.length - 1}ⓘ`;
-    });
-
-    // Rendering is pure in (content, renderer): reuse the cached HTML when
-    // bouncing between unchanged documents (e.g. split-pane switches) so no
-    // Pandoc round-trip / markdown re-parse is needed.
-    const cached = previewRenderCache.get(filePath);
-    if (
-      cached &&
-      cached.content === content &&
-      cached.usePandoc === currentUsePandoc &&
-      cached.numberSections === effectiveNumberSections
-    ) {
-      bodyHtml = cached.bodyHtml;
-    } else {
-      // Tokenize HTML comments before rendering so they survive both render paths
-      // (Pandoc strips comments; marked drops them too), then splice the balloons
-      // back into the rendered HTML afterward.
-      const { text: contentForRender, balloons: commentBalloons } =
-        extractComments(contentWithPlaceholders);
-
-      if (currentUsePandoc) {
-        const result = await apiPost("/api/pandoc", {
-          markdown: contentForRender,
-          file_path: filePath,
-          number_sections: effectiveNumberSections,
-        });
-        if (gen !== previewGen) return; // superseded by a newer render
-        bodyHtml = result.html;
-      } else {
-        bodyHtml = renderMarkdownBody(contentForRender);
-      }
-      bodyHtml = restoreComments(bodyHtml, commentBalloons);
-
-      previewRenderCache.delete(filePath); // re-insert as most recent
-      previewRenderCache.set(filePath, {
-        content,
-        usePandoc: currentUsePandoc,
-        numberSections: effectiveNumberSections,
-        bodyHtml,
-      });
-      if (previewRenderCache.size > PREVIEW_CACHE_MAX) {
-        previewRenderCache.delete(previewRenderCache.keys().next().value);
-      }
-    }
-
-    await ensurePreviewShell(currentUserCss);
-    if (gen !== previewGen) return;
-    const doc = iframe.contentDocument;
-    const bodyEl = doc && doc.getElementById("hp-body");
-    if (!bodyEl) return; // shell not ready (e.g. mid-reload); next edit retries
-
-    bodyEl.innerHTML = bodyHtml;
-    // Pandoc numbers sections itself; flag the body so the CSS section-numbering
-    // counters (for the built-in renderer) don't double up.
-    bodyEl.classList.toggle("pandoc", currentUsePandoc);
-    bodyEl.classList.toggle("no-numbering", !effectiveNumberSections);
-    const wysiwygPane = panes.find((p) => p.id === activePaneId && isWysiwygActive(p));
-    if (wysiwygPane) setWysiwygNumberSections(wysiwygPane, effectiveNumberSections);
-
-    // Restore citations in the DOM by walking text nodes and replacing placeholders.
-    const walker = doc.createTreeWalker(bodyEl, NodeFilter.SHOW_TEXT);
-    const nodesToReplace = [];
-    let node;
-    while ((node = walker.nextNode())) {
-      if (/ⓘCITATION_PLACEHOLDER_\d+ⓘ/.test(node.textContent)) {
-        nodesToReplace.push(node);
-      }
-    }
-    for (const textNode of nodesToReplace) {
-      const parts = textNode.textContent.split(/(ⓘCITATION_PLACEHOLDER_\d+ⓘ)/);
-      const fragment = doc.createDocumentFragment();
-      for (const part of parts) {
-        const m = part.match(/ⓘCITATION_PLACEHOLDER_(\d+)ⓘ/);
-        if (m) {
-          fragment.appendChild(doc.createTextNode(citations[parseInt(m[1])]));
-        } else if (part) {
-          fragment.appendChild(doc.createTextNode(part));
-        }
-      }
-      textNode.parentNode.replaceChild(fragment, textNode);
-    }
-
-    rewriteImageSources(bodyEl, filePath);
-
-    // Highlight only the freshly inserted code blocks (no full-document rescan).
-    const hl = iframe.contentWindow.hljs;
-    if (hl) {
-      bodyEl.querySelectorAll("pre code").forEach((b) => {
-        try {
-          hl.highlightElement(b);
-        } catch {}
-      });
-    }
-
-    // Resolve [@cite] keys only when a bibliography is loaded and the text
-    // actually contains a citation — skip the whole pipeline otherwise.
-    if (citeBibData && citeBibData.length > 0 && /\[[^\]]*@/.test(content)) {
-      await processCitations(bodyEl);
-      if (gen !== previewGen) return; // superseded by a newer render
-    }
-
-    updatePreviewStats(bodyEl.innerHTML);
-
-    // Rebuild the comment gutter for the freshly rendered body. This also
-    // empties the gutter, clearing any ghost balloons from a prior document.
-    iframe.contentWindow?.repositionComments?.();
-  } catch (error) {
-    previewShellReady = false;
-    iframe.srcdoc = `<div style="padding:20px;color:red;font-family:sans-serif"><strong>Error rendering preview:</strong><br>${error.message || error}</div>`;
-    const el = document.getElementById("preview-stats");
-    if (el) el.textContent = "";
-  }
+  updateModeIndicators(pane);
 }
 
 // ===== PRINT =====
 
 // Render the current document into a disposable, off-screen iframe for
-// printing. Unlike the live preview, wikilinked notes are inlined (like
-// "Export to Word" does) so the printed/PDF output is self-contained, and
-// rendering always goes through Pandoc regardless of the preview-renderer
-// setting, matching Word export's behaviour. A separate iframe (rather than
-// the live #preview one) keeps this from disturbing the interactive preview,
-// where wikilinks stay clickable links, and sidesteps the live preview's
-// caching/cancellation machinery, which doesn't apply to a one-shot render.
+// printing. Wikilinked notes are inlined (like "Export to Word" does) so the
+// printed/PDF output is self-contained, and rendering goes through Pandoc,
+// with formatted citations and bibliography, matching Word export.
 async function buildPrintDocument() {
   if (!currentFilePath) return null;
   const content = document.getElementById("editor").value;
@@ -3816,6 +3526,7 @@ async function printPreview() {
 // external changes to the citation file are picked up. Skipped for auto-save
 // (which calls this on a typing debounce) to avoid re-parsing it constantly.
 async function saveCurrentFile(reloadCites = false) {
+  flushRichText(); // edits still waiting in the formatted view
   if (!currentFilePath || !isDirty) return;
   try {
     const content = getEditorContent();
@@ -3829,10 +3540,7 @@ async function saveCurrentFile(reloadCites = false) {
     renderTabBar();
     await buildLinkIndex();
     await updateTagsBar(currentFilePath);
-    if (reloadCites && currentBibPath) {
-      await loadCitations();
-      await updatePreview();
-    }
+    if (reloadCites && currentBibPath) await loadCitations();
     showStatus("Saved");
   } catch (error) {
     showStatus(`Error saving: ${error.message || error}`);
@@ -3908,7 +3616,7 @@ async function reloadCleanTabsFromDisk() {
       t.content = content;
       if (t.id === activeTabId) {
         setEditorContent(content);
-        await updatePreview();
+        updateDocumentStats();
         renderEditorCommentGutter();
         if (activeSidebarTab === "links") buildLinksPanel();
       }
@@ -4359,113 +4067,19 @@ function buildOutline() {
     li.className = `outline-item h${level}`;
     li.textContent = label;
     li.title = label;
-    li.addEventListener("click", () => {
-      scrollEditorToLine(lineIndex);
-      setTimeout(() => scrollPreviewToHeader(display), 500);
-    });
+    li.addEventListener("click", () => scrollEditorToLine(lineIndex));
     list.appendChild(li);
   });
 }
 
-function getEditorHeadingPositions() {
-  const editor = document.getElementById("editor");
-  const lines = editor.value.split("\n");
-  const headings = [];
-  let charOffset = 0;
-  for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(/^(#{1,6})\s+(.+)/);
-    if (m) headings.push({ slug: headerSlug(stripMarkdown(m[2].trim())), charOffset });
-    charOffset += lines[i].length + 1;
-  }
-  if (headings.length === 0) return [];
-
-  const style = getComputedStyle(editor);
-  const mirror = document.createElement("div");
-  Object.assign(mirror.style, {
-    position: "absolute",
-    visibility: "hidden",
-    overflow: "hidden",
-    width: editor.clientWidth + "px",
-    fontFamily: style.fontFamily,
-    fontSize: style.fontSize,
-    lineHeight: style.lineHeight,
-    paddingTop: style.paddingTop,
-    paddingBottom: style.paddingBottom,
-    paddingLeft: style.paddingLeft,
-    paddingRight: style.paddingRight,
-    whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
-    boxSizing: "border-box",
-  });
-  const fullText = editor.value;
-  const markers = [];
-  let lastOffset = 0;
-  for (const h of headings) {
-    mirror.appendChild(document.createTextNode(fullText.substring(lastOffset, h.charOffset)));
-    const marker = document.createElement("span");
-    marker.textContent = "​";
-    mirror.appendChild(marker);
-    markers.push(marker);
-    lastOffset = h.charOffset;
-  }
-  mirror.appendChild(document.createTextNode(fullText.substring(lastOffset)));
-  document.body.appendChild(mirror);
-  const result = headings.map((h, i) => ({ slug: h.slug, pixelTop: markers[i].offsetTop }));
-  document.body.removeChild(mirror);
-  return result;
-}
-
-function onEditorScroll() {
-  // Comment balloons must track the scroll regardless of preview visibility.
-  scheduleCommentGutterRender();
-  if (suppressEditorScroll || !previewVisible || !currentFilePath) return;
-  clearTimeout(editorScrollTimer);
-  editorScrollTimer = setTimeout(() => {
-    const editor = document.getElementById("editor");
-    const scrollTop = editor.scrollTop;
-    const positions = getEditorHeadingPositions();
-    let currentId = null,
-      nextId = null,
-      fraction = 0;
-
-    if (positions.length === 0) {
-      const max = Math.max(1, editor.scrollHeight - editor.clientHeight);
-      fraction = scrollTop / max;
-    } else {
-      let curIdx = -1;
-      for (let i = 0; i < positions.length; i++) {
-        if (positions[i].pixelTop <= scrollTop + 2) curIdx = i;
-      }
-      if (curIdx === -1) {
-        const firstTop = positions[0].pixelTop;
-        nextId = positions[0].slug;
-        fraction = firstTop > 0 ? Math.min(1, scrollTop / firstTop) : 0;
-      } else {
-        currentId = positions[curIdx].slug;
-        const nxt = positions[curIdx + 1] || null;
-        if (nxt) {
-          nextId = nxt.slug;
-          const range = nxt.pixelTop - positions[curIdx].pixelTop;
-          fraction = range > 0 ? (scrollTop - positions[curIdx].pixelTop) / range : 0;
-        } else {
-          const tail = editor.scrollHeight - positions[curIdx].pixelTop;
-          fraction = tail > 0 ? (scrollTop - positions[curIdx].pixelTop) / tail : 0;
-        }
-      }
-      fraction = Math.max(0, Math.min(1, fraction));
-    }
-
-    suppressPreviewScroll = true;
-    document
-      .getElementById("preview")
-      .contentWindow?.postMessage({ type: "scroll-to-fraction", currentId, nextId, fraction }, "*");
-    setTimeout(() => {
-      suppressPreviewScroll = false;
-    }, 300);
-  }, 50);
-}
-
+// Scroll the document to a source line (outline, search hits, LLM sources),
+// in whichever view is showing.
 function scrollEditorToLine(lineIndex) {
+  const pane = panes.find((p) => p.id === activePaneId);
+  if (pane && isWysiwygActive(pane)) {
+    scrollRichTextToLine(pane, lineIndex);
+    return;
+  }
   const editor = document.getElementById("editor");
   const lines = editor.value.split("\n");
   let charOffset = 0;
@@ -4498,11 +4112,37 @@ function scrollEditorToLine(lineIndex) {
   document.body.removeChild(mirror);
 }
 
-function scrollPreviewToHeader(headerText) {
-  const id = headerSlug(headerText);
-  document
-    .getElementById("preview")
-    .contentWindow?.postMessage({ type: "scroll-to-heading", id }, "*");
+// In the formatted view there are no source lines: a heading line scrolls to
+// the same-numbered heading; another line to the first block (paragraph, list
+// item, …) containing its text — the same occurrence as in the source —
+// and failing that to the same relative position.
+function scrollRichTextToLine(pane, lineIndex) {
+  const root = getWysiwygRoot(pane);
+  if (!root) return;
+  const lines = document.getElementById("editor").value.split("\n");
+  const line = lines[lineIndex] ?? "";
+  const headingRe = /^#{1,6}\s+\S/;
+  let target = null;
+  if (headingRe.test(line)) {
+    const nth = lines.slice(0, lineIndex).filter((l) => headingRe.test(l)).length;
+    target = root.querySelectorAll("h1, h2, h3, h4, h5, h6")[nth] || null;
+  } else {
+    const needle = stripMarkdown(line.replace(/^\s*([-*+>]|\d+[.)])\s+/, "")).trim().slice(0, 40);
+    if (needle) {
+      const nth = lines.slice(0, lineIndex).filter((l) => stripMarkdown(l).includes(needle)).length;
+      const blocks = [...root.querySelectorAll("p, li, h1, h2, h3, h4, h5, h6, td, th, pre")].filter(
+        (el) => el.textContent.includes(needle) && !el.querySelector("p, li"),
+      );
+      target = blocks[nth] || blocks[0] || null;
+    }
+  }
+  if (target) {
+    target.scrollIntoView({ block: headingRe.test(line) ? "start" : "center" });
+    return;
+  }
+  const scroller = root.closest(".milkdown") || root;
+  scroller.scrollTop =
+    (lineIndex / Math.max(1, lines.length - 1)) * (scroller.scrollHeight - scroller.clientHeight);
 }
 
 // ===== LINKS PANEL =====
@@ -4810,31 +4450,12 @@ function restoreUiState(settings) {
   if (settings.sidebarWidth) {
     document.getElementById("sidebar").style.flex = `0 0 ${settings.sidebarWidth}px`;
   }
-  if (settings.editorWidth) savedEditorFlexBasis = settings.editorWidth;
-  if (settings.editorHeight) savedEditorHeight = settings.editorHeight;
-  previewPosition = settings.previewPosition === "bottom" ? "bottom" : "right";
-  if (settings.previewVisible === false) {
-    previewVisible = false;
-    document.getElementById("preview-pane").style.display = "none";
-    document.getElementById("editor-resize").style.display = "none";
-    document.querySelectorAll(".preview-toggle-btn").forEach((btn) => {
-      btn.classList.remove("active");
-      btn.title = "Show preview (⌘E)";
-      btn.setAttribute("aria-label", "Show preview");
-    });
-  }
-  applyPreviewPosition();
 }
 
 async function saveUiState() {
   if (!isInitialized) return;
   try {
     const sidebarWidth = document.getElementById("sidebar").getBoundingClientRect().width;
-    const editorRect = document.getElementById("editor-pane").getBoundingClientRect();
-    const editorWidth =
-      previewVisible && previewPosition === "right" ? editorRect.width : savedEditorFlexBasis;
-    const editorHeight =
-      previewVisible && previewPosition === "bottom" ? editorRect.height : savedEditorHeight;
 
     // Synchronize active globals into the active pane object
     saveActivePaneState();
@@ -4844,16 +4465,11 @@ async function saveUiState() {
         id: p.id,
         tabs: p.tabs.map((t) => t.path),
         activeTabPath: p.tabs.find((t) => t.id === p.activeTabId)?.path || null,
-        height: panes.length >= 2 ? p.containerEl.getBoundingClientRect().height : null,
       };
     });
 
     await apiPost("/api/settings", {
       sidebarWidth: sidebarWidth > 0 ? sidebarWidth : null,
-      editorWidth: editorWidth && editorWidth > 0 ? editorWidth : null,
-      editorHeight: editorHeight && editorHeight > 0 ? editorHeight : null,
-      previewPosition,
-      previewVisible,
       lastOpenFile: currentFilePath,
       openFiles: tabs.map((t) => t.path),
       panes: savedPanes,
@@ -5053,7 +4669,6 @@ let settingsBeforeEdit = {
   vaultPath: null,
   userCss: "",
   spellCheck: true,
-  usePandoc: false,
   numberSections: true,
   autoSave: false,
   bibPath: null,
@@ -5077,7 +4692,6 @@ async function openSettingsDialog() {
     vaultPath: currentVaultPath,
     userCss: currentUserCss,
     spellCheck: currentSpellCheck,
-    usePandoc: currentUsePandoc,
     numberSections: currentNumberSections,
     autoSave: currentAutoSave,
     smartQuotes: currentSmartQuotes,
@@ -5089,7 +4703,6 @@ async function openSettingsDialog() {
   document.getElementById("vault-path-display").textContent = currentVaultPath;
   document.getElementById("css-editor").value = currentUserCss;
   document.getElementById("spell-check-toggle").checked = currentSpellCheck;
-  document.getElementById("use-pandoc-toggle").checked = currentUsePandoc;
   document.getElementById("number-sections-toggle").checked = currentNumberSections;
   document.getElementById("auto-save-toggle").checked = currentAutoSave;
   document.getElementById("smart-quotes-toggle").checked = currentSmartQuotes;
@@ -5100,7 +4713,6 @@ async function openSettingsDialog() {
     currentPandocRefDocPath || "None selected";
   document.getElementById("nickname-input").value = currentUserNickname;
   document.getElementById("document-language-input").value = currentDocumentLanguage;
-  document.getElementById("preview-position-select").value = previewPosition;
   initGraphFolderSettings();
   document.getElementById("settings-dialog").showModal();
 
@@ -5382,7 +4994,6 @@ async function saveSettings() {
   try {
     const newCss = document.getElementById("css-editor").value;
     const newSpellCheck = document.getElementById("spell-check-toggle").checked;
-    const newUsePandoc = document.getElementById("use-pandoc-toggle").checked;
     const newNumberSections = document.getElementById("number-sections-toggle").checked;
     const newAutoSave = document.getElementById("auto-save-toggle").checked;
     const newSmartQuotes = document.getElementById("smart-quotes-toggle").checked;
@@ -5402,7 +5013,6 @@ async function saveSettings() {
     const newProofreadProvider = providerValue === "__add_new__" ? "" : providerValue;
     const newDocumentLanguage =
       document.getElementById("document-language-input").value.trim() || "English";
-    const newPreviewPosition = document.getElementById("preview-position-select").value;
 
     // Validate vault path
     try {
@@ -5416,7 +5026,6 @@ async function saveSettings() {
       vaultPath: newVaultPath,
       userCss: newCss,
       spellCheck: newSpellCheck,
-      usePandoc: newUsePandoc,
       numberSections: newNumberSections,
       useAutoSave: newAutoSave,
       smartQuotes: newSmartQuotes,
@@ -5427,18 +5036,12 @@ async function saveSettings() {
       proofreadProvider: newProofreadProvider,
       documentLanguage: newDocumentLanguage,
       graphFolderColors: currentGraphFolderColors,
-      previewPosition: newPreviewPosition,
     });
 
-    if (newPreviewPosition !== previewPosition) {
-      previewPosition = newPreviewPosition;
-      applyPreviewPosition();
-    }
 
     currentUserCss = newCss;
     setPreviewStyleUserCss(currentUserCss); // WYSIWYG shares the preview's CSS
     currentSpellCheck = newSpellCheck;
-    currentUsePandoc = newUsePandoc;
     currentNumberSections = newNumberSections;
     currentAutoSave = newAutoSave;
     currentSmartQuotes = newSmartQuotes;
@@ -5463,7 +5066,7 @@ async function saveSettings() {
       await checkGitRepo();
       showStatus(`Vault changed to: ${newVaultPath}`);
     } else {
-      if (currentFilePath) await updatePreview();
+      updateDocumentStats(); // heading numbering may have changed
       showStatus("Settings saved");
     }
     closeSettingsDialog();
@@ -5476,7 +5079,6 @@ function cancelSettings() {
   document.getElementById("vault-path-display").textContent = settingsBeforeEdit.vaultPath;
   document.getElementById("css-editor").value = settingsBeforeEdit.userCss;
   document.getElementById("spell-check-toggle").checked = settingsBeforeEdit.spellCheck;
-  document.getElementById("use-pandoc-toggle").checked = settingsBeforeEdit.usePandoc;
   document.getElementById("number-sections-toggle").checked = settingsBeforeEdit.numberSections;
   document.getElementById("auto-save-toggle").checked = settingsBeforeEdit.autoSave;
   document.getElementById("smart-quotes-toggle").checked = settingsBeforeEdit.smartQuotes;
@@ -5557,9 +5159,7 @@ async function runProofread() {
     return;
   }
   const editor = document.getElementById("editor");
-  const isSelection = editor.selectionStart !== editor.selectionEnd;
-  const start = isSelection ? editor.selectionStart : 0;
-  const end = isSelection ? editor.selectionEnd : editor.value.length;
+  const { isSelection, start, end } = getActionSelection();
   const text = editor.value.slice(start, end);
   if (!text.trim()) {
     showStatus("Nothing to proofread", true);
@@ -5670,9 +5270,7 @@ async function runTranslate() {
     return;
   }
   const editor = document.getElementById("editor");
-  const isSelection = editor.selectionStart !== editor.selectionEnd;
-  const start = isSelection ? editor.selectionStart : 0;
-  const end = isSelection ? editor.selectionEnd : editor.value.length;
+  const { isSelection, start, end } = getActionSelection();
   const text = editor.value.slice(start, end);
   if (!text.trim()) {
     showStatus("Nothing to translate", true);
@@ -5775,12 +5373,23 @@ async function runZotSeek() {
     return;
   }
   const editor = document.getElementById("editor");
-  const { selectionStart: start, selectionEnd: end } = editor;
-  const selected = editor.value.slice(start, end);
-  const query = zotseekQueryText(selected);
+  const sel = getActionSelection();
+  const query = sel.isSelection ? zotseekQueryText(sel.text) : "";
   if (!query) {
     showStatus("Select a sentence to find sources for it in Zotero", true);
     return;
+  }
+  let start = sel.start;
+  let selected = editor.value.slice(sel.start, sel.end);
+  if (activeRichHandle()) {
+    // The formatted selection, if it occurs as such in its source paragraph;
+    // otherwise the citation goes at the end of the paragraph.
+    const sentence = sel.text.trim();
+    const at = sentence ? selected.indexOf(sentence) : -1;
+    if (at !== -1) {
+      start = sel.start + at;
+      selected = sentence;
+    }
   }
   zotseekAnchor = { text: selected.replace(/[\s.,;:!?]+$/, ""), start };
 
@@ -5992,10 +5601,21 @@ function highlightProofreadSnippet(snippet, li) {
     showStatus("Couldn't locate that passage in the editor", true);
     return;
   }
-  const editor = document.getElementById("editor");
-  editor.focus();
-  editor.setSelectionRange(r.start, r.end);
-  editor.scrollTop = editor.scrollHeight * (r.start / Math.max(1, editor.value.length));
+  const handle = activeRichHandle();
+  if (handle) {
+    // The passage as shown: its text without Markdown, longest exact piece.
+    const shown = stripMarkdown(snippet.replace(/\^\[[^\]]*\]/g, "")).replace(/[=^~]/g, "");
+    const hit = handle.findText(shown)[0] || handle.findText(shown.slice(0, 40))[0];
+    if (hit) {
+      handle.focus();
+      handle.selectRange(hit.from, hit.to);
+    }
+  } else {
+    const editor = document.getElementById("editor");
+    editor.focus();
+    editor.setSelectionRange(r.start, r.end);
+    editor.scrollTop = editor.scrollHeight * (r.start / Math.max(1, editor.value.length));
+  }
 
   // Mark the clicked item active for visual feedback.
   document
@@ -6267,7 +5887,9 @@ function closeEditorSearch() {
   document.getElementById("editor-search-panel").style.display = "none";
   editorSearchMatches = [];
   editorSearchIndex = -1;
-  document.getElementById("editor").focus();
+  const handle = activeRichHandle();
+  if (handle) handle.focus();
+  else document.getElementById("editor").focus();
 }
 
 function toggleEditorReplace() {
@@ -6293,6 +5915,15 @@ function updateEditorSearchResults() {
     return;
   }
 
+  // The formatted view searches the text as shown ({ from, to } ranges there).
+  const handle = activeRichHandle();
+  if (handle) {
+    editorSearchMatches = handle.findText(query);
+    editorSearchIndex = editorSearchMatches.length > 0 ? 0 : -1;
+    updateEditorSearchDisplay();
+    return;
+  }
+
   editorSearchMatches = [];
   const lowerText = text.toLowerCase();
   const lowerQuery = query.toLowerCase();
@@ -6314,6 +5945,12 @@ function updateEditorSearchDisplay() {
 
   if (editorSearchIndex >= 0 && editorSearchMatches[editorSearchIndex]) {
     const match = editorSearchMatches[editorSearchIndex];
+    const handle = activeRichHandle();
+    if (handle) {
+      handle.focus();
+      handle.selectRange(match.from, match.to);
+      return;
+    }
     editor.setSelectionRange(match.start, match.end);
     editor.focus();
     editor.scrollTop = editor.scrollHeight * (match.start / editor.value.length);
@@ -6357,23 +5994,36 @@ function editorReplaceCurrent() {
   const editor = document.getElementById("editor");
   const replace = document.getElementById("editor-replace-input").value;
   const match = editorSearchMatches[editorSearchIndex];
+  const handle = activeRichHandle();
+  if (handle) {
+    handle.replaceRanges([match], replace); // undoable with ⌘Z there
+    updateEditorSearchResults();
+    return;
+  }
 
   snapshotForUndo();
   const newText = editor.value.slice(0, match.start) + replace + editor.value.slice(match.end);
-  editor.value = newText;
+  setEditorContent(newText);
 
-  const query = document.getElementById("editor-search-input").value;
   updateEditorSearchResults();
   isDirty = true;
   const tab = getActiveTab();
   if (tab) tab.edited = true;
-  updatePreview();
+  updateDocumentStats();
 }
 
 function editorReplaceAll() {
   if (editorSearchMatches.length === 0) return;
   const editor = document.getElementById("editor");
   const replace = document.getElementById("editor-replace-input").value;
+  const handle = activeRichHandle();
+  if (handle) {
+    const count = editorSearchMatches.length;
+    handle.replaceRanges(editorSearchMatches, replace);
+    updateEditorSearchResults();
+    showStatus(`Replaced ${count} occurrence(s)`);
+    return;
+  }
 
   snapshotForUndo();
   let newText = editor.value;
@@ -6381,12 +6031,12 @@ function editorReplaceAll() {
     const match = editorSearchMatches[i];
     newText = newText.slice(0, match.start) + replace + newText.slice(match.end);
   }
-  editor.value = newText;
+  setEditorContent(newText);
   updateEditorSearchResults();
   isDirty = true;
   const tab = getActiveTab();
   if (tab) tab.edited = true;
-  updatePreview();
+  updateDocumentStats();
   showStatus(`Replaced ${editorSearchMatches.length} occurrence(s)`);
 }
 
