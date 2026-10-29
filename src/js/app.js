@@ -68,7 +68,6 @@ let autoSaveDebounceTimer = null;
 let editorScrollTimer = null;
 let suppressEditorScroll = false;
 let suppressPreviewScroll = false;
-let dragDidOccur = false;
 let tabs = [];
 let undoStack = [];
 let redoStack = [];
@@ -123,7 +122,8 @@ class Pane {
 }
 let tabCounter = 0;
 let fileTreeCache = [];
-let vaultHashCache = "";
+let vaultHashCache = ""; // notes' paths + mtimes: changes on every save
+let vaultTreeHashCache = ""; // all paths: changes when the file browser's contents change
 let noteIndexCache = {}; // lowercased note name -> full path, from the link index
 let tagIndexCache = {}; // lowercased tag -> {name, count, files}, from the link index
 let untaggedCache = []; // paths of files with no tags at all, from the link index
@@ -148,6 +148,9 @@ let cslTemplateCounter = 0;
 
 async function startInlineRename(nameEl, oldPath) {
   if (!nameEl.isConnected) return;
+  // One rename at a time, and never in the middle of a drag.
+  if (document.querySelector(".tree-rename-input")) return;
+  if (document.body.classList.contains("dragging-file")) return;
 
   const oldName = oldPath.split("/").pop();
   const input = document.createElement("input");
@@ -167,9 +170,15 @@ async function startInlineRename(nameEl, oldPath) {
   async function commit() {
     if (done) return;
     done = true;
-    const newName = input.value.trim();
+    let newName = input.value.trim();
+    // Typing just "chapter" for "notes.md" keeps the extension (only the
+    // name part is selected, but select-all-and-type is easy to do).
+    const oldExt = oldName.lastIndexOf(".") > 0 ? oldName.slice(oldName.lastIndexOf(".")) : "";
+    const isFolder = !!nameEl.closest(".tree-label");
+    if (newName && oldExt && !isFolder && !newName.includes(".")) newName += oldExt;
     if (!newName || newName === oldName) {
       input.replaceWith(nameEl);
+      runPendingTreeRefresh();
       return;
     }
     try {
@@ -177,6 +186,13 @@ async function startInlineRename(nameEl, oldPath) {
       const newPath = result.path;
       remapTabPaths(oldPath, newPath);
       renderTabBar();
+      input.replaceWith(nameEl); // so the refresh below isn't deferred for it
+      // A renamed folder (and open folders inside it) should stay open: give
+      // their <ul>s the new path before the refresh reads which are open.
+      document.querySelectorAll("#file-tree ul[data-path]").forEach((ul) => {
+        const p = ul.dataset.path;
+        if (p === oldPath || p.startsWith(oldPath + "/")) ul.dataset.path = newPath + p.slice(oldPath.length);
+      });
       await refreshFileTree();
       if (currentFilePath === newPath) await revealFileInTree(newPath);
       // The server rewrites [[wikilinks]] to the renamed note across the vault;
@@ -187,7 +203,8 @@ async function startInlineRename(nameEl, oldPath) {
       handleGitResult(result.git);
     } catch (err) {
       input.replaceWith(nameEl);
-      showStatus(`Rename failed: ${err}`, true);
+      showStatus(`Rename failed: ${apiErrorMessage(err)}`, true);
+      runPendingTreeRefresh();
     }
   }
 
@@ -195,6 +212,7 @@ async function startInlineRename(nameEl, oldPath) {
     if (done) return;
     done = true;
     input.replaceWith(nameEl);
+    runPendingTreeRefresh();
   }
 
   input.addEventListener("blur", commit);
@@ -212,10 +230,26 @@ async function startInlineRename(nameEl, oldPath) {
 }
 
 // Hovering a tree name without moving the cursor for ~1s opens inline rename.
-// Any cursor movement (or a drag) restarts the timer, so it only fires when
-// the pointer genuinely rests on the name.
+// Any cursor movement restarts the timer, so it only fires when the pointer
+// genuinely rests on the name. Only real pointer movement counts: when the
+// tree is redrawn under a still pointer, the browser sends the new element a
+// "mouseenter" at the same position, which must not start a rename. A click
+// or drag ("open"/"move", not "rename") blocks it until the pointer leaves
+// the name, and it never fires during a drag or with a button held down.
+let lastPointerX = -1;
+let lastPointerY = -1;
+document.addEventListener(
+  "mousemove",
+  (e) => {
+    lastPointerX = e.clientX;
+    lastPointerY = e.clientY;
+  },
+  true,
+);
+
 function addHoverRename(nameEl, path) {
   let timer = null;
+  let blocked = false;
   let lastX = 0;
   let lastY = 0;
   const clear = () => {
@@ -224,25 +258,42 @@ function addHoverRename(nameEl, path) {
       timer = null;
     }
   };
-  const schedule = (x, y) => {
-    lastX = x;
-    lastY = y;
+  const schedule = (e) => {
+    lastX = e.clientX;
+    lastY = e.clientY;
     clear();
+    if (blocked || e.buttons || document.body.classList.contains("dragging-file")) return;
     timer = setTimeout(() => {
       timer = null;
+      if (blocked || document.body.classList.contains("dragging-file")) return;
+      blocked = true; // after this rename, don't start another one here
       startInlineRename(nameEl, path);
     }, 1000);
   };
-  nameEl.addEventListener("mouseenter", (e) => schedule(e.clientX, e.clientY));
+  nameEl.addEventListener("mouseenter", (e) => {
+    // mouseenter comes before the mousemove that records the new position:
+    // an unchanged position means the pointer didn't move (a redraw).
+    if (e.clientX === lastPointerX && e.clientY === lastPointerY) {
+      lastX = e.clientX;
+      lastY = e.clientY;
+      return;
+    }
+    schedule(e);
+  });
   // Only a real move restarts the timer; ignore the sub-pixel jitter a still
   // hand/trackpad emits, otherwise the 1s timer never elapses.
   nameEl.addEventListener("mousemove", (e) => {
     if (Math.abs(e.clientX - lastX) < 4 && Math.abs(e.clientY - lastY) < 4) return;
-    schedule(e.clientX, e.clientY);
+    schedule(e);
   });
-  nameEl.addEventListener("mouseleave", clear);
-  // If a drag begins on the row, don't pop the rename mid-drag.
-  nameEl.addEventListener("mousedown", clear);
+  nameEl.addEventListener("mouseleave", () => {
+    blocked = false;
+    clear();
+  });
+  nameEl.addEventListener("mousedown", () => {
+    blocked = true;
+    clear();
+  });
 }
 
 // ===== MULTI-PANE MANAGEMENT =====
@@ -1217,6 +1268,19 @@ function relativeVaultPath(fromFile, toFile) {
   return up.concat(to.slice(i)).join("/");
 }
 
+// A drop can be followed by a click event on the element under the pointer
+// (when the drag started and ended within it), which would open the file or
+// toggle the folder there. Swallow only that click: it is dispatched right
+// after mouseup, before any timer runs.
+function swallowClickAfterDrag() {
+  const stop = (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+  };
+  window.addEventListener("click", stop, { capture: true, once: true });
+  setTimeout(() => window.removeEventListener("click", stop, { capture: true }), 0);
+}
+
 function addFileMouseDrag(li, filePath, fileName, isDir = false) {
   li.addEventListener("mousedown", (e) => {
     if (e.button !== 0) return;
@@ -1282,19 +1346,34 @@ function addFileMouseDrag(li, filePath, fileName, isDir = false) {
       else if (dir) dir.classList.add("tree-drop-target");
     }
 
-    async function onUp(e) {
+    function endDrag() {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
-      if (!started) return;
-
-      dragDidOccur = true;
+      document.removeEventListener("keydown", onKey, true);
+      if (!started) return false;
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
       document.body.classList.remove("dragging-file");
       ghost?.remove();
       clearHighlights();
+      return true;
+    }
+
+    // Escape cancels the drag: nothing is moved.
+    function onKey(e) {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (endDrag()) swallowClickAfterDrag();
+      runPendingTreeRefresh();
+    }
+
+    async function onUp(e) {
+      if (!endDrag()) return;
+      swallowClickAfterDrag();
 
       const { destDir, overEditor, trash } = getDropZone(e.clientX, e.clientY);
+      if (!trash && !destDir) runPendingTreeRefresh(); // e.g. dropped into the editor
 
       if (trash) {
         try {
@@ -1311,7 +1390,8 @@ function addFileMouseDrag(li, filePath, fileName, isDir = false) {
           maybeGitCommit();
           showStatus(`Moved "${fileName}" to Trash`);
         } catch (err) {
-          showStatus(`Trash failed: ${err}`, true);
+          showStatus(`Trash failed: ${apiErrorMessage(err)}`, true);
+          runPendingTreeRefresh();
         }
         return;
       }
@@ -1341,10 +1421,12 @@ function addFileMouseDrag(li, filePath, fileName, isDir = false) {
       const srcParent = filePath.split("/").slice(0, -1).join("/");
       if (srcParent === destDir) {
         showStatus(`"${fileName}" is already in this folder`);
+        runPendingTreeRefresh();
         return;
       }
       if (isDir && (destDir === filePath || destDir.startsWith(filePath + "/"))) {
         showStatus("Cannot move a folder into itself", true);
+        runPendingTreeRefresh();
         return;
       }
 
@@ -1353,16 +1435,21 @@ function addFileMouseDrag(li, filePath, fileName, isDir = false) {
         const newPath = result.path;
         remapTabPaths(filePath, newPath);
         renderTabBar();
-        await refreshFileTree();
-        showStatus(`Moved to ${destDir.split("/").pop()}/`);
+        // Open the destination folder, so the moved item is visible there.
+        await refreshFileTree({ expand: destDir === currentVaultPath ? [] : [destDir] });
+        await buildLinkIndex(); // the index stores note paths
+        const destName = destDir === currentVaultPath ? "the vault's top level" : `${destDir.split("/").pop()}/`;
+        showStatus(`Moved "${fileName}" to ${destName}`);
         handleGitResult(result.git);
       } catch (err) {
-        showStatus(`Move failed: ${err}`, true);
+        showStatus(`Move failed: ${apiErrorMessage(err)}`, true);
+        runPendingTreeRefresh();
       }
     }
 
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
+    document.addEventListener("keydown", onKey, true);
   });
 }
 
@@ -1511,12 +1598,67 @@ function initResizableHandles() {
 
 // ===== FILE TREE =====
 
-async function refreshFileTree() {
+// A refresh asked for while the user is renaming or dragging in the tree
+// would destroy the rename field or the dragged row; it waits until then.
+let treeRefreshPending = false;
+
+function fileTreeBusy() {
+  return (
+    !!document.querySelector("#file-tree .tree-rename-input") ||
+    document.body.classList.contains("dragging-file")
+  );
+}
+
+function runPendingTreeRefresh() {
+  if (treeRefreshPending && !fileTreeBusy()) {
+    treeRefreshPending = false;
+    refreshFileTree();
+  }
+}
+
+function expandedTreeDirs() {
+  return [...document.querySelectorAll("#file-tree li.tree-dir:not(.collapsed) > ul[data-path]")].map(
+    (ul) => ul.dataset.path,
+  );
+}
+
+// Redraw the tree from disk, keeping the open folders (plus `expand`) open
+// and the scroll position. Everything is fetched first and drawn in one go,
+// so the tree doesn't flicker or briefly collapse.
+async function refreshFileTree({ expand = [] } = {}) {
+  if (fileTreeBusy()) {
+    treeRefreshPending = true;
+    return;
+  }
+  const container = document.getElementById("file-tree-container");
+  const scrollTop = container.scrollTop;
+  const open = [...new Set([...expandedTreeDirs(), ...expand])];
   try {
-    const nodes = await apiFetch(`/api/list-vault?path=${encodeURIComponent(currentVaultPath)}`);
+    const [nodes, ...lists] = await Promise.all([
+      apiFetch(`/api/list-vault?path=${encodeURIComponent(currentVaultPath)}`),
+      // A folder that no longer exists just stays closed.
+      ...open.map((dir) => apiFetch(`/api/list-dir?path=${encodeURIComponent(dir)}`).catch(() => null)),
+    ]);
+    if (fileTreeBusy()) {
+      treeRefreshPending = true;
+      return;
+    }
     fileTreeCache = nodes;
     renderFileTree(nodes);
+    // Parents first: a subfolder's <ul> exists once its parent is drawn.
+    const byDepth = open.map((dir, i) => [dir, lists[i]]).sort((a, b) => a[0].length - b[0].length);
+    for (const [dir, children] of byDepth) {
+      if (!children) continue;
+      const ul = [...document.querySelectorAll("#file-tree ul[data-path]")].find(
+        (u) => u.dataset.path === dir,
+      );
+      if (!ul) continue;
+      renderFileTree(children, ul);
+      ul.dataset.loaded = "true";
+      ul.closest(".tree-dir")?.classList.remove("collapsed");
+    }
     if (currentFilePath) await revealFileInTree(currentFilePath);
+    container.scrollTop = scrollTop;
   } catch (error) {
     console.error("Failed to refresh file tree:", error);
   }
@@ -1613,12 +1755,6 @@ function renderFileTree(nodes, container = null) {
       nested.dataset.path = node.path;
       label.addEventListener("click", async (e) => {
         e.stopPropagation();
-        // A drag just ended on this label — swallow the click so it doesn't
-        // also toggle the folder open/closed.
-        if (dragDidOccur) {
-          dragDidOccur = false;
-          return;
-        }
         const isCollapsed = li.classList.contains("collapsed");
         li.classList.toggle("collapsed");
         if (isCollapsed && !nested.dataset.loaded) {
@@ -1646,13 +1782,7 @@ function renderFileTree(nodes, container = null) {
       nameEl.textContent = node.name;
       li.appendChild(iconEl);
       li.appendChild(nameEl);
-      li.addEventListener("click", () => {
-        if (dragDidOccur) {
-          dragDidOccur = false;
-          return;
-        }
-        loadFile(node.path, { replaceUnedited: true });
-      });
+      li.addEventListener("click", () => loadFile(node.path, { replaceUnedited: true }));
       nameEl.addEventListener("dblclick", (e) => {
         e.stopPropagation();
         startInlineRename(nameEl, node.path);
@@ -3770,6 +3900,7 @@ async function updateTagsBar(filePath) {
 // unsaved work is never clobbered.
 async function reloadCleanTabsFromDisk() {
   for (const t of tabs) {
+    if (t.isMedia || t.isGraph) continue; // no text to reload
     if (t.id === activeTabId ? isDirty : t.isDirty) continue;
     try {
       const { content } = await apiFetch(`/api/read-file?path=${encodeURIComponent(t.path)}`);
@@ -3790,39 +3921,45 @@ async function reloadCleanTabsFromDisk() {
 async function initializeFileWatcher() {
   if (!currentVaultPath) return;
   try {
-    vaultHashCache = (
-      await apiFetch(`/api/vault-hash?path=${encodeURIComponent(currentVaultPath)}`)
-    ).hash;
+    const first = await apiFetch(`/api/vault-hash?path=${encodeURIComponent(currentVaultPath)}`);
+    vaultHashCache = first.hash;
+    vaultTreeHashCache = first.tree;
   } catch (_) {}
 
-  setInterval(async () => {
-    // Skip the disk scan while the window is hidden — nothing's changing on
-    // screen, and we re-sync as soon as it's focused again (below).
-    if (document.hidden) return;
+  // Apply changes made on disk (by this app or another one). A saved note
+  // only reloads tabs and the link index; the file browser is redrawn only
+  // when its contents changed (added, removed, renamed or moved items).
+  let syncing = false;
+  async function syncWithDisk(settle = 0) {
+    if (syncing || !currentVaultPath) return;
+    syncing = true;
     try {
       const result = await apiFetch(`/api/vault-hash?path=${encodeURIComponent(currentVaultPath)}`);
-      if (result.hash !== vaultHashCache) {
-        vaultHashCache = result.hash;
-        await new Promise((r) => setTimeout(r, 500));
-        await refreshFileTree();
-        await buildLinkIndex();
-        await reloadCleanTabsFromDisk();
-      }
-    } catch (_) {}
+      const notesChanged = result.hash !== vaultHashCache;
+      const treeChanged = result.tree !== vaultTreeHashCache;
+      if (!notesChanged && !treeChanged) return;
+      vaultHashCache = result.hash;
+      vaultTreeHashCache = result.tree;
+      if (settle) await new Promise((r) => setTimeout(r, settle)); // let a burst of writes finish
+      if (treeChanged) await refreshFileTree();
+      await buildLinkIndex();
+      if (notesChanged) await reloadCleanTabsFromDisk();
+    } catch (_) {
+      // try again on the next tick
+    } finally {
+      syncing = false;
+    }
+  }
+
+  setInterval(() => {
+    // Skip the disk scan while the window is hidden — nothing's changing on
+    // screen, and we re-sync as soon as it's focused again (below).
+    if (!document.hidden) syncWithDisk(500);
   }, 3000);
 
   // Re-sync immediately when the window regains focus after being hidden.
-  document.addEventListener("visibilitychange", async () => {
-    if (document.hidden || !currentVaultPath) return;
-    try {
-      const result = await apiFetch(`/api/vault-hash?path=${encodeURIComponent(currentVaultPath)}`);
-      if (result.hash !== vaultHashCache) {
-        vaultHashCache = result.hash;
-        await refreshFileTree();
-        await buildLinkIndex();
-        await reloadCleanTabsFromDisk();
-      }
-    } catch (_) {}
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) syncWithDisk();
   });
 }
 

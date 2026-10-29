@@ -226,6 +226,21 @@ def get_vault_hash(vault_path: str) -> str:
     return h.hexdigest()
 
 
+def get_vault_tree_hash(vault_path: str) -> str:
+    """Digest of the vault's structure: the paths of all files and folders the
+    file browser can show (hidden ones skipped, as in list_dir_internal). It
+    changes when something is added, removed, renamed or moved, but not when
+    a file is saved, so the browser only redraws when its contents change."""
+    h = hashlib.sha1()
+    for root, dirs, files in os.walk(vault_path):
+        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        h.update(f"{root}/;".encode("utf-8"))
+        for name in sorted(files):
+            if not name.startswith("."):
+                h.update(f"{name};".encode("utf-8"))
+    return h.hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # Link index
 # ---------------------------------------------------------------------------
@@ -2071,7 +2086,11 @@ class Handler(SimpleHTTPRequestHandler):
             if not vault_path:
                 self.send_error_json("path required")
                 return
-            self.send_json({"hash": get_vault_hash(vault_path)})
+            # "hash" changes when a note is saved (reload its tab, re-index
+            # links); "tree" only when the file browser's contents change.
+            self.send_json(
+                {"hash": get_vault_hash(vault_path), "tree": get_vault_tree_hash(vault_path)}
+            )
         elif path == "/api/git-info":
             # Whether the current vault is a git working tree (and has a remote).
             try:
@@ -2227,7 +2246,11 @@ class Handler(SimpleHTTPRequestHandler):
                 if "/" in new_name or "\\" in new_name:
                     raise ValueError("Name cannot contain path separators")
                 new_path = safe_path(str(old_path.parent / new_name))
-                if new_path.exists():
+                # On a case-insensitive disk (the macOS default) a case-only
+                # rename (note.md → Note.md) "exists" as the same file.
+                if new_path.exists() and not (
+                    new_name.lower() == old_path.name.lower() and new_path.samefile(old_path)
+                ):
                     raise ValueError(f"'{new_name}' already exists")
                 root = vault_root()
                 repo = root is not None and is_git_repo(root)
