@@ -187,3 +187,8 @@
     opacity: 0.8;
 }
 
+
+/* Pandoc citations, shown as "(Author, year, p. 4)"; a click edits them. */
+.milkdown .editor .citation-ref[data-raw] {
+    cursor: pointer;
+}

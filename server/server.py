@@ -753,6 +753,52 @@ def _bbt_citation_keys(item_keys: list) -> dict:
     return {k: v for k, v in (data.get("result") or {}).items() if v}
 
 
+def zotero_reference_link(citekey: str, page: int | None = None) -> dict:
+    """A zotero:// link for a cited reference: its PDF at `page` (the printed
+    page number from the citation) if it has one, else the item itself.
+
+    Zotero opens a PDF at a PDF page (index + 1), not at a printed page
+    number. Where the item's annotations carry page labels, the difference
+    between the two is applied; otherwise the number is used as is.
+    Returns {url, note}; `note` says how good the page is."""
+    select = {"url": f"zotero://select/items/@{citekey}", "note": "Selected in Zotero"}
+    try:
+        data = _zotero_post(
+            "/better-bibtex/json-rpc",
+            {"jsonrpc": "2.0", "method": "item.attachments", "params": [citekey], "id": 1},
+            timeout=15,
+        )
+    except urllib.error.URLError:
+        raise RuntimeError("Zotero is not running. Start Zotero (with Better BibTeX) and try again.")
+    if data.get("error"):
+        raise RuntimeError(f"@{citekey} was not found in Zotero (Better BibTeX).")
+    if page is None:
+        return select
+    pdfs = [a for a in data.get("result") or [] if str(a.get("path", "")).lower().endswith(".pdf")]
+    if not pdfs:
+        return {**select, "note": "No PDF for this reference: selected it in Zotero"}
+    pdf = pdfs[0]
+    offsets = []
+    for ann in pdf.get("annotations") or []:
+        label = str(ann.get("annotationPageLabel") or "")
+        pos = ann.get("annotationPosition")
+        if isinstance(pos, str):
+            try:
+                pos = json.loads(pos)
+            except json.JSONDecodeError:
+                pos = None
+        if label.isdigit() and isinstance(pos, dict) and isinstance(pos.get("pageIndex"), int):
+            offsets.append(pos["pageIndex"] + 1 - int(label))
+    offset = max(set(offsets), key=offsets.count) if offsets else 0
+    known = any(o != 0 for o in offsets)
+    note = (
+        f"PDF opened at page {page}"
+        + (f" (PDF page {page + offset})" if offset else "")
+        + ("" if known else " — the printed page number may differ from the PDF page")
+    )
+    return {"url": f"{pdf['open']}?page={max(1, page + offset)}", "note": note}
+
+
 def zotseek_search(query: str, max_results: int = 10) -> dict:
     found = _zotseek_call(
         "search", {"query": query, "max_results": max_results, "granularity": "papers"}
@@ -2415,6 +2461,16 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:
                 self.send_error_json(str(e))
 
+        elif path == "/api/zotero-reference-link":
+            try:
+                data = self.read_body()
+                citekey = (data.get("citekey") or "").strip()
+                if not citekey:
+                    raise ValueError("No citation key")
+                page = data.get("page")
+                self.send_json(zotero_reference_link(citekey, int(page) if page else None))
+            except Exception as e:
+                self.send_error_json(str(e))
         elif path == "/api/zotseek-search":
             try:
                 data = self.read_body()

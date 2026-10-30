@@ -18,7 +18,7 @@
 
 import { createEditor } from "/js/vendor/milkdown.bundle.js";
 import { ensurePreviewStyleLoaded } from "/js/preview-style.js";
-import { mergeEdit } from "/js/source-merge.js";
+import { mergeEdit, reconcileFootnoteDefinitions } from "/js/source-merge.js";
 
 // Split leading YAML front matter from the body. `frontMatter` keeps its
 // trailing newline; `frontMatter + "\n" + body` reproduces a blank-line
@@ -62,6 +62,13 @@ export function setWysiwygViewVisible(pane, visible) {
 function rememberBaseline(pane, body) {
   pane._mkSource = body;
   pane._mkBase = pane._mkHandle.getMarkdown();
+  pane._mkFootnotes = footnoteSignature(pane);
+}
+
+// Reference footnotes' texts live in their definitions, which aren't part
+// of the serialised text: track them separately.
+function footnoteSignature(pane) {
+  return JSON.stringify(pane._mkHandle.getFootnotes().filter((f) => f.id).map((f) => [f.id, f.content]));
 }
 
 // Write edits made in the rich-text view back into the pane's textarea. Only
@@ -70,14 +77,18 @@ function rememberBaseline(pane, body) {
 export function flushWysiwygToTextarea(pane) {
   if (!pane._mkHandle) return false;
   const next = pane._mkHandle.getMarkdown();
-  if (next === pane._mkBase) return false; // nothing edited since the last write-back
+  const footnotes = footnoteSignature(pane);
+  // Nothing edited since the last write-back.
+  if (next === pane._mkBase && footnotes === pane._mkFootnotes) return false;
   // Merge into the textarea's current text, so anything the app changed
-  // there directly is kept too.
+  // there directly is kept too; then bring the footnote definitions in line.
   const { frontMatter, body: current } = splitFrontMatter(pane.editorEl.value);
-  const body = mergeEdit(current, pane._mkBase, next);
+  const merged = mergeEdit(current, pane._mkBase, next);
+  const body = reconcileFootnoteDefinitions(merged, pane._mkHandle.getFootnotes());
   // The next edit is compared with this state, so only it gets replaced.
   pane._mkSource = body;
   pane._mkBase = next;
+  pane._mkFootnotes = footnotes;
   const fm = frontMatter || pane._mkFrontMatter || "";
   const value = fm ? fm + "\n" + body : body;
   if (pane.editorEl.value === value) return false;
@@ -146,11 +157,12 @@ export function setWysiwygFootnoteContent(pane, pos, content) {
 }
 
 // onRender(rootEl) runs after the content is (re)drawn, e.g. to point image
-// paths at the server; onOpenUrl(href) for ⌘-clicked links; onOpenComment(el,
-// value) for a clicked comment marker.
+// paths at the server and label citations; onOpenUrl(href) for ⌘-clicked
+// links; onOpenComment(el, value) for a clicked comment marker;
+// onOpenCitation(el, raw) for a clicked citation.
 export async function enableWysiwyg(
   pane,
-  { onChange, onOpenWikilink, onFootnotesChanged, onOpenUrl, onOpenComment, onRender },
+  { onChange, onOpenWikilink, onFootnotesChanged, onOpenUrl, onOpenComment, onOpenCitation, onRender },
 ) {
   if (pane._mkHandle || pane._mkBusy) return;
   pane._mkBusy = true;
@@ -222,6 +234,12 @@ export async function enableWysiwyg(
       if (link && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         onOpenUrl?.(link.getAttribute("href"));
+        return;
+      }
+      const citation = e.target.closest(".citation-ref[data-raw]");
+      if (citation) {
+        e.preventDefault();
+        onOpenCitation?.(citation, citation.getAttribute("data-raw") || "");
         return;
       }
       const comment = e.target.closest(".mk-comment");

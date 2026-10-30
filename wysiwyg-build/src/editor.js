@@ -46,7 +46,7 @@ function collectFootnotes(view) {
   const out = [];
   view.state.doc.descendants((node, pos) => {
     if (node.type.name === "footnote") {
-      out.push({ pos, content: node.attrs.content || "" });
+      out.push({ pos, content: node.attrs.content || "", id: node.attrs.id || null });
     }
   });
   return out;
@@ -173,6 +173,15 @@ export async function createEditor({ root, value, onChange }) {
           ? view.state.tr.setNodeMarkup(pos, undefined, { raw })
           : view.state.tr.delete(pos, pos + node.nodeSize);
         view.dispatch(tr);
+      });
+    },
+
+    // Insert a reference footnote [^id] at the cursor; its definition is
+    // added to the source by the app.
+    insertFootnote(id, content = "") {
+      withView((view) => {
+        const node = view.state.schema.nodes.footnote.create({ id, content });
+        view.dispatch(view.state.tr.replaceSelectionWith(node, false).scrollIntoView());
       });
     },
 

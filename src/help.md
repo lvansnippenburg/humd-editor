@@ -31,6 +31,8 @@ All shortcuts work both in the formatted view and in the Markdown source (`⌘/`
 | `\@` | Open the Zotero (Better BibTeX) citation picker |
 | `⌘⇧M` | Insert a comment |
 | `⌘⇧T` | Insert a table (choose rows, columns and column alignment) |
+| `⌘K` | Insert a link — to a heading of this note, or to an address (`https://…`, `zotero://…`) — around the selection |
+| `⌘⇧N` | Insert a footnote with a unique code (`[^x7k2]`) |
 | `⌘⇧P` | Proofread (selection or whole document; in the formatted view, the whole paragraphs the selection touches) |
 | `⌘⇧L` | Translate (selection or whole document; idem) |
 | `⌘⇧G` | Suggest tags from the vault |
@@ -82,6 +84,8 @@ Creating a link to another Markdown document in the same vault van be done by ty
 
 Create a link to an external source (eg. a webpage) looks like `[my link description](https://link.to/external/source)`.
 
+The easiest way to make a link is `⌘K`: select the text that should become the link (or not, and type it in the dialog), then choose a heading of this note from the list or enter an address — `https://…`, `zotero://…`, or any other; `www.example.org` gets its `https://` added. A heading link points to the heading's identifier as Pandoc makes it (`#économie-société`), so it also works in printed and exported documents; `⌘`-click it in the editor to go to the heading. With a complete link `[text](target)` selected in the Markdown view, `⌘K` edits it.
+
 An internal link can be created using the headers of the document. By replacing the spaces in the headers with a dash ('the header' -> 'the-header') and adding a hash-sign in front, they become internal links. A link to the section on footnotes in this document would look like: `[About footnotes in Markdown](#footnote)`, which would render as [About footnotes in Markdown](#footnote)
 
 To follow a link, hold `⌘` (or `Ctrl`) and click it — a link in the formatted view, or a URL in the Markdown source — to open it in your browser or the matching app; a `[[wikilink]]` in the formatted view opens with a plain click. This works for ordinary web links as well as app links such as `zotero://…`. (On macOS, `⌘`-click is the reliable gesture, since `Ctrl`-click is taken by the system menu.)
@@ -98,7 +102,9 @@ There are two ways to insert a footnote. The preferred way in our opinion is typ
 
 This is by far the easiest method, and you can just keep on typing. The footnote number will be generated automatically.
 
-The second way is to type `[^uniqueref]` at the spot where you want to create the footnote. Immediately under the paragraph, or anywhere you like, you can then type the actual content of the footnote.
+The second way is to press `⌘⇧N` where the footnote should go. This inserts a reference like `[^x7k2]` — a code of four random characters, never one already used in the note — and its definition `[^x7k2]:` directly under the paragraph. In the Markdown view the cursor moves to the definition, so you can type the note right away; in the formatted view you type it in the **Links** panel, which opens with the new footnote's field ready. (A footnote can't contain another footnote.)
+
+You can also type `[^uniqueref]` yourself at the spot where you want to create the footnote. Immediately under the paragraph, or anywhere you like, you can then type the actual content of the footnote.
 ```[^uniqueref]: Here is the text of the footnote.``` 
 You are responsible for the 'uniqueref', this can be a number or a text, as long as it is unique to this footnote. When rendered your reference will automagically be replaced by the correct number.
 
@@ -133,14 +139,14 @@ The custom syntax in the formatted view:
 | `==highlight==` | highlighted text |
 | `^superscript^`, `~subscript~` | raised / lowered text |
 | `[[wikilink]]` | a link — click it to open the note |
-| `^[footnote]` and `[^ref]` footnotes | a small numbered marker; the text is shown and edited in the **Links** panel in the sidebar |
-| `[@key]` citations | shown as written; formatted when you print or export to Word |
+| `^[footnote]` and `[^ref]` footnotes | a small numbered marker; the text is shown and edited in the **Links** panel in the sidebar. A `[^ref]` footnote stays a reference footnote with its code, and editing its text there updates its `[^ref]:` definition |
+| `[@key, p. 4]` citations | shown as (author, year, page), e.g. (Abulafia, 2014, p. 12); click one to edit its Pandoc text. Fully formatted in your citation style when you print or export to Word |
 | `<!-- comments -->` | a small comment marker; point at it to read the comment, click it to open it |
 | `#tags` | plain text |
 
 Notes:
 
-- When you edit a paragraph in the formatted view, Milkdown (the editor behind it) writes that paragraph in its own style: a reference footnote (`[^id]` with its `[^id]:` line) becomes an inline `^[…]` footnote, `*` and `-` list markers or escaping may change, and inline HTML such as `<br>` is dropped. The meaning stays the same. Paragraphs you don't touch are left exactly as they were — use the Markdown view for anything that must stay character for character.
+- When you edit a paragraph in the formatted view, Milkdown (the editor behind it) writes that paragraph in its own style: `*` and `-` list markers or escaping may change, and inline HTML such as `<br>` is dropped. The meaning stays the same. Paragraphs you don't touch are left exactly as they were — use the Markdown view for anything that must stay character for character.
 - Smart quotes (Settings) and the protection of `--` against the Mac's automatic dashes apply when typing in the Markdown view.
 - **Print** (the printer button in the toolbar) produces the fully formatted document, with numbered citations and bibliography, through Pandoc.
 
@@ -224,10 +230,14 @@ Commit messages are generated from the changes. If a push fails — usually beca
 
 **Files and folders.** Use the **New file** and **New folder** buttons at the top of the Files panel to create items in the vault. Double-click (or move the pointer onto a name and let it rest there for a second) to rename it; if you leave out the extension, it is kept (`chapter` renames `notes.md` to `chapter.md`). Drag a file or folder onto another folder (or onto a file inside it) to move it, onto an empty part of the panel to move it to the top level, or onto the trash to move it to the macOS Trash. Press `Esc` while dragging to cancel. Open folders stay open when files change, and changes made outside the app (in Finder, for example) appear by themselves within a few seconds. Dragging a note into the editor inserts a `[[wikilink]]` to it.
 
+**Quitting with unsaved changes.** When you quit (`⌘Q` or the window's close button) while documents have changes that aren't saved yet — in any tab — the app lists them and asks: **Save All** (or **Save** for one document), **Don't Save**, or **Cancel** to keep working. If something can't be saved, the app stays open. In a browser tab, the browser's own "Leave site?" warning appears instead.
+
 **Browsing files.** Clicking a file in the Files panel opens it *in place of* the current tab if you haven't edited that document, so quickly looking through notes doesn't pile up tabs. A document you have edited — or one that was already open when the app started — keeps its tab, and the file opens in a new one. Images and PDFs you opened can't be edited, so they are always replaced (unless they were already open when the app started). After clicking in the Files panel you can also use `↑` / `↓` to open the previous or next file in the list (files inside collapsed folders are skipped).
 
 **Comments.** Press `⌘⇧M` to insert a comment. Comments are signed with the nickname you set under Settings, are shown as small markers in the margin of the Markdown view and in the text of the formatted view, and never appear in exported documents.
 
-**Citations.** With a bibliography configured in Settings, type `@` to open the Zotero (Better BibTeX) picker, or write citations like `[@key]` yourself. They are formatted when you print and when you export to Word.
+**Citations.** With a bibliography configured in Settings, type `\@` to open the Zotero (Better BibTeX) picker, or write citations yourself in Pandoc's form: `[@key]`, `[@key, p. 12]`, `[see @key, chap. 3; @other]`, or `[-@key]` to leave out the author. In the formatted view they show as (author, year, page) — a key that isn't in your bibliography shows as (@key) in red — and the Markdown keeps the Pandoc citation exactly as written. They are fully formatted, in your citation style, when you print and when you export to Word. The **Links** panel lists the references the note cites, each with how it is cited (`p. 12 · see, chap. 3`). Click one to open the reference in Zotero: with a page number, its PDF opens at that page; otherwise (or without a PDF) the item is selected in your library. Zotero (with Better BibTeX) has to be running. `⌥`-click instead goes to that citation in the note.
+
+Zotero opens a PDF at a *PDF* page, while a citation gives the *printed* page number; in a book these usually differ by the pages before the text starts. If you have annotated the PDF and Zotero knows its page numbers, the difference is taken into account; otherwise the PDF may open a few pages off.
 
 **Export.** Use the **Export to Word** button to produce a `.docx` (this uses Pandoc, with your chosen citation style and reference document if configured). Citations become live Zotero citations through Better BibTeX's `zotero.lua` filter: with Zotero running, press **Refresh** in Word's Zotero tab to finish them, and use **Add/Edit Bibliography** there to insert the bibliography (the export doesn't add one). The editor uses the `zotero.lua` in the same folder as your citation style, or its own copy if there is none there.

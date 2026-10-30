@@ -1374,6 +1374,18 @@ dialog::backdrop {
     margin-top: 16px;
 }
 
+/* Quit with unsaved documents: "Don't Save" apart on the left, as on macOS */
+.quit-dialog .quit-discard {
+    margin-right: auto;
+}
+
+.quit-dialog-files {
+    margin: -4px 0 12px 18px;
+    font-size: 12.5px;
+    max-height: 160px;
+    overflow-y: auto;
+}
+
 dialog header {
     display: flex;
     justify-content: space-between;
@@ -2034,3 +2046,23 @@ body[data-platform="ios"] .macos-only {
 sup {
     font-size: 0.6em;
 }
+
+/* Links panel: how the note cites each reference ("p. 12 · see, chap. 3") */
+.reference-cited {
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+#links-list .reference-cited a {
+    display: inline;
+    padding: 0;
+    cursor: pointer;
+    color: var(--accent);
+}
+
+#links-list .reference-cited a:hover {
+    background: none;
+    text-decoration: underline;
+}
+

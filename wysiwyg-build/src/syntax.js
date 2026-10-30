@@ -10,8 +10,12 @@
 //                        verbatim, the app shows it as "(Author, year, p. 4)")
 //   ^[footnote]     <->  <sup class=footnote-ref>             (inline atom node,
 //                        content lives in an attribute, shown/edited in the
-//                        sidebar, never inline)  — GFM [^id] references are
-//                        folded into the same node.
+//                        sidebar, never inline)
+//   [^id]           <->  the same node with `id` set: a reference footnote,
+//                        written back as [^id]. Its content is the raw
+//                        Markdown of the `[^id]: …` definition, which stays
+//                        in the source (the app keeps it there, see
+//                        src/js/source-merge.js) and isn't part of this doc.
 //
 // #tags are deliberately left as plain text (per project decision): `#tag`
 // without a following space is never an ATX heading, so nothing to do.
@@ -52,19 +56,32 @@ const textChildren = (value) => [{ type: "text", value }];
 // remark plugin: mdast <-> humd syntax
 // ---------------------------------------------------------------------------
 
-const remarkHumd = $remark("remarkHumdSyntax", () => () => (tree) => {
-  // 1. Fold GFM footnotes ([^id] + [^id]: def) into inline `footnote` nodes,
-  //    resolving each reference to its definition's text, then drop the
-  //    now-orphaned definitions. A reference with no definition keeps its id
-  //    as the content so nothing is silently lost.
+// The raw Markdown of a footnote definition's text (continuation lines
+// un-indented), so formatting in it survives.
+function definitionMarkdown(def, source) {
+  const first = def.children?.[0]?.position?.start?.offset;
+  const end = def.position?.end?.offset;
+  if (source && first != null && end != null) {
+    return source.slice(first, end).replace(/\n {1,4}/g, "\n").trim();
+  }
+  return mdastToString(def).trim();
+}
+
+const remarkHumd = $remark("remarkHumdSyntax", () => () => (tree, file) => {
+  // 1. GFM footnotes: each [^id] reference becomes a `footnote` node that
+  //    keeps its id and the definition's Markdown, then the definitions are
+  //    dropped from this doc (they stay in the source). A reference with no
+  //    definition gets empty content.
+  const source = file ? String(file.value ?? "") : "";
   const defs = new Map();
   visit(tree, "footnoteDefinition", (node) => {
-    defs.set(node.identifier, mdastToString(node).trim());
+    defs.set(node.identifier, definitionMarkdown(node, source));
   });
   visit(tree, "footnoteReference", (node, index, parent) => {
     if (!parent || index == null) return;
-    const content = defs.get(node.identifier) ?? node.label ?? node.identifier;
-    parent.children[index] = { type: "footnote", content, children: [] };
+    const content = defs.get(node.identifier) ?? "";
+    const id = node.label ?? node.identifier;
+    parent.children[index] = { type: "footnote", content, id, children: [] };
   });
   // Remove footnoteDefinition blocks wholesale.
   const prune = (node) => {
@@ -134,7 +151,7 @@ const remarkHumdStringify = $remark("remarkHumdStringify", () => function () {
       sub: wrapHandler("~", true),
       wikilink: (node) =>
         node.label ? `[[${node.target}|${node.label}]]` : `[[${node.target}]]`,
-      footnote: (node) => `^[${node.content ?? ""}]`,
+      footnote: (node) => (node.id ? `[^${node.id}]` : `^[${node.content ?? ""}]`),
       citation: (node) => `[${node.raw ?? ""}]`, // verbatim: never escaped
     },
   });
@@ -244,11 +261,15 @@ export const footnoteSchema = $nodeSchema("footnote", () => ({
   marks: "",
   attrs: {
     content: { default: "", validate: "string" },
+    id: { default: null }, // set for a reference footnote [^id]
   },
   parseDOM: [
     {
       tag: "sup.footnote-ref",
-      getAttrs: (dom) => ({ content: dom.getAttribute("data-content") || "" }),
+      getAttrs: (dom) => ({
+        content: dom.getAttribute("data-content") || "",
+        id: dom.getAttribute("data-id") || null,
+      }),
     },
   ],
   toDOM: (node) => [
@@ -256,6 +277,7 @@ export const footnoteSchema = $nodeSchema("footnote", () => ({
     {
       class: "footnote-ref",
       "data-content": node.attrs.content,
+      ...(node.attrs.id ? { "data-id": node.attrs.id } : {}),
       // The number is filled in by a NodeView / decoration at runtime; a static
       // marker keeps it meaningful if styles fail to load.
       title: node.attrs.content,
@@ -265,7 +287,7 @@ export const footnoteSchema = $nodeSchema("footnote", () => ({
   parseMarkdown: {
     match: ({ type }) => type === "footnote",
     runner: (state, node, type) => {
-      state.addNode(type, { content: node.content ?? "" });
+      state.addNode(type, { content: node.content ?? "", id: node.id ?? null });
     },
   },
   toMarkdown: {
@@ -273,6 +295,7 @@ export const footnoteSchema = $nodeSchema("footnote", () => ({
     runner: (state, node) => {
       state.addNode("footnote", undefined, undefined, {
         content: node.attrs.content,
+        id: node.attrs.id,
       });
     },
   },

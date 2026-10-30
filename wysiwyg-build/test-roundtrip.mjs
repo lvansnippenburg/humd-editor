@@ -25,6 +25,7 @@ const samples = [
   "A [[Wiki Page]] and a [[target|shown label]] link.",
   "A claim.^[This is the footnote text.] And more.",
   "GFM ref style.[^a]\n\n[^a]: Reference footnote body.",
+  "Formatted note.[^x7k2]\n\n[^x7k2]: With *emphasis* and [@key, p. 4].",
   "Mixed: ==marked== then ^sup^ and ~sub~ near #tag stays.",
   "| A | B |\n| - | - |\n| 1 | 2 |",
   "- [ ] task\n- [x] done",
@@ -56,11 +57,14 @@ function normalise(s) {
   return s.replace(/\s+/g, " ").trim();
 }
 function acceptable(src, out) {
-  if (src.includes("[^a]")) return out.includes("^[Reference footnote body.]") && !out.includes("[^a]");
+  // A reference footnote stays [^a]; its definition is kept in the source by the app.
+  if (src.includes("[^a]")) return out === "GFM ref style.[^a]";
+  if (src.includes("[^x7k2]")) return out === "Formatted note.[^x7k2]";
   if (src.includes("- [ ] task")) return /[-*]\s*\[ \]\s*task/.test(out) && /[-*]\s*\[x\]\s*done/i.test(out);
   if (src.includes("| A | B |")) return out.includes("| A") && out.includes("B |") && out.includes("1") && out.includes("2");
-  // Not a citation, so Milkdown escapes the brackets as before (harmless).
-  if (src.includes("[span]")) return out.includes("[me@example.org]") || out.includes("\\[me@example.org]");
+  // Not citations: Milkdown escapes the brackets and autolinks the e-mail
+  // address, as before (the source merge keeps unedited paragraphs as written).
+  if (src.includes("[span]")) return out.includes("me@example.org") && out.includes("[a link](https://x.org)") && out.includes("span]{.smallcaps}");
   if (src.includes("_em_")) return /\bbold\b/.test(out) && /\bem\b/.test(out) && out.includes("`code`") && out.includes("~~strike~~");
   return false;
 }

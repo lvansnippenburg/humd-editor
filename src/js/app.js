@@ -28,7 +28,7 @@ import {
   getWysiwygHandle,
   flushWysiwygToTextarea,
 } from "/js/wysiwyg.js";
-import { splitBlocks } from "/js/source-merge.js";
+import { splitBlocks, uniqueFootnoteId, addFootnoteDefinition, findDefinitions } from "/js/source-merge.js";
 import { setPreviewStyleUserCss } from "/js/preview-style.js";
 
 // ===== STATE =====
@@ -772,6 +772,14 @@ function setupEventListeners() {
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "t" || e.key === "T")) {
       e.preventDefault();
       openTableDialog();
+    }
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === "k" || e.key === "K")) {
+      e.preventDefault();
+      insertLink();
+    }
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "n" || e.key === "N")) {
+      e.preventDefault();
+      insertFootnote();
     }
     // AI assist actions, grouped under Cmd/Ctrl+Shift.
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "p" || e.key === "P")) {
@@ -2057,9 +2065,13 @@ async function enableRichText(pane) {
         if (path) loadFile(path);
         else showStatus(`Note not found: ${target}`);
       },
-      onOpenUrl: (href) => openExternalUrl(href),
+      onOpenUrl: (href) => openLink(href),
       onOpenComment: (el, value) => openRichTextComment(el, value),
-      onRender: (root) => rewriteImageSources(root, currentFilePath),
+      onOpenCitation: (el, raw) => editRichTextCitation(el, raw),
+      onRender: (root) => {
+        rewriteImageSources(root, currentFilePath);
+        labelRichTextCitations(root);
+      },
       onFootnotesChanged: (focusNum) => {
         const clicked = typeof focusNum === "number" && focusNum > 0;
         if (clicked && activeSidebarTab !== "links") switchSidebarTab("links");
@@ -2084,6 +2096,90 @@ async function enableRichText(pane) {
     console.error("WYSIWYG init failed:", err);
     showStatus("The formatted view failed to load; showing Markdown", true);
   }
+}
+
+// ===== CITATIONS IN THE FORMATTED VIEW =====
+//
+// A Pandoc citation ([see @key, p. 4; -@other]) is one element in the
+// formatted view (see wysiwyg-build/src/syntax.js), kept verbatim in the
+// Markdown and shown as "(see Author, 2014, p. 4; 2019)".
+
+let citeRefMap = null; // citation key -> CSL item, for the current bibliography
+let citeRefMapFor = null;
+
+function bibliographyEntry(key) {
+  if (citeRefMapFor !== citeBibData) {
+    citeRefMap = new Map((citeBibData || []).map((r) => [r.id, r]));
+    citeRefMapFor = citeBibData;
+  }
+  return citeRefMap.get(key) || null;
+}
+
+// The specifier after the key as written ("12", "p. 12", "chap. 3"); a
+// bare number or range is a page.
+function citationSpecifier(after) {
+  const text = after.replace(/^,\s*/, "").trim();
+  return /^\d[\d\s,–-]*$/.test(text) ? `p. ${text}` : text;
+}
+
+// "(see Abulafia, 2014, p. 12; Mola & Smith, 2003)" for the citation text
+// inside the brackets; `missing` when a key isn't in the bibliography.
+function citationLabel(raw) {
+  let missing = false;
+  const parts = [];
+  for (const segment of raw.split(";")) {
+    const s = segment.trim();
+    const m = s.match(/(^|[\s-])(-?)@([^\s,;]+)/);
+    if (!m) continue;
+    const at = s.indexOf(`${m[2]}@${m[3]}`);
+    const prefix = s.slice(0, at).trim();
+    const suppressAuthor = m[2] === "-";
+    const key = m[3];
+    const specifier = citationSpecifier(s.slice(at + m[2].length + 1 + key.length));
+    const ref = bibliographyEntry(key);
+    let who;
+    if (!ref) {
+      missing = true;
+      who = `@${key}`;
+    } else {
+      const names = (ref.author || ref.editor || []).map((a) => a.family || a.literal || "");
+      const name =
+        names.length > 2 ? `${names[0]} et al.` : names.length === 2 ? `${names[0]} & ${names[1]}` : names[0] || key;
+      const year = ref.issued?.["date-parts"]?.[0]?.[0] ?? ref.issued?.literal ?? "n.d.";
+      who = suppressAuthor ? String(year) : `${name}, ${year}`;
+    }
+    parts.push([prefix, who].filter(Boolean).join(" ") + (specifier ? `, ${specifier}` : ""));
+  }
+  return { text: parts.length ? `(${parts.join("; ")})` : `[${raw}]`, missing };
+}
+
+// Show the formatted label on every citation in the formatted view. (The
+// citation elements are atoms, so ProseMirror ignores this text.)
+function labelRichTextCitations(root) {
+  for (const el of root.querySelectorAll(".citation-ref[data-raw]")) {
+    const raw = el.getAttribute("data-raw") || "";
+    const { text, missing } = citationLabel(raw);
+    if (el.textContent !== text) el.textContent = text;
+    el.classList.toggle("citation-missing", missing);
+    el.title = `[${raw}]${missing ? " — not in the bibliography" : ""}\nClick to edit`;
+  }
+}
+
+function relabelRichTextCitations() {
+  const pane = activePane();
+  const root = pane && isWysiwygActive(pane) ? getWysiwygRoot(pane) : null;
+  if (root) labelRichTextCitations(root);
+}
+
+// A citation in the formatted view was clicked: edit its Pandoc text.
+async function editRichTextCitation(el, raw) {
+  const handle = activeRichHandle();
+  if (!handle) return;
+  const edited = await promptDialog("Citation (Pandoc syntax; empty to remove it):", `[${raw}]`);
+  if (edited === null) return;
+  const inner = edited.trim().replace(/^\[/, "").replace(/\]$/, "").trim();
+  handle.setCitation(el, inner);
+  handle.focus();
 }
 
 // A comment marker in the formatted view was clicked: open the same popup as
@@ -2124,7 +2220,10 @@ function onEditorInput() {
   statsDebounceTimer = setTimeout(() => {
     updateDocumentStats();
     if (activeSidebarTab === "outline") buildOutline();
-    if (activeSidebarTab === "links") buildLinksPanel();
+    // Not while a field in the Links panel (a footnote's text) is being typed in.
+    if (activeSidebarTab === "links" && !document.getElementById("links-list").contains(document.activeElement)) {
+      buildLinksPanel();
+    }
   }, 300);
 
   if (currentAutoSave) {
@@ -2251,11 +2350,21 @@ function onRichTextKeydown(e, pane) {
   if (e.key === "@" && !isMeta && !e.altKey && handle.textBeforeCursor().endsWith("\\")) {
     consume();
     handle.deleteBeforeCursor(1);
-    pickZoteroCitation((citation) => handle.insertText(citation));
+    pickZoteroCitation((citation) => handle.insertMarkdown(citation, true));
   }
 }
 
 function onRichTextKeyup(e) {
+  // A Pandoc citation typed by hand becomes a citation once its ] is typed.
+  if (e.key === "]") {
+    const handle = activeRichHandle();
+    const m = handle?.textBeforeCursor().match(/\[([^[\]\ufffc]*)\]$/);
+    if (m && /(^|[\s;-])@\w/.test(m[1])) {
+      handle.deleteBeforeCursor(m[0].length);
+      handle.insertMarkdown(m[0], true);
+      return;
+    }
+  }
   // Keys the open suggestion list uses itself.
   if (acActive && ["ArrowUp", "ArrowDown", "Enter", "Tab", "Escape"].includes(e.key)) return;
   updateRichAutocomplete();
@@ -2388,6 +2497,325 @@ function editorReplace(editor, start, end, text) {
   editor.setSelectionRange(start, end);
   document.execCommand("insertText", false, text);
 }
+
+// ===== LINKS (⌘K) =====
+
+// The identifier Pandoc gives a heading (its auto_identifiers rules): used as
+// the target of [text](#identifier) links.
+function pandocIdentifier(text) {
+  const id = stripMarkdown(text.replace(/\^\[[^\]]*\]|\[\^[^\]]*\]|\[@[^\]]*\]/g, ""))
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}_.\s-]/gu, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/^[^\p{L}]+/u, "");
+  return id || "section";
+}
+
+// The note's headings: [{ text, id, line }], with Pandoc's identifiers
+// (an explicit {#id} wins; a repeated heading gets -1, -2, …).
+function documentHeadings(markdown) {
+  const headings = [];
+  const used = new Map();
+  let fence = null;
+  markdown.split("\n").forEach((line, i) => {
+    const f = line.match(/^\s*(`{3,}|~{3,})/);
+    if (f) fence = fence ? (f[1][0] === fence[0] ? null : fence) : f[1];
+    if (fence || f) return;
+    const m = line.match(/^#{1,6}\s+(.+?)\s*#*\s*$/);
+    if (!m) return;
+    const attr = parseHeadingAttrs(m[1]);
+    let id = attr.id || pandocIdentifier(attr.text);
+    if (!attr.id) {
+      const n = used.get(id) || 0;
+      used.set(id, n + 1);
+      if (n) id = `${id}-${n}`;
+    }
+    headings.push({ text: stripMarkdown(attr.text), id, line: i });
+  });
+  return headings;
+}
+
+// Open a link: #heading scrolls to that heading of this note; anything else
+// goes to the browser or the app it belongs to (zotero://, …).
+function openLink(href) {
+  if (href.startsWith("#")) {
+    const id = decodeURIComponent(href.slice(1));
+    const heading = documentHeadings(getEditorContent()).find((h) => h.id === id);
+    if (heading) scrollEditorToLine(heading.line);
+    else showStatus(`No heading "${id}" in this note`, true);
+    return;
+  }
+  openExternalUrl(href);
+}
+
+// The link dialog: text and target; resolves to { text, target } or null.
+function linkDialog({ text, target, headings }) {
+  return new Promise((resolve) => {
+    const dlg = document.createElement("dialog");
+    dlg.className = "prompt-dialog link-dialog";
+    const listId = "link-dialog-targets";
+    dlg.innerHTML = `
+      <p>Insert link</p>
+      <label class="settings-label">Text</label>
+      <input type="text" class="settings-input link-text" autocomplete="off" spellcheck="false">
+      <label class="settings-label" style="margin-top: 8px">Link to</label>
+      <input type="text" class="settings-input link-target" list="${listId}" autocomplete="off" spellcheck="false"
+        placeholder="A heading of this note, or https://…, zotero://…">
+      <datalist id="${listId}"></datalist>
+      <p class="settings-hint">Choose a heading of this note from the list, or enter a web or app address.</p>
+      <div class="prompt-dialog-buttons"><button class="cancel">Cancel</button><button class="primary">Insert</button></div>`;
+    const textInput = dlg.querySelector(".link-text");
+    const targetInput = dlg.querySelector(".link-target");
+    const list = dlg.querySelector("datalist");
+    for (const h of headings) {
+      const opt = document.createElement("option");
+      opt.value = `#${h.id}`;
+      opt.textContent = h.text;
+      list.appendChild(opt);
+    }
+    textInput.value = text;
+    targetInput.value = target;
+    document.body.appendChild(dlg);
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      dlg.close();
+      dlg.remove();
+      resolve(value);
+    };
+    const ok = () => finish({ text: textInput.value.trim(), target: targetInput.value.trim() });
+    dlg.querySelector(".primary").addEventListener("click", ok);
+    dlg.querySelector(".cancel").addEventListener("click", () => finish(null));
+    dlg.addEventListener("cancel", (e) => {
+      e.preventDefault();
+      finish(null);
+    });
+    dlg.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        ok();
+      }
+    });
+    dlg.showModal();
+    (text ? targetInput : textInput).focus();
+  });
+}
+
+// ⌘K: insert a link to a heading of this note or to an address, around the
+// selected text; an existing [text](target) that is selected is edited.
+async function insertLink() {
+  if (!currentFilePath) {
+    showStatus("Open a document to insert a link", true);
+    return;
+  }
+  const editor = document.getElementById("editor");
+  const handle = activeRichHandle();
+  const start = editor.selectionStart;
+  const end = editor.selectionEnd;
+  const selected = handle ? handle.selectedText() : editor.value.slice(start, end);
+  let text = selected.trim();
+  let target = "";
+  const existing = !handle && selected.match(/^\[([^\]]*)\]\((.*)\)$/s);
+  if (existing) {
+    text = existing[1];
+    target = existing[2].replace(/^<(.*)>$/, "$1");
+  } else if (/^([a-z][a-z0-9+.-]*:\/\/|mailto:|www\.)\S+$/i.test(text)) {
+    target = text; // a selected address becomes the target
+    text = "";
+  }
+  const headings = documentHeadings(getEditorContent());
+  const result = await linkDialog({ text, target, headings });
+  if (!result || !result.target) return;
+
+  // A heading by its title, an address without its https://, or as given.
+  let dest = result.target;
+  const byTitle = headings.find((h) => h.text.toLowerCase() === dest.toLowerCase());
+  if (byTitle) dest = `#${byTitle.id}`;
+  else if (/^www\.|^[\w-]+(\.[\w-]+)+(\/\S*)?$/i.test(dest)) dest = `https://${dest}`;
+  const heading = dest.startsWith("#") ? headings.find((h) => `#${h.id}` === dest) : null;
+  const label = (result.text || heading?.text || dest).replace(/([[\]])/g, "\\$1");
+  const markdown = `[${label}](${/[\s()]/.test(dest) ? `<${dest}>` : dest})`;
+
+  if (handle) {
+    handle.insertMarkdown(markdown, true);
+    handle.focus();
+  } else {
+    snapshotForUndo();
+    editorReplace(editor, start, end, markdown);
+  }
+}
+
+// ===== FOOTNOTES (⌘⇧N) =====
+
+// Insert a reference footnote [^code] (a code of 4 random characters, unique
+// in the note) at the cursor, with its definition under the paragraph. In
+// the Markdown view the cursor moves to the definition to type the note; in
+// the formatted view the note is typed in the Links panel.
+function insertFootnote() {
+  if (!currentFilePath) {
+    showStatus("Open a document to insert a footnote", true);
+    return;
+  }
+  const editor = document.getElementById("editor");
+  const id = uniqueFootnoteId(getEditorContent());
+  const handle = activeRichHandle();
+  if (handle) {
+    handle.insertFootnote(id, "");
+    flushRichText(); // adds the definition to the Markdown
+    const pane = activePane();
+    const num = getWysiwygFootnotes(pane).findIndex((f) => f.id === id) + 1;
+    if (activeSidebarTab !== "links") switchSidebarTab("links");
+    buildLinksPanel(num);
+    return;
+  }
+  const pos = editor.selectionEnd;
+  // Pandoc has no footnotes inside footnotes.
+  if (findDefinitions(editor.value).some((d) => d.start <= pos && pos <= d.end)) {
+    showStatus("A footnote can't contain a footnote: put the cursor in the text", true);
+    return;
+  }
+  snapshotForUndo();
+  const withRef = `${editor.value.slice(0, pos)}[^${id}]${editor.value.slice(pos)}`;
+  const { text, cursor } = addFootnoteDefinition(withRef, id, "");
+  editor.value = `${text.slice(0, cursor)} ${text.slice(cursor)}`;
+  editor.focus();
+  editor.setSelectionRange(cursor + 1, cursor + 1);
+  // Scroll the definition into view.
+  editor.blur();
+  editor.focus();
+  onEditorInput();
+}
+
+// ===== QUIT: OFFER TO SAVE UNSAVED DOCUMENTS =====
+//
+// The desktop app asks window.humdRequestQuit() before quitting (red button
+// or ⌘Q; see server/desktop.py). With unsaved documents the user chooses:
+// Save All, Don't Save, or Cancel. In a browser tab the browser's own
+// "leave page?" warning is used instead.
+
+let quitDialogOpen = false;
+
+// Open documents (in any tab) with changes that aren't saved yet.
+function unsavedTabs() {
+  flushRichText(); // edits still waiting in the formatted view
+  return tabs.filter(
+    (t) => !t.isGraph && !t.isMedia && (t.id === activeTabId ? isDirty : t.isDirty),
+  );
+}
+
+// Save the given documents; true if all of them are saved now.
+async function saveAllTabs(list) {
+  for (const t of list) {
+    if (t.id === activeTabId) {
+      await saveCurrentFile();
+      continue;
+    }
+    try {
+      await apiPost("/api/write-file", { path: t.path, content: t.content });
+      t.isDirty = false;
+    } catch (err) {
+      showStatus(`Couldn't save ${t.path.split("/").pop()}: ${apiErrorMessage(err)}`, true);
+    }
+  }
+  renderTabBar();
+  return unsavedTabs().length === 0;
+}
+
+// "Save All" | "Don't Save" | "Cancel" for the unsaved documents.
+function quitDialog(list) {
+  return new Promise((resolve) => {
+    const dlg = document.createElement("dialog");
+    dlg.className = "prompt-dialog quit-dialog";
+    const names = list.map((t) => t.path.split("/").pop());
+    const intro = document.createElement("p");
+    intro.textContent =
+      names.length === 1
+        ? `Do you want to save the changes to “${names[0]}” before quitting?`
+        : `${names.length} documents have unsaved changes. Do you want to save them before quitting?`;
+    dlg.appendChild(intro);
+    if (names.length > 1) {
+      const ul = document.createElement("ul");
+      ul.className = "quit-dialog-files";
+      for (const n of names) {
+        const li = document.createElement("li");
+        li.textContent = n;
+        ul.appendChild(li);
+      }
+      dlg.appendChild(ul);
+    }
+    const hint = document.createElement("p");
+    hint.className = "settings-hint";
+    hint.textContent = "Your changes will be lost if you don't save them.";
+    dlg.appendChild(hint);
+    const row = document.createElement("div");
+    row.className = "prompt-dialog-buttons";
+    const discard = document.createElement("button");
+    discard.textContent = "Don't Save";
+    discard.className = "quit-discard";
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    const save = document.createElement("button");
+    save.className = "primary";
+    save.textContent = names.length === 1 ? "Save" : "Save All";
+    row.append(discard, cancel, save);
+    dlg.appendChild(row);
+    document.body.appendChild(dlg);
+    let settled = false;
+    const finish = (choice) => {
+      if (settled) return;
+      settled = true;
+      dlg.close();
+      dlg.remove();
+      resolve(choice);
+    };
+    save.addEventListener("click", () => finish("save"));
+    discard.addEventListener("click", () => finish("discard"));
+    cancel.addEventListener("click", () => finish("cancel"));
+    dlg.addEventListener("cancel", (e) => {
+      e.preventDefault();
+      finish("cancel");
+    });
+    dlg.showModal();
+    save.focus();
+  });
+}
+
+window.humdRequestQuit = async function () {
+  window.pywebview?.api?.quit_request_seen?.();
+  if (quitDialogOpen) return; // already asking
+  const unsaved = unsavedTabs();
+  if (unsaved.length > 0) {
+    quitDialogOpen = true;
+    let choice;
+    try {
+      choice = await quitDialog(unsaved);
+    } finally {
+      quitDialogOpen = false;
+    }
+    if (choice === "cancel") return;
+    if (choice === "save" && !(await saveAllTabs(unsaved))) {
+      showStatus("Not quitting: not everything could be saved", true);
+      return;
+    }
+    if (choice === "discard") {
+      // Don't let anything save them on the way out.
+      unsaved.forEach((t) => (t.isDirty = false));
+      isDirty = false;
+      clearTimeout(autoSaveDebounceTimer);
+    }
+  }
+  await saveUiState();
+  window.pywebview?.api?.confirm_quit?.();
+};
+
+// Browser tab: the browser's own warning when unsaved changes would be lost.
+window.addEventListener("beforeunload", (e) => {
+  if (window.pywebview || unsavedTabs().length === 0) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
 
 // ===== TABLE GENERATOR (⌘⇧T) =====
 
@@ -3221,7 +3649,10 @@ function applyUndoSnapshot(editor, snap) {
   statsDebounceTimer = setTimeout(() => {
     updateDocumentStats();
     if (activeSidebarTab === "outline") buildOutline();
-    if (activeSidebarTab === "links") buildLinksPanel();
+    // Not while a field in the Links panel (a footnote's text) is being typed in.
+    if (activeSidebarTab === "links" && !document.getElementById("links-list").contains(document.activeElement)) {
+      buildLinksPanel();
+    }
   }, 100);
   if (currentAutoSave) {
     clearTimeout(autoSaveDebounceTimer);
@@ -4177,13 +4608,19 @@ function buildLinksPanel(focusFootnoteNum) {
       ta.rows = 2;
       ta.spellcheck = true;
       let t = null;
+      // A footnote's text doesn't change the serialised text, so Milkdown
+      // reports no change: write it back (and mark the note edited) here.
+      const commit = () => {
+        setWysiwygFootnoteContent(wysiwygPane, fn.pos, ta.value);
+        flushRichText();
+      };
       ta.addEventListener("input", () => {
         clearTimeout(t);
-        t = setTimeout(() => setWysiwygFootnoteContent(wysiwygPane, fn.pos, ta.value), 250);
+        t = setTimeout(commit, 250);
       });
       ta.addEventListener("blur", () => {
         clearTimeout(t);
-        setWysiwygFootnoteContent(wysiwygPane, fn.pos, ta.value);
+        commit();
       });
       li.appendChild(num);
       li.appendChild(ta);
@@ -4232,17 +4669,33 @@ function buildLinksPanel(focusFootnoteNum) {
   // References: distinct citation keys in the current note. Parse each [@...]
   // block with parseCitationInner so multi-cites ([@a; @b]) and locators
   // ([@a, p. 5]) yield clean keys rather than raw captured text.
+  // For each key also how it is cited ("p. 12", "see, chap. 3"), with the line
+  // of each citation so a click can go there.
   const citeBlockRe = /\[[^\]]*@[^\]]+\]/g;
   const refSeen = new Set();
   const references = [];
+  const citedAs = new Map(); // key -> [{ text, line }]
   let citMatch;
   while ((citMatch = citeBlockRe.exec(content)) !== null) {
     const inner = citMatch[0].slice(1, -1); // strip surrounding [ ]
-    for (const item of parseCitationInner(inner).citationItems) {
-      if (item.id && !refSeen.has(item.id.toLowerCase())) {
-        refSeen.add(item.id.toLowerCase());
-        references.push(item.id);
+    const line = content.slice(0, citMatch.index).split("\n").length - 1;
+    for (const segment of inner.split(";")) {
+      const m = segment.trim().match(/(^|[\s-])-?@([^\s,;]+)/);
+      if (!m) continue;
+      const s = segment.trim();
+      const key = m[2];
+      const at = s.indexOf(`@${key}`);
+      const prefix = s.slice(0, at).replace(/-$/, "").trim();
+      const specifier = citationSpecifier(s.slice(at + 1 + key.length));
+      const text = [prefix, specifier].filter(Boolean).join(", ") || "(no page)";
+      const page = Number(specifier.match(/^pp?\.\s*(\d+)/)?.[1]) || null;
+      if (!refSeen.has(key.toLowerCase())) {
+        refSeen.add(key.toLowerCase());
+        references.push(key);
+        citedAs.set(key, []);
       }
+      const uses = citedAs.get(references.find((r) => r.toLowerCase() === key.toLowerCase()));
+      uses.push({ text, line, page });
     }
   }
   references.sort((a, b) => a.localeCompare(b));
@@ -4332,6 +4785,26 @@ function buildLinksPanel(focusFootnoteNum) {
       }
       if (html) li.innerHTML = html;
       else li.textContent = key;
+      // How the note cites it: each one jumps to its citation.
+      const uses = citedAs.get(key) || [];
+      if (uses.length) {
+        const cited = document.createElement("div");
+        cited.className = "reference-cited";
+        uses.forEach((use, i) => {
+          if (i) cited.appendChild(document.createTextNode(" · "));
+          const a = document.createElement("a");
+          a.textContent = use.text;
+          a.title =
+            (use.page ? `Open the PDF in Zotero at page ${use.page}` : "Show this reference in Zotero") +
+            `\n⌥-click: go to this citation (line ${use.line + 1})`;
+          a.addEventListener("click", (e) => {
+            if (e.altKey) scrollEditorToLine(use.line);
+            else openReferenceInZotero(key, use.page);
+          });
+          cited.appendChild(a);
+        });
+        li.appendChild(cited);
+      }
       list.appendChild(li);
     });
   };
@@ -4339,6 +4812,18 @@ function buildLinksPanel(focusFootnoteNum) {
   addSection("Links", outgoing);
   addSection("Backlinks", incoming);
   addReferencesSection("References", references);
+}
+
+// Open a cited reference in Zotero: its PDF at `page` (a printed page number)
+// if there is one, else the item itself.
+async function openReferenceInZotero(citekey, page) {
+  try {
+    const res = await apiPost("/api/zotero-reference-link", { citekey, page });
+    openExternalUrl(res.url);
+    showStatus(res.note);
+  } catch (err) {
+    showStatus(apiErrorMessage(err), true);
+  }
 }
 
 // ===== TAGS PANEL =====
@@ -4488,7 +4973,14 @@ const Cite = window.Cite;
 // is skipped when the text is unchanged, which is every tab/pane switch.
 const citeSourceCache = { bibPath: null, bibText: null, cslPath: null, cslText: null };
 
+// (Re)load the bibliography and CSL style, then relabel the citations shown
+// in the formatted view.
 async function loadCitations() {
+  await loadBibliography();
+  relabelRichTextCitations();
+}
+
+async function loadBibliography() {
   if (!currentBibPath || !Cite) {
     citeBibData = null;
     citeTemplateName = null;
@@ -6059,7 +6551,7 @@ function onEditorModifierClick(e) {
   const url = extractUrlFromToken(value.slice(start, end));
   if (url) {
     e.preventDefault();
-    openExternalUrl(url);
+    openLink(url);
   }
 }
 
@@ -6074,6 +6566,8 @@ function extractUrlFromToken(token) {
   s = s.replace(/^[<([]+/, "").replace(/[>)\].,;:!?'"]+$/, "");
   // Undo markdown backslash-escapes (e.g. a Zotero link's "page=7\&annotation").
   s = s.replace(/\\(.)/g, "$1");
+  // A link to a heading of this note ([text](#heading)).
+  if (md && /^#\S+$/.test(s)) return s;
   // Accept any scheme://… (http, zotero, file, obsidian, …) or mailto:.
   return /^([a-z][a-z0-9+.-]*:\/\/|mailto:)\S+$/i.test(s) ? s : null;
 }
