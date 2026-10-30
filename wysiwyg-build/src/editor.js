@@ -229,6 +229,20 @@ export async function createEditor({ root, value, onChange }) {
       });
     },
 
+    // The selected text and the document's text before it (atoms such as
+    // citations and footnote markers count as no text), to find the
+    // selection in the Markdown source.
+    selectionContext() {
+      return withView((view) => {
+        const { from, to } = view.state.selection;
+        const doc = view.state.doc;
+        return {
+          text: doc.textBetween(from, to, "\n\n", ""),
+          before: doc.textBetween(0, from, "\n\n", ""),
+        };
+      });
+    },
+
     // Texts of the first and last paragraph (textblock) the selection
     // touches, to find the selection in the Markdown source.
     selectionBlocks() {

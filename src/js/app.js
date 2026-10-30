@@ -1915,56 +1915,108 @@ function flushRichText() {
   }
 }
 
-// Letters and digits only, lowercased: to recognise formatted text in the
-// Markdown source. Footnotes, wikilinks and comments, which have no text of
-// their own in the formatted view, are dropped from the source first.
-function plainKey(text, isMarkdown) {
-  let t = text;
-  if (isMarkdown) {
-    t = t
-      .replace(/\^\[[^\]]*\]/g, "")
-      .replace(/\[\[[^\]]*\]\]/g, "")
-      .replace(/<!--[\s\S]*?-->/g, "");
+// ---- Finding the formatted view's selection in the Markdown source ----
+//
+// Compared on letters and digits only. Markdown with no text of its own in
+// the formatted view (citations, footnotes, wikilinks, images and comments
+// are elements there; front matter isn't shown) and syntax around visible
+// text (link addresses, HTML tags, list numbers, {attributes}) is skipped.
+const NO_VISIBLE_TEXT = [
+  /^---\n[\s\S]*?\n(?:---|\.\.\.)[ \t]*(?:\n|$)/g, // front matter
+  /<!--[\s\S]*?-->/g, // comments
+  /!\[[^\]]*\]\([^)]*\)/g, // images
+  /\^\[(?:[^[\]]|\[[^\]]*\])*\]/g, // inline footnotes
+  /\[\^[^\]\s]+\]/g, // footnote references (and definition labels)
+  /^\[\^[^\]\s]+\]:.*(?:\n(?: {4}|\t).*)*/gm, // footnote definitions
+  /\[\[[^\]]*\]\]/g, // wikilinks
+  /\[[^[\]\n]*@[^[\]\n]*\](?![({])/g, // citations
+  /\]\([^)]*\)/g, // link addresses
+  /\]\{[^}\n]*\}|\{[^}\n]*\}[ \t]*$/gm, // span and heading attributes
+  /<[^>\n]+>/g, // HTML tags
+  /^[ \t]*(?:\d+[.)]|[-*+])[ \t]+/gm, // list markers
+];
+
+const textKey = (text) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+
+// The Markdown's visible letters and digits (lowercased) and, for each, its
+// position in the Markdown.
+function visibleKey(markdown) {
+  const hidden = new Uint8Array(markdown.length);
+  for (const re of NO_VISIBLE_TEXT) {
+    for (const m of markdown.matchAll(re)) hidden.fill(1, m.index, m.index + m[0].length);
   }
-  return t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  let key = "";
+  const pos = [];
+  for (let i = 0; i < markdown.length; ) {
+    const ch = String.fromCodePoint(markdown.codePointAt(i));
+    if (!hidden[i] && /[\p{L}\p{N}]/u.test(ch)) {
+      for (const c of ch.toLowerCase()) {
+        key += c;
+        for (let k = 0; k < c.length; k++) pos.push(i);
+      }
+    }
+    i += ch.length;
+  }
+  return { key, pos };
 }
 
-// The Markdown source paragraphs covering the formatted view's selection:
-// { start, end } in the textarea, or null if they can't be found.
+// Positions of `needle` in `haystack` (overlapping occurrences count).
+function occurrences(haystack, needle) {
+  const found = [];
+  for (let i = haystack.indexOf(needle); i !== -1; i = haystack.indexOf(needle, i + 1)) found.push(i);
+  return found;
+}
+
+// The Markdown range { start, end } of the formatted view's selection: the
+// same occurrence of the selected text as in the view. Null if not found.
 function richSelectionToSource(handle) {
   const value = document.getElementById("editor").value;
-  const { first, last } = handle.selectionBlocks();
-  const blocks = splitBlocks(value);
-  const find = (text, from) => {
-    const key = plainKey(text, false).slice(0, 40);
-    for (let i = from; i < blocks.length; i++) {
-      if (plainKey(blocks[i].text, true).includes(key)) return i;
-    }
-    return -1;
-  };
-  const i = find(first, 0);
-  const j = i < 0 ? -1 : find(last, i);
-  if (i < 0 || j < 0) return null;
-  return { start: blocks[i].start, end: blocks[j].end };
+  const { text, before } = handle.selectionContext();
+  const want = textKey(text);
+  if (!want) return null;
+  const { key, pos } = visibleKey(value);
+  const hits = occurrences(key, want);
+  if (!hits.length) return null;
+  // The selection is the occurrence after those that lie wholly before it.
+  const nth = occurrences(textKey(before), want).length;
+  const at = hits[Math.min(nth, hits.length - 1)];
+  const last = at + want.length - 1;
+  return { start: pos[at], end: pos[last] + (value.codePointAt(pos[last]) > 0xffff ? 2 : 1) };
 }
 
-// The text an action (proofread, translate, ZotSeek) works on: the selection
-// or the whole document, as a range of the Markdown source. In the formatted
-// view a selection widens to the source paragraphs it touches; `text` is
-// what was selected there.
+// The text an action (proofread, translate, ZotSeek) works on: the selection,
+// or the whole document if nothing is selected, as a range of the Markdown
+// source; `text` is what was selected. Null (with a message) if a selection
+// in the formatted view can't be found in the Markdown.
 function getActionSelection() {
   const editor = document.getElementById("editor");
   const handle = activeRichHandle();
   if (!handle) {
     const { selectionStart: start, selectionEnd: end } = editor;
-    return { start, end, isSelection: start !== end, text: editor.value.slice(start, end) };
+    if (start === end) return { start: 0, end: editor.value.length, isSelection: false, text: "" };
+    return { start, end, isSelection: true, text: editor.value.slice(start, end) };
   }
   flushRichText();
-  const text = handle.selectedText();
-  const whole = { start: 0, end: editor.value.length, isSelection: false, text: "" };
-  if (!text.trim()) return whole;
+  const { text } = handle.selectionContext();
+  if (!text.trim()) return { start: 0, end: editor.value.length, isSelection: false, text: "" };
   const range = richSelectionToSource(handle);
-  return range ? { ...range, isSelection: true, text } : whole;
+  if (!range) {
+    showStatus("Couldn't find the selected text in the Markdown — select it in the Markdown view (⌘/)", true);
+    return null;
+  }
+  return { ...range, isSelection: true, text };
+}
+
+// For the text actions that work on the Markdown's selection directly
+// (Change Case, Prepend/Append Lines): in the formatted view, select the
+// matching Markdown range in the (hidden) textarea. False if there is no
+// selection (or it can't be found).
+function selectSourceOfRichSelection() {
+  if (!activeRichHandle()) return true;
+  const sel = getActionSelection();
+  if (!sel || !sel.isSelection) return false;
+  document.getElementById("editor").setSelectionRange(sel.start, sel.end);
+  return true;
 }
 
 // ===== RICH-TEXT (WYSIWYG) MODE =====
@@ -2108,7 +2160,7 @@ let citeRefMap = null; // citation key -> CSL item, for the current bibliography
 let citeRefMapFor = null;
 
 function bibliographyEntry(key) {
-  if (citeRefMapFor !== citeBibData) {
+  if (citeRefMap === null || citeRefMapFor !== citeBibData) {
     citeRefMap = new Map((citeBibData || []).map((r) => [r.id, r]));
     citeRefMapFor = citeBibData;
   }
@@ -3703,6 +3755,7 @@ function isSentenceStart(value, pos) {
 }
 
 function toggleSelectionCase() {
+  if (!selectSourceOfRichSelection()) return;
   const editor = document.getElementById("editor");
   const start = editor.selectionStart,
     end = editor.selectionEnd;
@@ -3734,6 +3787,7 @@ function expandSelectionToLines(editor) {
 }
 
 async function prependSelectedLines() {
+  if (!selectSourceOfRichSelection()) return;
   const editor = document.getElementById("editor");
   if (editor.selectionStart === editor.selectionEnd) return;
   const str = await promptDialog("Prepend each selected line with:");
@@ -3748,6 +3802,7 @@ async function prependSelectedLines() {
 }
 
 async function appendSelectedLines() {
+  if (!selectSourceOfRichSelection()) return;
   const editor = document.getElementById("editor");
   if (editor.selectionStart === editor.selectionEnd) return;
   const str = await promptDialog("Append each selected line with:");
@@ -3764,7 +3819,9 @@ async function appendSelectedLines() {
 // Prefill and run the editor's own Find with the current selection.
 function findSelectionOccurrences() {
   const editor = document.getElementById("editor");
-  const text = editor.value.slice(editor.selectionStart, editor.selectionEnd);
+  const handle = activeRichHandle();
+  // The formatted view searches the text as shown.
+  const text = handle ? handle.selectionContext().text : editor.value.slice(editor.selectionStart, editor.selectionEnd);
   if (!text) return;
   openEditorSearch();
   document.getElementById("editor-search-input").value = text;
@@ -5651,7 +5708,9 @@ async function runProofread() {
     return;
   }
   const editor = document.getElementById("editor");
-  const { isSelection, start, end } = getActionSelection();
+  const sel = getActionSelection();
+  if (!sel) return; // a selection that can't be found: the user was told
+  const { isSelection, start, end } = sel;
   const text = editor.value.slice(start, end);
   if (!text.trim()) {
     showStatus("Nothing to proofread", true);
@@ -5762,7 +5821,9 @@ async function runTranslate() {
     return;
   }
   const editor = document.getElementById("editor");
-  const { isSelection, start, end } = getActionSelection();
+  const sel = getActionSelection();
+  if (!sel) return; // a selection that can't be found: the user was told
+  const { isSelection, start, end } = sel;
   const text = editor.value.slice(start, end);
   if (!text.trim()) {
     showStatus("Nothing to translate", true);
@@ -5866,23 +5927,14 @@ async function runZotSeek() {
   }
   const editor = document.getElementById("editor");
   const sel = getActionSelection();
-  const query = sel.isSelection ? zotseekQueryText(sel.text) : "";
+  if (!sel) return; // a selection that can't be found: the user was told
+  const selected = editor.value.slice(sel.start, sel.end);
+  const query = sel.isSelection ? zotseekQueryText(selected) : "";
   if (!query) {
     showStatus("Select a sentence to find sources for it in Zotero", true);
     return;
   }
-  let start = sel.start;
-  let selected = editor.value.slice(sel.start, sel.end);
-  if (activeRichHandle()) {
-    // The formatted selection, if it occurs as such in its source paragraph;
-    // otherwise the citation goes at the end of the paragraph.
-    const sentence = sel.text.trim();
-    const at = sentence ? selected.indexOf(sentence) : -1;
-    if (at !== -1) {
-      start = sel.start + at;
-      selected = sentence;
-    }
-  }
+  const start = sel.start;
   zotseekAnchor = { text: selected.replace(/[\s.,;:!?]+$/, ""), start };
 
   const panel = document.getElementById("proofread-panel");

@@ -33,8 +33,8 @@ All shortcuts work both in the formatted view and in the Markdown source (`⌘/`
 | `⌘⇧T` | Insert a table (choose rows, columns and column alignment) |
 | `⌘K` | Insert a link — to a heading of this note, or to an address (`https://…`, `zotero://…`) — around the selection |
 | `⌘⇧N` | Insert a footnote with a unique code (`[^x7k2]`) |
-| `⌘⇧P` | Proofread (selection or whole document; in the formatted view, the whole paragraphs the selection touches) |
-| `⌘⇧L` | Translate (selection or whole document; idem) |
+| `⌘⇧P` | Proofread the selection — or the whole document if nothing is selected |
+| `⌘⇧L` | Translate the selection — or the whole document if nothing is selected |
 | `⌘⇧G` | Suggest tags from the vault |
 | `⌘F` | Search (in the formatted view: the text as shown) |
 | `⌘H` | Search and replace |
