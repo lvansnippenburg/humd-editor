@@ -234,11 +234,17 @@ export async function createEditor({ root, value, onChange }) {
     // selection in the Markdown source.
     selectionContext() {
       return withView((view) => {
-        const { from, to } = view.state.selection;
+        const { from, to, $from, $to, empty } = view.state.selection;
         const doc = view.state.doc;
         return {
           text: doc.textBetween(from, to, "\n\n", ""),
           before: doc.textBetween(0, from, "\n\n", ""),
+          // From the start of a paragraph to the end of one (or the start of
+          // the next, as a triple-click selects): whole paragraphs.
+          wholeBlocks:
+            !empty &&
+            $from.parentOffset === 0 &&
+            ($to.parentOffset === $to.parent.content.size || ($to.parentOffset === 0 && to > from)),
         };
       });
     },

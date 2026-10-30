@@ -14,6 +14,7 @@ Quitting (red button or Cmd+Q) first asks the page whether documents have
 unsaved changes; it then offers to save them (see Api.request_quit).
 """
 
+import os
 import subprocess
 import tempfile
 import threading
@@ -69,10 +70,16 @@ class Api:
         return True
 
     def confirm_quit(self):
-        """Quit for real: nothing (more) to save, or the user chose."""
+        """Quit for real: nothing (more) to save, or the user chose.
+
+        The window is closed a moment later, after this call has returned:
+        pywebview hands the return value back to the page, and doing that for
+        a page that's already closed leaves its thread waiting forever."""
         self._quit_confirmed = True
         if self._window is not None:
-            self._window.destroy()
+            timer = threading.Timer(0.2, self._window.destroy)
+            timer.daemon = True
+            timer.start()
         return True
 
     def open_external(self, url):
@@ -236,13 +243,18 @@ def main():
         state["width"], state["height"] = int(w), int(h)
         _debounced_save_geometry(state, signature)
 
+    geometry_saved = threading.Event()
+
     def on_closed():
         global _save_timer
-        with _save_timer_lock:
-            if _save_timer is not None:
-                _save_timer.cancel()
-                _save_timer = None
-        _save_window_geometry(state, signature)
+        try:
+            with _save_timer_lock:
+                if _save_timer is not None:
+                    _save_timer.cancel()
+                    _save_timer = None
+            _save_window_geometry(state, signature)
+        finally:
+            geometry_saved.set()
 
     window.events.shown += on_shown
     window.events.moved += on_moved
@@ -257,8 +269,15 @@ def main():
     webview.settings["ALLOW_DOWNLOADS"] = True
 
     # Blocks on the GUI loop (main thread, required on macOS); returns when the
-    # window is closed, at which point the daemon server thread exits with us.
+    # window is closed.
     webview.start()
+
+    # End the process explicitly: a thread left waiting on the closed page
+    # (e.g. one of pywebview's JS-bridge threads) would otherwise keep the app
+    # running in the Dock until it's force-quit. The `closed` handler saves the
+    # window geometry in its own thread, so wait (briefly) for that first.
+    geometry_saved.wait(2)
+    os._exit(0)
 
 
 if __name__ == "__main__":

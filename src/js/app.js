@@ -1932,7 +1932,7 @@ const NO_VISIBLE_TEXT = [
   /\[[^[\]\n]*@[^[\]\n]*\](?![({])/g, // citations
   /\]\([^)]*\)/g, // link addresses
   /\]\{[^}\n]*\}|\{[^}\n]*\}[ \t]*$/gm, // span and heading attributes
-  /<[^>\n]+>/g, // HTML tags
+  /<(?![a-z][a-z0-9+.-]*:)[^>\n]+>/gi, // HTML tags (not <https://…> addresses, shown as text)
   /^[ \t]*(?:\d+[.)]|[-*+])[ \t]+/gm, // list markers
 ];
 
@@ -1957,7 +1957,7 @@ function visibleKey(markdown) {
     }
     i += ch.length;
   }
-  return { key, pos };
+  return { key, pos, hidden };
 }
 
 // Positions of `needle` in `haystack` (overlapping occurrences count).
@@ -1967,21 +1967,54 @@ function occurrences(haystack, needle) {
   return found;
 }
 
-// The Markdown range { start, end } of the formatted view's selection: the
-// same occurrence of the selected text as in the view. Null if not found.
+// The Markdown range { start, end } of the formatted view's selection, or
+// null if it can't be found (or has no text of its own). The selected text
+// is located by the text before it (the visible letters and digits of view
+// and Markdown run in parallel), else by searching for it. Whole paragraphs
+// or list items selected become their whole Markdown lines (with any
+// citation at the start, the closing punctuation, a footnote after it); otherwise the range
+// also takes punctuation that was selected at either end and the footnotes
+// and citations directly attached to it.
 function richSelectionToSource(handle) {
   const value = document.getElementById("editor").value;
-  const { text, before } = handle.selectionContext();
+  const { text, before, wholeBlocks } = handle.selectionContext();
   const want = textKey(text);
   if (!want) return null;
-  const { key, pos } = visibleKey(value);
-  const hits = occurrences(key, want);
-  if (!hits.length) return null;
-  // The selection is the occurrence after those that lie wholly before it.
-  const nth = occurrences(textKey(before), want).length;
-  const at = hits[Math.min(nth, hits.length - 1)];
+  const { key, pos, hidden } = visibleKey(value);
+  const skipped = textKey(before).length;
+  let at = key.startsWith(want, skipped) ? skipped : -1;
+  if (at === -1) {
+    const hits = occurrences(key, want);
+    if (!hits.length) return null;
+    const nth = occurrences(textKey(before), want).length;
+    at = hits[Math.min(nth, hits.length - 1)];
+  }
   const last = at + want.length - 1;
-  return { start: pos[at], end: pos[last] + (value.codePointAt(pos[last]) > 0xffff ? 2 : 1) };
+  let start = pos[at];
+  let end = pos[last] + (value.codePointAt(pos[last]) > 0xffff ? 2 : 1);
+
+  if (wholeBlocks) {
+    // Whole lines: a paragraph's first to last line, or just the selected
+    // list items (not the whole list).
+    const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+    const nl = value.indexOf("\n", end);
+    return { start: lineStart, end: nl === -1 ? value.length : nl };
+  }
+  // Punctuation selected at the ends ("(", "“", ".", "?»"), and elements
+  // without text of their own (footnotes, citations) attached to them.
+  const lead = text.match(/^[^\p{L}\p{N}]*/u)[0].replace(/\s+/g, "");
+  const trail = text.match(/[^\p{L}\p{N}]*$/u)[0].replace(/\s+/g, "");
+  for (let k = lead.length - 1; k >= 0 && start > 0; ) {
+    if (value[start - 1] === lead[k]) k--;
+    else if (!hidden[start - 1] || /\s/.test(value[start - 1])) break;
+    start--;
+  }
+  for (let k = 0; end < value.length; ) {
+    if (k < trail.length && value[end] === trail[k]) k++;
+    else if (!hidden[end] || /\s/.test(value[end])) break;
+    end++;
+  }
+  return { start, end };
 }
 
 // The text an action (proofread, translate, ZotSeek) works on: the selection,
@@ -1997,11 +2030,18 @@ function getActionSelection() {
     return { start, end, isSelection: true, text: editor.value.slice(start, end) };
   }
   flushRichText();
+  // Nothing selected: the whole document. (A selection of only a citation
+  // or footnote is a selection too, without text: see below.)
+  if (!handle.hasSelection()) return { start: 0, end: editor.value.length, isSelection: false, text: "" };
   const { text } = handle.selectionContext();
-  if (!text.trim()) return { start: 0, end: editor.value.length, isSelection: false, text: "" };
   const range = richSelectionToSource(handle);
   if (!range) {
-    showStatus("Couldn't find the selected text in the Markdown — select it in the Markdown view (⌘/)", true);
+    showStatus(
+      textKey(text)
+        ? "Couldn't find the selected text in the Markdown — select it in the Markdown view (⌘/)"
+        : "The selection has no text of its own (only a citation, footnote or image)",
+      true,
+    );
     return null;
   }
   return { ...range, isSelection: true, text };
