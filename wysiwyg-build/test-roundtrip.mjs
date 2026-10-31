@@ -33,6 +33,7 @@ const samples = [
   "A citation [@abulafia2014, 12] and [see @a2020, p. 5; -@b2019, chap. 3].",
   "Not citations: [me@example.org], [a link](https://x.org) and [span]{.smallcaps}.",
   "Narrative @abulafia2014 says so.",
+  "A source [(Wirth, 2019, p. 303)](zotero://select/library/items/T5IBHT8B) here.",
 ];
 
 let pass = 0,
@@ -43,8 +44,11 @@ for (const src of samples) {
   const h = await createEditor({ root, value: src, onChange: () => {} });
   const out = h.getMarkdown().trim();
   const fns = h.getFootnotes();
+  // An app link keeps its target for ⌘-click in data-href (see appLinkSchema).
+  const linkOk = !src.includes("zotero://") ||
+    root.querySelector("a[data-href]")?.getAttribute("data-href") === "zotero://select/library/items/T5IBHT8B";
   await h.destroy();
-  const ok = normalise(out) === normalise(src) || acceptable(src, out);
+  const ok = (normalise(out) === normalise(src) || acceptable(src, out)) && linkOk;
   console.log(ok ? "  ok   " : " FAIL  ", JSON.stringify(src));
   if (!ok) console.log("         got:", JSON.stringify(out));
   if (fns.length) console.log("         footnotes:", JSON.stringify(fns.map((f) => f.content)));

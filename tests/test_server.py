@@ -365,6 +365,17 @@ class TagSuggestionTests(SettingsTestCase):
         )
         self.assertEqual(targets, [{"file": "z_notes/c.md", "text": "No tags yet."}])
 
+    def test_z_output_left_out(self):
+        (Path(self.vault) / "z_output").mkdir()
+        (Path(self.vault) / "z_output" / "draft.md").write_text("Chapter. #structure", encoding="utf-8")
+        (Path(self.vault) / "z_output" / "plain.md").write_text("Untagged chapter.", encoding="utf-8")
+        targets, note_tags = server.tag_suggestion_request(
+            self.vault,
+            {"paths": [f"{self.vault}/z_output/plain.md", f"{self.vault}/z_notes/c.md"]},
+        )
+        self.assertNotIn("z_output/draft.md", note_tags)
+        self.assertEqual([t["file"] for t in targets], ["z_notes/c.md"])
+
     def test_outside_vault_rejected(self):
         with self.assertRaises(PermissionError):
             server.tag_suggestion_request(self.vault, {"paths": ["/etc/hosts"]})

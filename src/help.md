@@ -46,7 +46,7 @@ All shortcuts work both in the formatted view and in the Markdown source (`⌘/`
 | `Esc` | Dismiss the popup |
 | `Enter` | Confirm (rename, new file) |
 | `Esc` | Cancel / close / Dismiss the popup (rename, new file, settings) |
-| `⌘`-click (or `Ctrl`-click) | Open the URL under the cursor (Markdown) or the clicked link (formatted view) |
+| `⌘`-click (or `Ctrl`-click) | Open the clicked link: a web or app link (`zotero://…`), or a `[[wikilink]]` in the Markdown view |
 
 
 ## Markdown
@@ -88,7 +88,7 @@ The easiest way to make a link is `⌘K`: select the text that should become the
 
 An internal link can be created using the headers of the document. By replacing the spaces in the headers with a dash ('the header' -> 'the-header') and adding a hash-sign in front, they become internal links. A link to the section on footnotes in this document would look like: `[About footnotes in Markdown](#footnote)`, which would render as [About footnotes in Markdown](#footnote)
 
-To follow a link, hold `⌘` (or `Ctrl`) and click it — a link in the formatted view, or a URL in the Markdown source — to open it in your browser or the matching app; a `[[wikilink]]` in the formatted view opens with a plain click. This works for ordinary web links as well as app links such as `zotero://…`. (On macOS, `⌘`-click is the reliable gesture, since `Ctrl`-click is taken by the system menu.)
+To follow a link, hold `⌘` (or `Ctrl`) and click it to open it in your browser or the matching app. In the Markdown view you can click anywhere on a `[text](address)` link, its text included, or on a bare address; `⌘`-click a `[[wikilink]]` there to open the note. In the formatted view a `[[wikilink]]` opens with a plain click. This works for ordinary web links as well as app links such as `zotero://…`. (On macOS, `⌘`-click is the reliable gesture, since `Ctrl`-click is taken by the system menu.)
 
 ### Images
 

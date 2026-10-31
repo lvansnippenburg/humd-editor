@@ -2162,11 +2162,7 @@ async function enableRichText(pane) {
           richTextInput = false;
         }
       },
-      onOpenWikilink: (target) => {
-        const path = findNoteByName(target);
-        if (path) loadFile(path);
-        else showStatus(`Note not found: ${target}`);
-      },
+      onOpenWikilink: openWikilink,
       onOpenUrl: (href) => openLink(href),
       onOpenComment: (el, value) => openRichTextComment(el, value),
       onOpenCitation: (el, raw) => editRichTextCitation(el, raw),
@@ -4101,6 +4097,15 @@ async function buildLinkIndex() {
   }
 }
 
+// Open the note a [[wikilink]] points to ("note", "folder/note", "note#heading").
+function openWikilink(target) {
+  const name = target.split("#")[0].trim();
+  if (!name) return; // [[#heading]]: this note
+  const path = findNoteByName(name);
+  if (path) loadFile(path);
+  else showStatus(`Note not found: ${name}`, true);
+}
+
 function findNoteByName(name) {
   // A wikilink target may carry a folder prefix (e.g. "folder/note"); resolve
   // by the bare note name.
@@ -5014,6 +5019,13 @@ function isInZFolder(filePath) {
   return parts.slice(0, -1).some((seg) => seg.startsWith("z_"));
 }
 
+// The notes the Tags panel lists (and Suggest tags works on): those in a
+// "z_" folder, except the finished texts in z_output (TAG_EXCLUDED_FOLDER in
+// server.py).
+function isTagPanelFile(filePath) {
+  return isInZFolder(filePath) && !String(filePath).split(/[\\/]/).slice(0, -1).includes("z_output");
+}
+
 function buildTagsPanel() {
   const list = document.getElementById("tags-list");
   list.innerHTML = "";
@@ -5022,13 +5034,13 @@ function buildTagsPanel() {
   // tag's file list and count from that subset, dropping tags left empty.
   const entries = Object.values(tagIndexCache)
     .map((entry) => {
-      const files = (entry.files || []).filter(isInZFolder);
+      const files = (entry.files || []).filter(isTagPanelFile);
       return { ...entry, files, count: files.length };
     })
     .filter((entry) => entry.count > 0);
   entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 
-  const untagged = untaggedCache.filter(isInZFolder);
+  const untagged = untaggedCache.filter(isTagPanelFile);
 
   // Pin a synthetic "#notag" entry to the top for files with no tags.
   const rows = [];
@@ -6661,42 +6673,62 @@ function editorReplaceAll() {
 
 // ===== UI HELPERS =====
 
-// Ctrl/Cmd-click on a token in the editor: if it's a URL, open it. The click
-// has already moved the caret, so editor.selectionStart marks where the user
-// clicked; we grow out to the surrounding whitespace-delimited token. (On macOS
-// Ctrl-click is intercepted by the OS as a right-click, so Cmd-click is the
-// reliable gesture there.)
+// Ctrl/Cmd-click in the Markdown view: open the link under the click — a
+// [[wikilink]], a [text](url) link (anywhere on it, also its text), an
+// <autolink> or a bare URL. The click has already moved the caret, so
+// editor.selectionStart marks where the user clicked. (On macOS Ctrl-click is
+// intercepted by the OS as a right-click, so Cmd-click is the reliable
+// gesture there.)
 function onEditorModifierClick(e) {
   if (!(e.ctrlKey || e.metaKey)) return;
   const editor = e.currentTarget;
   const value = editor.value;
   const pos = editor.selectionStart;
-  let start = pos;
-  let end = pos;
-  while (start > 0 && !/\s/.test(value[start - 1])) start--;
-  while (end < value.length && !/\s/.test(value[end])) end++;
-  const url = extractUrlFromToken(value.slice(start, end));
-  if (url) {
-    e.preventDefault();
-    openLink(url);
-  }
+  const lineStart = value.lastIndexOf("\n", pos - 1) + 1;
+  const lineEnd = value.indexOf("\n", pos) === -1 ? value.length : value.indexOf("\n", pos);
+  const link = linkAt(value.slice(lineStart, lineEnd), pos - lineStart);
+  if (!link) return;
+  e.preventDefault();
+  if (link.wikilink !== undefined) openWikilink(link.wikilink);
+  else openLink(link.url);
 }
 
-// Pull a URL out of a whitespace-delimited token, returning it or null. Handles
-// a markdown link `[text](url)` and a URL wrapped in (), [] or <> (e.g. an
-// autolink or a parenthesised aside), plus trailing sentence punctuation.
-function extractUrlFromToken(token) {
-  let s = token.trim();
-  if (!s) return null;
-  const md = s.match(/\]\(([^()\s]+)\)/); // [text](url)
-  if (md) s = md[1];
-  s = s.replace(/^[<([]+/, "").replace(/[>)\].,;:!?'"]+$/, "");
-  // Undo markdown backslash-escapes (e.g. a Zotero link's "page=7\&annotation").
-  s = s.replace(/\\(.)/g, "$1");
-  // A link to a heading of this note ([text](#heading)).
-  if (md && /^#\S+$/.test(s)) return s;
-  // Accept any scheme://… (http, zotero, file, obsidian, …) or mailto:.
-  return /^([a-z][a-z0-9+.-]*:\/\/|mailto:)\S+$/i.test(s) ? s : null;
+// The link in `line` that covers offset `at`: { wikilink: target } or
+// { url }, or null.
+function linkAt(line, at) {
+  const patterns = [
+    [/\[\[([^\]|]+)(?:\|[^\]]*)?\]\]/g, (m) => ({ wikilink: m[1] })],
+    // [text](url "title"); the URL may contain one level of parentheses.
+    [/\[[^\]]*\]\(((?:[^()\s]|\([^()\s]*\))+)(?:\s+"[^"]*")?\)/g, (m) => urlLink(m[1], true)],
+    [/<([a-z][a-z0-9+.-]*:[^>\s]+)>/gi, (m) => urlLink(m[1])],
+  ];
+  for (const [re, toLink] of patterns) {
+    for (const m of line.matchAll(re)) {
+      if (m.index <= at && at <= m.index + m[0].length) return toLink(m);
+    }
+  }
+  // A bare URL: the whitespace-delimited word under the click.
+  let start = at;
+  let end = at;
+  while (start > 0 && !/\s/.test(line[start - 1])) start--;
+  while (end < line.length && !/\s/.test(line[end])) end++;
+  const url = bareUrl(line.slice(start, end));
+  return url ? { url } : null;
+}
+
+// { url } for a link target, with Markdown's backslash escapes undone (e.g. a
+// Zotero link's "page=7\&annotation"); null if it isn't a URL (or, from a
+// [text](#heading) link, a heading of this note).
+function urlLink(target, allowHeading = false) {
+  const url = target.replace(/\\(.)/g, "$1");
+  if (allowHeading && /^#\S+$/.test(url)) return { url };
+  return /^([a-z][a-z0-9+.-]*:\/\/|mailto:)\S+$/i.test(url) ? { url } : null;
+}
+
+// A bare URL in a whitespace-delimited word, without the brackets or
+// sentence punctuation around it.
+function bareUrl(word) {
+  return urlLink(word.replace(/^[<([]+/, "").replace(/[>)\].,;:!?'"]+$/, ""))?.url ?? null;
 }
 
 // Open a URL/app-protocol link with the OS. In the packaged native window links

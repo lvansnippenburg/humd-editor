@@ -29,6 +29,7 @@ import { findAndReplace } from "mdast-util-find-and-replace";
 import { visit } from "unist-util-visit";
 import { toString as mdastToString } from "mdast-util-to-string";
 import { $remark, $markSchema, $nodeSchema } from "@milkdown/kit/utils";
+import { linkSchema } from "@milkdown/kit/preset/commonmark";
 
 // ---------------------------------------------------------------------------
 // Tokenisers. Mirrors the rules in src/js/markdown.js so the WYSIWYG view and
@@ -337,6 +338,33 @@ export const citationSchema = $nodeSchema("citation", () => ({
   },
 }));
 
+// Links to apps (zotero://select/…, zotero://open-pdf/…). Against XSS,
+// Milkdown only renders http(s), mailto, tel and ftp links with their href;
+// any other gets an empty one. The real target goes in data-href instead (the
+// href stays empty, so the page never navigates to it): ⌘-click opens it
+// through the app (wysiwyg.js), and copying and pasting a link keeps it.
+export const appLinkSchema = linkSchema.extendSchema((prev) => (ctx) => {
+  const base = prev(ctx);
+  return {
+    ...base,
+    parseDOM: [
+      {
+        tag: "a[data-href]",
+        priority: 55, // before the plain `a[href]` rule; after wikilinks (60)
+        getAttrs: (dom) => ({
+          href: dom.getAttribute("data-href"),
+          title: dom.getAttribute("title"),
+        }),
+      },
+      ...base.parseDOM,
+    ],
+    toDOM: (mark) => {
+      const [tag, attrs, ...rest] = base.toDOM(mark);
+      return [tag, { ...attrs, "data-href": mark.attrs.href }, ...rest];
+    },
+  };
+});
+
 export const humdSyntaxPlugins = [
   remarkHumd,
   remarkHumdStringify,
@@ -346,4 +374,5 @@ export const humdSyntaxPlugins = [
   wikilinkSchema,
   footnoteSchema,
   citationSchema,
+  appLinkSchema,
 ].flat();

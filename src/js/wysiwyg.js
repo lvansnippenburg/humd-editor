@@ -230,10 +230,13 @@ export async function enableWysiwyg(
         return;
       }
       // Other links open with ⌘-click; a plain click places the cursor to edit.
+      // data-href: the real target, also for app links such as zotero://
+      // (whose href is emptied; see appLinkSchema in wysiwyg-build).
       const link = e.target.closest("a[href]");
       if (link && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
-        onOpenUrl?.(link.getAttribute("href"));
+        const href = link.getAttribute("data-href") || link.getAttribute("href");
+        if (href) onOpenUrl?.(href);
         return;
       }
       const citation = e.target.closest(".citation-ref[data-raw]");
