@@ -340,6 +340,12 @@ function showMediaContainerForPane(pane, tab) {
   c.style.display = "flex";
 }
 
+// macOS spell checking in the Markdown and formatted views: both inherit the
+// pane's spellcheck attribute (the formatted view's editor has none of its own).
+function applySpellCheck() {
+  for (const pane of panes) pane.containerEl.spellcheck = currentSpellCheck;
+}
+
 function createPane() {
   const template = document.getElementById("pane-template");
   const clone = template.content.cloneNode(true);
@@ -348,6 +354,7 @@ function createPane() {
   const paneEl = clone.querySelector(".editor-pane-instance");
   const id = `pane-${paneCounter++}`;
   paneEl.dataset.paneId = id;
+  paneEl.spellcheck = currentSpellCheck;
 
   const searchPanel = document.getElementById("editor-search-panel");
   container.insertBefore(paneEl, searchPanel);
@@ -568,7 +575,7 @@ async function initialize() {
     ];
     // Update the graph module's settings
     graphFolderColors.splice(0, graphFolderColors.length, ...currentGraphFolderColors);
-    document.getElementById("editor").spellcheck = currentSpellCheck;
+    applySpellCheck();
 
     let vaultPath = settings.vaultPath;
 
@@ -5637,7 +5644,7 @@ async function saveSettings() {
     currentUserNickname = newNickname;
     currentProofreadProvider = newProofreadProvider;
     currentDocumentLanguage = newDocumentLanguage;
-    document.getElementById("editor").spellcheck = newSpellCheck;
+    applySpellCheck();
 
     const bibChanged = newBibPath !== currentBibPath;
     const cslChanged = newCslPath !== currentCslPath;

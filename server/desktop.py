@@ -10,6 +10,11 @@ Window position/size are saved on quit and restored on next launch, but only
 when the display layout is unchanged (so the window can't come back off-screen
 after you unplug a monitor).
 
+Text editing gets the macOS text services: spell checking while typing, the
+full context menu (spelling suggestions, Writing Tools, Look Up, Translate,
+Speech, Services, …) and Spelling/Substitutions/Speech in the Edit menu (see
+_enable_text_services).
+
 Quitting (red button or Cmd+Q) first asks the page whether documents have
 unsaved changes; it then offers to save them (see Api.request_quit).
 """
@@ -184,6 +189,162 @@ def _debounced_save_geometry(state: dict, signature: str) -> None:
         _save_timer.start()
 
 
+# Context-menu items that make no sense in the editor (it's one page, not a
+# browser): reload/back/forward, opening or downloading in "a new window", and
+# the inspector.
+_HIDDEN_MENU_ITEMS = {
+    "WKMenuItemIdentifierReload",
+    "WKMenuItemIdentifierGoBack",
+    "WKMenuItemIdentifierGoForward",
+    "WKMenuItemIdentifierInspectElement",
+    "WKMenuItemIdentifierOpenLinkInNewWindow",
+    "WKMenuItemIdentifierOpenFrameInNewWindow",
+    "WKMenuItemIdentifierOpenImageInNewWindow",
+    "WKMenuItemIdentifierOpenMediaInNewWindow",
+    "WKMenuItemIdentifierDownloadLinkedFile",
+    "WKMenuItemIdentifierDownloadImage",
+    "WKMenuItemIdentifierDownloadMedia",
+}
+
+
+def _enable_text_services():
+    """Give the webview the macOS text services pywebview leaves out.
+
+    - Spell checking while typing is off in a WKWebView unless the app's
+      defaults say otherwise. Registered defaults only apply until the user
+      changes a setting (Edit > Spelling and Grammar / Substitutions), which
+      macOS then remembers. Smart quotes/dashes stay off by default: the
+      editor has its own smart quotes, and Markdown needs straight ones.
+    - pywebview empties the context menu (except in debug mode); keep the
+      native one, minus the browser-only items above.
+    - pywebview's Edit menu has only Cut/Copy/Paste/Select All; add the
+      standard Spelling and Grammar, Substitutions, Transformations and
+      Speech submenus (macOS adds Writing Tools, AutoFill, Dictation and
+      Emoji & Symbols to it itself).
+    The editors' own spellcheck setting (Settings) still decides whether
+    misspellings are underlined.
+    """
+    try:
+        import AppKit
+        import objc
+        from webview.platforms import cocoa
+    except ImportError:  # not macOS
+        return
+
+    AppKit.NSUserDefaults.standardUserDefaults().registerDefaults_(
+        {
+            "WebContinuousSpellCheckingEnabled": True,
+            "WebAutomaticQuoteSubstitutionEnabled": False,
+            "WebAutomaticDashSubstitutionEnabled": False,
+        }
+    )
+
+    def willOpenMenu_withEvent_(self, menu, event):
+        if cocoa._state["debug"]:
+            return
+        for item in list(menu.itemArray()):
+            if item.identifier() in _HIDDEN_MENU_ITEMS:
+                menu.removeItem_(item)
+        # Tidy separators left at the ends or doubled; an empty menu isn't shown.
+        items = list(menu.itemArray())
+        previous_separator = True
+        for item in items:
+            if item.isSeparatorItem() and previous_separator:
+                menu.removeItem_(item)
+            else:
+                previous_separator = item.isSeparatorItem()
+        while menu.numberOfItems() and menu.itemAtIndex_(menu.numberOfItems() - 1).isSeparatorItem():
+            menu.removeItemAtIndex_(menu.numberOfItems() - 1)
+
+    objc.classAddMethods(cocoa.BrowserView.WebKitHost, [willOpenMenu_withEvent_])
+
+    add_edit_menu = cocoa.BrowserView._add_edit_menu
+
+    def _add_edit_menu(self, mainMenu):
+        add_edit_menu(self, mainMenu)
+        edit_menu = mainMenu.itemAtIndex_(1).submenu()
+
+        def submenu(title, entries):
+            menu = AppKit.NSMenu.alloc().initWithTitle_(title)
+            for entry in entries:
+                if entry is None:
+                    menu.addItem_(AppKit.NSMenuItem.separatorItem())
+                    continue
+                item_title, action, key, *mask = entry
+                item = menu.addItemWithTitle_action_keyEquivalent_(item_title, action, key)
+                if mask:
+                    item.setKeyEquivalentModifierMask_(mask[0])
+            item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, None, "")
+            item.setSubmenu_(menu)
+            edit_menu.addItem_(item)
+
+        edit_menu.addItem_(AppKit.NSMenuItem.separatorItem())
+        submenu(
+            "Spelling and Grammar",
+            [
+                ("Show Spelling and Grammar", "showGuessPanel:", ":"),
+                ("Check Document Now", "checkSpelling:", ";"),
+                None,
+                ("Check Spelling While Typing", "toggleContinuousSpellChecking:", ""),
+                ("Check Grammar With Spelling", "toggleGrammarChecking:", ""),
+                ("Correct Spelling Automatically", "toggleAutomaticSpellingCorrection:", ""),
+            ],
+        )
+        submenu(
+            "Substitutions",
+            [
+                ("Show Substitutions", "orderFrontSubstitutionsPanel:", ""),
+                None,
+                ("Smart Copy/Paste", "toggleSmartInsertDelete:", ""),
+                ("Smart Quotes", "toggleAutomaticQuoteSubstitution:", ""),
+                ("Smart Dashes", "toggleAutomaticDashSubstitution:", ""),
+                ("Text Replacement", "toggleAutomaticTextReplacement:", ""),
+            ],
+        )
+        submenu(
+            "Transformations",
+            [
+                ("Make Upper Case", "uppercaseWord:", ""),
+                ("Make Lower Case", "lowercaseWord:", ""),
+                ("Capitalize", "capitalizeWord:", ""),
+            ],
+        )
+        submenu(
+            "Speech",
+            [
+                ("Start Speaking", "startSpeaking:", ""),
+                ("Stop Speaking", "stopSpeaking:", ""),
+            ],
+        )
+
+    cocoa.BrowserView._add_edit_menu = _add_edit_menu
+
+
+def _remove_duplicate_menu_items():
+    """pywebview builds the menu bar more than once, and macOS adds Dictation,
+    Emoji & Symbols and Enter Full Screen to it each time; keep one of each."""
+    try:
+        import AppKit
+        from PyObjCTools import AppHelper
+    except ImportError:
+        return
+
+    def dedupe():
+        main_menu = AppKit.NSApp.mainMenu()
+        for i in range(main_menu.numberOfItems()):
+            menu = main_menu.itemAtIndex_(i).submenu()
+            seen = set()
+            for item in list(menu.itemArray() if menu else []):
+                if item.isSeparatorItem():
+                    continue
+                key = (item.title(), item.action())
+                if key in seen:
+                    menu.removeItem_(item)
+                seen.add(key)
+
+    AppHelper.callAfter(dedupe)
+
+
 def main():
     # Reuse an identical running instance, but take over a stale one (different
     # code version) instead of attaching to its old server.
@@ -225,6 +386,7 @@ def main():
     # Cmd+Q, programmatic) — unlike `closing`. The window is gone by then, so we
     # save the tracked values rather than reading the dead window's attributes.
     def on_shown():
+        _remove_duplicate_menu_items()
         try:
             state.update(
                 x=int(window.x),
@@ -267,6 +429,7 @@ def main():
     # otherwise silently do nothing. With it on, the webview shows a native
     # save dialog. Harmless in the browser build, which never runs this file.
     webview.settings["ALLOW_DOWNLOADS"] = True
+    _enable_text_services()
 
     # Blocks on the GUI loop (main thread, required on macOS); returns when the
     # window is closed.

@@ -148,6 +148,8 @@ Notes:
 
 - When you edit a paragraph in the formatted view, Milkdown (the editor behind it) writes that paragraph in its own style: `*` and `-` list markers or escaping may change, and inline HTML such as `<br>` is dropped. The meaning stays the same. Paragraphs you don't touch are left exactly as they were — use the Markdown view for anything that must stay character for character.
 - Smart quotes (Settings) and the protection of `--` against the Mac's automatic dashes apply when typing in the Markdown view.
+- **Spelling** is checked as you type in both views (the Mac's own spell checker, in the languages set under System Settings → Keyboard → Text Input); misspellings are underlined in red. Turn it off with **Enable spell check** in Settings. Text that was already there is checked as the cursor moves through it, or all at once with Edit → Spelling and Grammar → Check Document Now (`⌘;`).
+- **Ctrl-click** (or right-click) a word or a selection for the Mac's text menu: spelling suggestions, Look Up, Translate, Writing Tools (Proofread, Rewrite, …), Substitutions, Transformations and Speech. The same items are in the **Edit** menu, where you can also switch on grammar checking (off by default) or automatic spelling correction (follows your Mac's setting). The Mac's smart quotes and dashes are off by default, since the editor has its own smart quotes and Markdown needs straight ones.
 - **Print** (the printer button in the toolbar) produces the fully formatted document, with numbered citations and bibliography, through Pandoc.
 
 ## Searching
