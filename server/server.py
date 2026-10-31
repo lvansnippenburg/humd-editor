@@ -515,8 +515,9 @@ def search_vault(
 # mdsearch.py runs as a long-lived worker process under a regular python3 (not
 # this process: the bundled .app has no pip, and the model takes several GB of
 # memory we'd rather keep out of the server). It installs its own dependencies
-# on first use. One question is answered at a time; the client starts it with
-# POST /api/llm-search and polls GET /api/llm-search-status for progress.
+# on first use. It runs one job at a time: a question (POST /api/llm-search)
+# or tag suggestions (POST /api/suggest-tags), told apart by the job's "kind";
+# the client polls GET /api/llm-search-status for progress.
 
 if getattr(sys, "frozen", False):
     MDSEARCH_PATH = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "server" / "mdsearch.py"
@@ -591,6 +592,16 @@ class LlmSearch:
                         {**s, "path": os.path.join(root, s["file"])}
                         for s in ev.get("sources", [])
                     ]
+                elif kind == "tagged":
+                    root = job.get("vault", "")
+                    job["results"].append({
+                        "path": os.path.join(root, ev["file"]) if ev.get("file") else None,
+                        "tags": ev.get("tags", []),
+                        "evidence": {
+                            t: [os.path.join(root, f) for f in files]
+                            for t, files in (ev.get("evidence") or {}).items()
+                        },
+                    })
                 elif kind == "token":
                     job["answer"] = job.get("answer", "") + ev.get("text", "")
                 elif kind == "done":
@@ -642,26 +653,37 @@ class LlmSearch:
             pass
 
     def start(self, vault: str, query: str, model: str | None):
+        """Answer a question about the notes."""
+        return self._start(
+            {"kind": "search", "query": query, "status": "Starting LLM search …", "sources": [], "answer": ""},
+            {"vault": vault, "query": query},
+            vault,
+            model,
+        )
+
+    def start_tags(self, vault: str, targets: list, note_tags: dict, model: str | None):
+        """Suggest tags for notes (mdsearch.suggest_tags; files relative to
+        the vault): job["results"] gets one entry per target."""
+        return self._start(
+            {"kind": "tags", "status": "Starting the local model …", "results": [], "total": len(targets)},
+            {"vault": vault, "tags": {"targets": targets, "noteTags": note_tags}},
+            vault,
+            model,
+        )
+
+    def _start(self, job: dict, req: dict, vault: str, model: str | None):
         with self.lock:
             if self.idle_timer:
                 self.idle_timer.cancel()
                 self.idle_timer = None
             if self.job.get("state") == "running":
-                raise RuntimeError("Still answering the previous question — please wait.")
+                busy = "suggesting tags" if self.job.get("kind") == "tags" else "answering a question"
+                raise RuntimeError(f"The local model is still {busy} — please wait.")
             self.job_id += 1
-            self.job = {
-                "id": self.job_id,
-                "state": "running",
-                "vault": vault,
-                "query": query,
-                "status": "Starting LLM search …",
-                "sources": [],
-                "answer": "",
-            }
+            self.job = {"id": self.job_id, "state": "running", "vault": vault, **job}
             try:
                 if self.proc is None or self.proc.poll() is not None:
                     self._spawn()
-                req = {"vault": vault, "query": query}
                 if model:
                     req["model"] = model
                 self.proc.stdin.write(json.dumps(req) + "\n")
@@ -677,6 +699,38 @@ class LlmSearch:
 
 
 llm_search = LlmSearch()
+
+
+def tag_suggestion_request(vault: str, data: dict) -> tuple[list, dict]:
+    """The targets and tagged notes for LlmSearch.start_tags, for POST
+    /api/suggest-tags: {"text", "path"?} (a document, possibly unsaved) or
+    {"paths": [...]} (saved notes, e.g. the untagged ones)."""
+    root = Path(vault)
+    rel = lambda p: str(Path(p).resolve().relative_to(root.resolve()))
+    note_tags: dict = {}
+    with _lock:
+        tag_index = build_link_index(vault)["tag_index"]
+    for entry in tag_index.values():
+        for f in entry["files"]:
+            note_tags.setdefault(rel(f), []).append(entry["name"])
+    if not note_tags:
+        raise ValueError("No notes in the vault have tags yet, so there are none to suggest")
+    if data.get("paths"):
+        paths = [safe_path(p) for p in data["paths"]]
+        targets = [
+            {"file": rel(p), "text": p.read_text(encoding="utf-8", errors="replace")} for p in paths
+        ]
+    else:
+        text = data.get("text") or ""
+        if not text.strip():
+            raise ValueError("Nothing to analyse")
+        existing = extract_yaml_tags(text) + extract_inline_tags(text)
+        targets = [{
+            "file": rel(safe_path(data["path"])) if data.get("path") else None,
+            "text": text,
+            "existing": list(dict.fromkeys(existing)),
+        }]
+    return targets, note_tags
 
 
 # ---------------------------------------------------------------------------
@@ -1062,40 +1116,23 @@ def zotero_lua_path(csl_path: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# AI proofreading
+# AI: proofreading, translation and tag suggestion
 # ---------------------------------------------------------------------------
 
-# The proofreading system prompt lives in src/PROOFREAD_SYSTEM.md so it can be
-# edited without touching code. It's read once at startup (restart to pick up
-# edits); the fallback keeps proofreading working if the file is missing.
-_PROOFREAD_FALLBACK = (
-    "Proofread the following Markdown text for grammar, punctuation, clarity and "
-    "British spelling, ignoring Markdown syntax. Also flag passive-voice "
-    "constructions, with an active rewrite where the agent is clear, and check "
-    "each body paragraph for a Point, Evidence and an Explanation (PEE). Return "
-    "a JSON array of objects with string fields 'type' ('correction', 'passive' "
-    "or 'structure'), 'original' (verbatim from the text), 'suggestion' (the "
-    "replacement, or an empty string for a warning only) and 'comment' (an "
-    "empty array if there is nothing to report)."
-)
-
-
-def _read_prompt_file(name: str) -> str | None:
+# The system prompts live in src/*.md so they can be edited without touching
+# code; they're read on each request.
+def _prompt(name: str) -> str:
     try:
         return (SRC_DIR / name).read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
+    except OSError as e:
+        raise RuntimeError(f"Could not read the prompt file {name}: {e}")
 
-
-PROOFREAD_SYSTEM = _read_prompt_file("PROOFREAD_SYSTEM.md") or _PROOFREAD_FALLBACK
 
 # Proofreading returns one list mixing three kinds of findings, told apart by
 # `type`: language corrections, passive-voice warnings, and PEE (Point,
 # Evidence, Explanation) paragraph-structure notes. Passive and structure items
 # may have an empty `suggestion`: a warning without a ready-made rewrite.
 PROOFREAD_TYPES = ["correction", "passive", "structure"]
-# JSON Schemas for the responses, passed to the providers that can enforce
-# them (Gemini's responseSchema, Ollama's format); Mistral only gets JSON mode.
 PROOFREAD_JSON_SCHEMA = {
     "type": "array",
     "items": {
@@ -1109,212 +1146,147 @@ PROOFREAD_JSON_SCHEMA = {
         "required": ["type", "original", "suggestion", "comment"],
     },
 }
-
+# Translations are proofread items without `type`, so the client renders and
+# applies them the same way.
+_ITEM = PROOFREAD_JSON_SCHEMA["items"]
 TRANSLATE_JSON_SCHEMA = {
     "type": "array",
     "items": {
         "type": "object",
-        "properties": {
-            "original": {"type": "string"},
-            "suggestion": {"type": "string"},
-            "comment": {"type": "string"},
-        },
-        "required": ["original", "suggestion", "comment"],
+        "properties": {k: v for k, v in _ITEM["properties"].items() if k != "type"},
+        "required": [k for k in _ITEM["required"] if k != "type"],
     },
 }
-DEFAULT_MISTRAL_MODEL = "mistral-large-latest"
-DEFAULT_OLLAMA_URL = "http://localhost:11434"
-DEFAULT_OPENAI_URL = "https://api.openai.com/v1"
+
+
+# --- Providers and their configurations (settings.json "llmConfigs") -------
+#
+# Every provider is reached through its OpenAI-compatible chat completions
+# API at `url`. Per provider: `key` says whether an API key is "required"
+# (unless a different URL is given), "optional" or not used ("none");
+# `urlPlaceholder` is set when the URL can be changed; `example` is an example
+# model. The frontend builds the Add dialog from this table.
+#
 # apfel (https://github.com/Arthur-Ficial/apfel) gives access to Apple's
 # on-device model. Without a URL the `apfel` command is run per request (no
-# server needed; the model itself stays loaded in a macOS service, so this is
-# as fast as the server). With a URL, or if the command isn't installed,
-# `apfel --serve` is used through the OpenAI API. Its default port is
-# Ollama's, but it only listens on 127.0.0.1 (IPv4), so this reaches it even
-# when Ollama runs too.
-DEFAULT_APFEL_URL = "http://127.0.0.1:11434/v1"
-APFEL_MODEL = "apple-foundationmodel"
-
-
-class OllamaUnavailable(RuntimeError):
-    """Raised when the local Ollama service can't be reached (not running)."""
-
-
-# --- LLM configurations (settings.json "llmConfigs") -----------------------
-#
-# The AI providers for Settings → Proofreading & translation, stored in
-# settings.json as [{"provider", "model", "apiKey", "url"}], one per
-# provider/model. "url" is only used by Ollama, OpenAI and apfel (default
-# DEFAULT_*_URL); Ollama and apfel need no API key, and neither does an
-# OpenAI-compatible server at another URL. "proofreadProvider" holds the
-# selected one as "<provider>/<model>".
-#
-# Older versions kept providers elsewhere, imported once by load_llm_configs:
-# ~/.llmconfig ("provider/model|api_key" lines; the file is then no longer
-# read) and the built-in Mistral and Ollama settings mistralApiKey,
-# mistralModel, ollamaUrl and ollamaModel (removed from settings.json).
-
-LEGACY_LLMCONFIG_PATH = Path.home() / ".llmconfig"
-LEGACY_PROVIDER_KEYS = ("mistralApiKey", "mistralModel", "ollamaUrl", "ollamaModel")
-LLM_PROVIDER_NAMES = {
-    "gemini": "Gemini",
-    "anthropic": "Anthropic",
-    "mistral": "Mistral",
-    "openai": "OpenAI",
-    "ollama": "Ollama",
-    "apfel": "apfel",
+# server needed); with a URL, or if the command isn't installed, `apfel
+# --serve` is used. Its default port is Ollama's, but it only listens on
+# 127.0.0.1 (IPv4), so this reaches it even when Ollama runs too.
+LLM_PROVIDERS = {
+    "gemini": {
+        "name": "Gemini",
+        "url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "key": "required",
+        "example": "gemini-2.5-flash",
+    },
+    "anthropic": {
+        "name": "Anthropic",
+        "url": "https://api.anthropic.com/v1",
+        "key": "required",
+        "example": "claude-opus-5-5",
+    },
+    "mistral": {
+        "name": "Mistral",
+        "url": "https://api.mistral.ai/v1",
+        "key": "required",
+        "example": "mistral-small-latest",
+    },
+    "openai": {
+        "name": "OpenAI",
+        "label": "OpenAI (or compatible)",
+        "url": "https://api.openai.com/v1",
+        "urlPlaceholder": "https://api.openai.com/v1",
+        "key": "required",
+        "example": "gpt-5-mini",
+    },
+    "ollama": {
+        "name": "Ollama",
+        "label": "Ollama (local)",
+        "url": "http://localhost:11434/v1",
+        "urlPlaceholder": "http://localhost:11434/v1",
+        "key": "none",
+        "example": "llama3.1",
+    },
+    "apfel": {
+        "name": "apfel",
+        "label": "apfel: Apple's on-device model",
+        "url": "http://127.0.0.1:11434/v1",
+        "urlPlaceholder": "empty: runs the apfel command",
+        "key": "optional",
+        "example": "apple-foundationmodel",
+    },
 }
-LLM_PROVIDERS = tuple(LLM_PROVIDER_NAMES)
+
+# "Could not reach …" hints for the local servers.
+_UNREACHABLE_HINTS = {"ollama": "is Ollama running?", "apfel": "is `apfel --serve` running?"}
 
 
-def _llm_config_entry(provider: str, model: str, api_key: str = "", url: str = "") -> dict:
-    provider = provider.strip().lower()
-    if provider == "mistal":  # a typo older versions accepted
-        provider = "mistral"
-    entry = {"provider": provider, "model": model.strip(), "apiKey": api_key.strip()}
-    if url.strip():
-        entry["url"] = url.strip().rstrip("/")
-    return entry
-
-
-def _upsert_llm_config(configs: list[dict], entry: dict) -> list[dict]:
-    """configs with `entry` added, replacing one for the same provider/model."""
-    same = lambda c: (c["provider"], c["model"]) == (entry["provider"], entry["model"])
-    if any(same(c) for c in configs):
-        return [entry if same(c) else c for c in configs]
-    return configs + [entry]
-
-
-def _read_legacy_llmconfig() -> list[dict]:
-    configs: list[dict] = []
-    try:
-        lines = LEGACY_LLMCONFIG_PATH.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return configs
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        left, _, api_key = line.partition("|")
-        provider, _, model = left.partition("/")
-        # A later line for the same provider/model wins (the newest key).
-        configs = _upsert_llm_config(configs, _llm_config_entry(provider, model, api_key))
-    return configs
-
-
-def _migrate_llm_settings(settings: dict) -> bool:
-    """Move older provider settings into llmConfigs (see above). Returns
-    whether `settings` changed."""
-    changed = False
-    configs = settings.get("llmConfigs")
+def load_llm_configs(settings: dict | None = None) -> list[dict]:
+    """The configured providers: [{"provider", "model", "apiKey", "url"?}],
+    one per provider/model. "proofreadProvider" holds the selected one as
+    "<provider>/<model>"."""
+    configs = (settings if settings is not None else load_settings()).get("llmConfigs")
     if not isinstance(configs, list):
-        configs = _read_legacy_llmconfig()
-        changed = True
-    selected = settings.get("proofreadProvider")
-    if settings.get("mistralApiKey"):
-        entry = _llm_config_entry(
-            "mistral", settings.get("mistralModel") or DEFAULT_MISTRAL_MODEL, settings["mistralApiKey"]
-        )
-        if not any(c["provider"] == "mistral" and c["model"] == entry["model"] for c in configs):
-            configs = configs + [entry]
-        if selected == "mistral":
-            selected = f"mistral/{entry['model']}"
-    if settings.get("ollamaModel"):
-        url = settings.get("ollamaUrl") or ""
-        entry = _llm_config_entry("ollama", settings["ollamaModel"], url=url)
-        if entry.get("url") == DEFAULT_OLLAMA_URL:
-            del entry["url"]
-        if not any(c["provider"] == "ollama" and c["model"] == entry["model"] for c in configs):
-            configs = configs + [entry]
-        if selected == "ollama":
-            selected = f"ollama/{entry['model']}"
-    if selected in ("mistral", "ollama"):  # selected, but never set up
-        selected = None
-    for key in LEGACY_PROVIDER_KEYS:
-        if key in settings:
-            del settings[key]
-            changed = True
-    if selected != settings.get("proofreadProvider"):
-        if selected:
-            settings["proofreadProvider"] = selected
-        else:
-            settings.pop("proofreadProvider", None)
-        changed = True
-    settings["llmConfigs"] = configs
-    return changed
-
-
-def load_llm_configs() -> list[dict]:
-    """The configured providers. The first call after an upgrade imports the
-    older provider settings (see above) into llmConfigs."""
-    settings = load_settings()
-    if isinstance(settings.get("llmConfigs"), list) and not any(
-        k in settings for k in LEGACY_PROVIDER_KEYS
-    ):
-        return [c for c in settings["llmConfigs"] if isinstance(c, dict) and c.get("provider")]
-    with _lock:
-        settings = load_settings()
-        if _migrate_llm_settings(settings):
-            save_settings(settings)
-    return settings["llmConfigs"]
+        return []
+    return [c for c in configs if isinstance(c, dict) and c.get("provider")]
 
 
 def add_llm_config(provider: str, model: str, api_key: str = "", url: str = "") -> None:
     """Add a provider/model, or replace the settings of an existing one."""
-    entry = _llm_config_entry(provider, model, api_key, url)
-    if entry["provider"] not in LLM_PROVIDERS:
+    entry = {"provider": provider.strip().lower(), "model": model.strip(), "apiKey": api_key.strip()}
+    if url.strip():
+        entry["url"] = url.strip().rstrip("/")
+    p = LLM_PROVIDERS.get(entry["provider"])
+    if not p:
         raise ValueError(f"Unknown provider '{provider}' (supported: {', '.join(LLM_PROVIDERS)})")
     if not entry["model"]:
         raise ValueError("A model name is required")
-    if entry["provider"] == "apfel" and not entry["model"]:
-        entry["model"] = APFEL_MODEL
-    key_needed = entry["provider"] in ("gemini", "anthropic", "mistral") or (
-        entry["provider"] == "openai" and entry.get("url", DEFAULT_OPENAI_URL) == DEFAULT_OPENAI_URL
-    )
-    if key_needed and not entry["apiKey"]:
-        raise ValueError(f"An API key is required for {LLM_PROVIDER_NAMES[entry['provider']]}")
-    load_llm_configs()  # import older settings first, so they aren't skipped later
+    if p["key"] == "required" and not entry["apiKey"] and entry.get("url", p["url"]) == p["url"]:
+        raise ValueError(f"An API key is required for {p['name']}")
+    same = lambda c: (c.get("provider"), c.get("model")) == (entry["provider"], entry["model"])
     with _lock:
         settings = load_settings()
-        settings["llmConfigs"] = _upsert_llm_config(settings.get("llmConfigs") or [], entry)
+        configs = load_llm_configs(settings)
+        if any(same(c) for c in configs):
+            configs = [entry if same(c) else c for c in configs]
+        else:
+            configs.append(entry)
+        settings["llmConfigs"] = configs
         save_settings(settings)
 
 
 def remove_llm_config(provider: str, model: str) -> None:
     """Remove a provider/model, and the selection if it was the selected one."""
-    load_llm_configs()
     with _lock:
         settings = load_settings()
         settings["llmConfigs"] = [
-            c for c in settings.get("llmConfigs") or []
-            if (c["provider"], c["model"]) != (provider, model)
+            c for c in load_llm_configs(settings) if (c["provider"], c.get("model")) != (provider, model)
         ]
         if settings.get("proofreadProvider") == f"{provider}/{model}":
             settings.pop("proofreadProvider")
         save_settings(settings)
 
 
-# --- Generic provider plumbing (proofreading, translation, tag suggestion) ---
+def _llm_base_url(cfg: dict) -> str:
+    url = (cfg.get("url") or LLM_PROVIDERS[cfg["provider"]]["url"]).rstrip("/")
+    # Ollama URLs from before the OpenAI-compatible API have no /v1.
+    if cfg["provider"] == "ollama" and not url.endswith("/v1"):
+        url += "/v1"
+    return url
 
 
-def _ai_complete(
-    system: str, user: str, json_schema: dict | None, settings: dict
-) -> tuple[str, str | None]:
-    """Run one AI completion with the selected provider. Returns
-    (raw_response, warning); raw_response should be JSON matching json_schema
-    (see parse_json_list), or free-form text if json_schema is None.
-
-    The provider is settings["proofreadProvider"], "<provider>/<model>" from
-    the LLM configurations. When Ollama is selected but not running, falls
-    back to a configured Mistral model and says so in the warning."""
-    configs = load_llm_configs()
+def _ai_complete(system: str, user: str, json_schema: dict | None) -> str:
+    """Run one completion with the selected provider. The answer should be
+    JSON matching json_schema (see parse_json_list), or free-form text if
+    json_schema is None."""
+    settings = load_settings()
+    configs = load_llm_configs(settings)
     if not configs:
         raise RuntimeError(
             "No AI provider is set up. Add one under Settings → Proofreading & translation."
         )
-    # load_llm_configs may have just migrated the selection, so read it again.
-    selected = load_settings().get("proofreadProvider") or settings.get("proofreadProvider")
-    cfg = next((c for c in configs if f"{c['provider']}/{c['model']}" == selected), None)
+    selected = settings.get("proofreadProvider")
+    cfg = next((c for c in configs if f"{c['provider']}/{c.get('model')}" == selected), None)
     if cfg is None:
         if selected:
             raise RuntimeError(
@@ -1322,46 +1294,15 @@ def _ai_complete(
                 "Choose another one under Settings → Proofreading & translation."
             )
         cfg = configs[0]
-    provider, model, api_key = cfg["provider"], cfg["model"], cfg.get("apiKey", "")
-    if provider == "gemini":
-        return _gemini_complete(system, user, json_schema, api_key, model), None
-    if provider == "anthropic":
-        return _anthropic_complete(system, user, settings, api_key, model), None
-    if provider == "mistral":
-        return _mistral_complete(system, user, json_schema, api_key, model), None
-    if provider == "openai":
-        url = cfg.get("url") or DEFAULT_OPENAI_URL
-        name = "OpenAI" if url == DEFAULT_OPENAI_URL else f"The server at {url}"
-        return _openai_complete(system, user, json_schema, api_key, model, url, name), None
-    if provider == "apfel":
-        if not cfg.get("url"):
-            apfel = _find_tool("apfel")
-            if apfel:
-                return _apfel_cli_complete(apfel, system, user, json_schema), None
-        url = cfg.get("url") or DEFAULT_APFEL_URL
-        return _openai_complete(system, user, json_schema, api_key, model, url, "apfel"), None
-    if provider == "ollama":
-        return _ollama_or_mistral(system, user, json_schema, cfg, configs)
-    raise RuntimeError(
-        f"Unknown AI provider '{provider}' (supported: {', '.join(LLM_PROVIDERS)})."
-    )
-
-
-def _ollama_or_mistral(
-    system: str, user: str, json_schema: dict | None, cfg: dict, configs: list[dict]
-) -> tuple[str, str | None]:
-    """Ollama, or the first configured Mistral model when Ollama isn't running."""
-    try:
-        return _ollama_complete(system, user, json_schema, cfg["model"], cfg.get("url")), None
-    except OllamaUnavailable as e:
-        mistral = next((c for c in configs if c["provider"] == "mistral"), None)
-        if not mistral:
-            raise
-        try:
-            result = _mistral_complete(system, user, json_schema, mistral["apiKey"], mistral["model"])
-        except Exception as me:
-            raise RuntimeError(f"{e} The Mistral fallback failed too: {me}")
-        return result, f"Ollama is not running — used Mistral ({mistral['model']}) instead."
+    if cfg["provider"] not in LLM_PROVIDERS:
+        raise RuntimeError(
+            f"Unknown AI provider '{cfg['provider']}' (supported: {', '.join(LLM_PROVIDERS)})."
+        )
+    if cfg["provider"] == "apfel" and not cfg.get("url"):
+        apfel = _find_tool("apfel")
+        if apfel:
+            return _apfel_cli_complete(apfel, system, user, json_schema)
+    return _openai_complete(cfg, system, user, json_schema)
 
 
 def _api_error(name: str, e: urllib.error.HTTPError) -> RuntimeError:
@@ -1371,6 +1312,8 @@ def _api_error(name: str, e: urllib.error.HTTPError) -> RuntimeError:
     message = body
     try:
         data = json.loads(body)
+        if isinstance(data, list) and data:  # Gemini wraps its error in a list
+            data = data[0]
         err = data.get("error", data)
         if isinstance(err, dict):
             message = err.get("message") or err.get("detail") or body
@@ -1392,177 +1335,16 @@ def _api_error(name: str, e: urllib.error.HTTPError) -> RuntimeError:
     return RuntimeError(f"{name} error {e.code}: {message}" + (f" {hint}" if hint else ""))
 
 
-def _gemini_complete(system: str, user: str, json_schema: dict | None, api_key: str, model: str) -> str:
-    """One completion via the Gemini REST API. json_schema=None asks for
-    free-form text instead of forcing a JSON response shape."""
-    if not api_key:
-        raise RuntimeError("This Gemini configuration has no API key. Add it again with its key in Settings.")
-    if not model:
-        model = "gemini-2.5-flash"
-
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    body = {
-        "contents": [{"role": "user", "parts": [{"text": user}]}],
-        "systemInstruction": {"parts": [{"text": system}]},
-    }
-    if json_schema is not None:
-        body["generationConfig"] = {
-            "responseMimeType": "application/json",
-            "responseSchema": json_schema,
-        }
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        method="POST",
-        # The key goes in a header, not the URL, so it can't end up in errors.
-        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        raise _api_error("Gemini", e)
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"Could not reach Gemini: {e.reason}")
-
-    candidates = data.get("candidates") or []
-    if not candidates:
-        reason = (data.get("promptFeedback") or {}).get("blockReason")
-        raise RuntimeError(
-            f"Gemini refused the request ({reason})." if reason else "Gemini returned no answer."
-        )
-    candidate = candidates[0]
-    # Join the answer's text parts, skipping any "thought" parts.
-    parts = (candidate.get("content") or {}).get("parts") or []
-    out = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
-    finish = candidate.get("finishReason")
-    if finish == "MAX_TOKENS":
-        raise RuntimeError(
-            "Gemini's answer was cut off because it got too long. "
-            "Select a smaller part of the text and try again."
-        )
-    if not out:
-        raise RuntimeError(
-            f"Gemini returned an empty answer ({finish})." if finish else "Gemini returned an empty answer."
-        )
-    return out
-
-
-def _anthropic_complete(system: str, user: str, settings: dict, api_key: str, model: str) -> str:
-    """One structured completion via Anthropic REST API."""
-    if not api_key:
-        raise RuntimeError("This Anthropic configuration has no API key. Add it again with its key in Settings.")
-    if not model:
-        model = "claude-3-5-sonnet-latest"
-
-    url = "https://api.anthropic.com/v1/messages"
-    payload_data = {
-        "model": model,
-        "max_tokens": 4000,
-        "system": system,
-        "messages": [
-            {"role": "user", "content": user}
-        ]
-    }
-    payload = json.dumps(payload_data).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01"
-        }
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")
-        raise RuntimeError(f"Anthropic API error {e.code}: {detail[:500]}")
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"Could not reach Anthropic: {e.reason}")
-
-    content = data.get("content") or []
-    if not content:
-        raise RuntimeError(f"Anthropic returned no content: {json.dumps(data)[:400]}")
-
-    out = (content[0].get("text") or "").strip()
-    if not out:
-        raise RuntimeError("Anthropic returned an empty response.")
-    return out
-
-
-def _mistral_complete(
-    system: str, user: str, schema: dict | None, api_key: str, model: str
-) -> str:
-    """One completion via the Mistral REST API. schema=None asks for free-form
-    text. Otherwise JSON mode is used: it doesn't take a schema and only
-    allows an object at the top level, so the array the prompts ask for may
-    come back wrapped in one (parse_json_list unwraps it)."""
-    if not api_key:
-        raise RuntimeError(
-            "This Mistral configuration has no API key. Add it again with its key in Settings."
-        )
-    model = model or DEFAULT_MISTRAL_MODEL
-    body = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "temperature": 0.3,  # proofreading and translation want faithful, not creative
-    }
-    if schema is not None:
-        body["response_format"] = {"type": "json_object"}
-    req = urllib.request.Request(
-        "https://api.mistral.ai/v1/chat/completions",
-        data=json.dumps(body).encode("utf-8"),
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        raise _api_error("Mistral", e)
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"Could not reach Mistral: {e.reason}")
-
-    choices = data.get("choices") or []
-    if not choices:
-        raise RuntimeError("Mistral returned no answer.")
-    if choices[0].get("finish_reason") == "length":
-        raise RuntimeError(
-            "Mistral's answer was cut off because it got too long. "
-            "Select a smaller part of the text and try again."
-        )
-    out = (choices[0].get("message", {}).get("content") or "").strip()
-    if not out:
-        raise RuntimeError("Mistral returned an empty answer.")
-    return out
-
-
-def _openai_complete(
-    system: str,
-    user: str,
-    json_schema: dict | None,
-    api_key: str,
-    model: str,
-    url: str,
-    name: str,
-) -> str:
-    """One completion via the OpenAI chat completions API, at `url`: OpenAI
-    itself or a compatible server such as apfel. json_schema=None asks for
-    free-form text. The schema is wrapped in an object, as structured output
-    requires one at the top level (parse_json_list unwraps it); a server
-    that rejects structured output is asked again with JSON mode, then
-    without either."""
-    base = url.rstrip("/")
+def _openai_complete(cfg: dict, system: str, user: str, json_schema: dict | None) -> str:
+    """One completion via the OpenAI chat completions API of the provider in
+    `cfg`. json_schema=None asks for free-form text. The schema is wrapped in
+    an object, as structured output requires one at the top level
+    (parse_json_list unwraps it); a server that rejects structured output is
+    asked again with JSON mode, then without either."""
+    provider, model = cfg["provider"], cfg["model"]
+    base = _llm_base_url(cfg)
+    p = LLM_PROVIDERS[provider]
+    name = p["name"] if base == p["url"] or provider != "openai" else f"The server at {base}"
     body = {
         "model": model,
         "messages": [
@@ -1579,8 +1361,8 @@ def _openai_complete(
             None,
         ]
     headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    if cfg.get("apiKey"):
+        headers["Authorization"] = f"Bearer {cfg['apiKey']}"
     for i, fmt in enumerate(formats):
         if fmt:
             body["response_format"] = fmt
@@ -1606,13 +1388,18 @@ def _openai_complete(
             if e.code in (400, 422) and i < len(formats) - 1 and "response_format" in body:
                 continue  # try a simpler response format
             if e.code == 404:
-                raise RuntimeError(
-                    f"{err} Check the URL ({base}) and the model name ('{model}')."
-                )
+                if provider == "ollama" and "not found" in str(err):
+                    raise RuntimeError(
+                        f"Ollama doesn't have the model '{model}'. "
+                        f"Download it with `ollama pull {model}`, or add another model in Settings."
+                    )
+                raise RuntimeError(f"{err} Check the URL ({base}) and the model name ('{model}').")
             raise err
         except urllib.error.URLError as e:
-            hint = " — is `apfel --serve` running?" if name == "apfel" else ""
-            raise RuntimeError(f"Could not reach {name} at {base}{hint} ({e.reason})")
+            hint = _UNREACHABLE_HINTS.get(provider)
+            raise RuntimeError(
+                f"Could not reach {name} at {base}{f' — {hint}' if hint else ''} ({e.reason})"
+            )
 
     choices = data.get("choices") or []
     if not choices:
@@ -1678,117 +1465,29 @@ def _apfel_cli_complete(apfel: str, system: str, user: str, json_schema: dict | 
     return out
 
 
-def _ollama_complete(
-    system: str, user: str, json_schema: dict | None, model: str, url: str | None = None
-) -> str:
-    """One completion via a local Ollama /api/chat call (at `url`, default
-    DEFAULT_OLLAMA_URL). json_schema=None asks for free-form text instead of
-    forcing a JSON response shape."""
-    if not model:
-        raise RuntimeError("This Ollama configuration has no model.")
-    base = (url or DEFAULT_OLLAMA_URL).rstrip("/")
-    body = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "stream": False,
-    }
-    if json_schema is not None:
-        body["format"] = json_schema
-    req = urllib.request.Request(
-        f"{base}/api/chat",
-        data=json.dumps(body).encode("utf-8"),
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        err = _api_error("Ollama", e)
-        if e.code == 404:
-            # Ollama answers 404 for a model it doesn't have; anything else
-            # answering 404 here isn't an Ollama server.
-            if "not found" in str(err) and model in str(err):
-                raise RuntimeError(
-                    f"Ollama doesn't have the model '{model}'. "
-                    f"Download it with `ollama pull {model}`, or add another model in Settings."
-                )
-            raise RuntimeError(
-                f"The server at {base} is not Ollama (it has no /api/chat). "
-                "Add the Ollama model again with the right URL in Settings; Ollama's default is http://localhost:11434."
-            )
-        raise err
-    except urllib.error.URLError as e:
-        raise OllamaUnavailable(
-            f"Could not reach Ollama at {base} — is 'ollama serve' running? ({e.reason})"
-        )
-
-    out = ((data.get("message") or {}).get("content") or "").strip()
-    if data.get("done_reason") == "length":
-        raise RuntimeError(
-            "Ollama's answer was cut off because it got too long. "
-            "Select a smaller part of the text and try again."
-        )
-    if not out:
-        raise RuntimeError("Ollama returned an empty answer.")
-    return out
+# --- The AI actions --------------------------------------------------------
 
 
-def proofread_text(text: str) -> tuple[str, str | None]:
-    """Proofread `text` with the configured provider. Returns (raw, warning);
-    raw is the JSON-array string the /api/proofread handler parses."""
-    return _ai_complete(PROOFREAD_SYSTEM, text, PROOFREAD_JSON_SCHEMA, load_settings())
+def proofread_text(text: str) -> str:
+    """Proofread `text` with the selected provider: a JSON array of findings."""
+    return _ai_complete(_prompt("PROOFREAD_SYSTEM.md"), text, PROOFREAD_JSON_SCHEMA)
 
 
-# The translation system prompt lives in src/TRANSLATE_SYSTEM.md so it can be
-# edited without touching code. It carries a {{TARGET_LANGUAGE}} placeholder the
-# server fills in per request. Translations use the same item shape as proofread
-# suggestions (original / suggestion / comment, without `type`) so the client
-# renders them the same way.
-_TRANSLATE_FALLBACK = (
-    "You are a scholarly translator. Translate the supplied Markdown text into "
-    "{{TARGET_LANGUAGE}} using a formal, academic register, leaving Markdown "
-    "syntax, wikilinks, footnote markers, citation keys and frontmatter "
-    "unchanged. Break the text into natural units and return a JSON array of "
-    "objects with string fields 'original' (the source passage, verbatim), "
-    "'suggestion' (its academic {{TARGET_LANGUAGE}} translation) and 'comment' "
-    "(an alternative phrasing or note, or an empty string). Return an empty "
-    "array if the text is already in {{TARGET_LANGUAGE}}."
-)
-
-TRANSLATE_SYSTEM = _read_prompt_file("TRANSLATE_SYSTEM.md") or _TRANSLATE_FALLBACK
-
-
-def translate_text(text: str, target_lang: str) -> tuple[str, str | None]:
-    """Translate `text` into `target_lang` with the configured provider. Returns
-    (raw, warning); raw is the JSON-array string the /api/translate handler
-    parses (same shape as proofreading)."""
+def translate_text(text: str, target_lang: str) -> str:
+    """Translate `text` into `target_lang` (the prompt's {{TARGET_LANGUAGE}})
+    with the selected provider: a JSON array of translated passages."""
     target = (target_lang or "").strip() or "English"
-    system = TRANSLATE_SYSTEM.replace("{{TARGET_LANGUAGE}}", target)
-    return _ai_complete(system, text, TRANSLATE_JSON_SCHEMA, load_settings())
+    system = _prompt("TRANSLATE_SYSTEM.md").replace("{{TARGET_LANGUAGE}}", target)
+    return _ai_complete(system, text, TRANSLATE_JSON_SCHEMA)
 
 
-SUGGEST_TAGS_SYSTEM = (
-    "You are a librarian tagging an article for a personal notes vault. You are "
-    "given the document text and a list of tags already used elsewhere in the "
-    "vault. Choose the tags from that list that best describe this document. "
-    "Only return tags that appear verbatim in the provided list — never invent "
-    "new tags. Return a JSON array of tag strings (without a leading '#'), most "
-    "relevant first, at most 3. If none of the existing tags fit, return an "
-    "empty array."
-)
-TAGS_JSON_SCHEMA = {"type": "array", "items": {"type": "string"}}
-
-
-def suggest_tags_text(text: str, existing_tags: list) -> tuple[str, str | None]:
-    """Ask the configured provider which existing tags fit `text`. Returns
-    (raw, warning); raw is a JSON array of tag strings."""
-    tag_list = ", ".join(existing_tags) if existing_tags else "(none)"
-    user = f"Existing tags:\n{tag_list}\n\n---\n\nDocument:\n{text}"
-    return _ai_complete(SUGGEST_TAGS_SYSTEM, user, TAGS_JSON_SCHEMA, load_settings())
+def _suggestions_response(raw: str) -> dict:
+    """The /api/proofread and /api/translate answer for a model's raw answer."""
+    suggestions = parse_json_list(raw)
+    if suggestions is None:
+        start = " ".join(raw.split())[:200]
+        raise RuntimeError(f"The AI's answer wasn't in the expected format: {start}")
+    return {"suggestions": suggestions}
 
 
 def parse_json_list(raw: str) -> list | None:
@@ -2055,10 +1754,12 @@ class Handler(SimpleHTTPRequestHandler):
 
         if path == "/api/llm-configs":
             try:
-                configs = load_llm_configs()  # may migrate the selection too
-                self.send_json(
-                    {"configs": configs, "selected": load_settings().get("proofreadProvider")}
-                )
+                settings = load_settings()
+                self.send_json({
+                    "configs": load_llm_configs(settings),
+                    "selected": settings.get("proofreadProvider"),
+                    "providers": LLM_PROVIDERS,
+                })
             except Exception as e:
                 self.send_error_json(str(e))
                 return
@@ -2223,8 +1924,6 @@ class Handler(SimpleHTTPRequestHandler):
         elif path == "/api/settings":
             try:
                 data = self.read_body()
-                for key in LEGACY_PROVIDER_KEYS:  # sent by an older, cached page
-                    data.pop(key, None)
                 with _lock:
                     existing = load_settings()
                     existing.update(data)
@@ -2487,15 +2186,7 @@ class Handler(SimpleHTTPRequestHandler):
                 text = (data.get("text") or "").strip()
                 if not text:
                     raise ValueError("Nothing to proofread")
-                raw, warning = proofread_text(text)
-                # The model is asked for a JSON array of suggestions. Parse it so
-                # the client gets structured data; fall back to the raw string if
-                # there is none (so something is still shown).
-                suggestions = parse_json_list(raw)
-                resp = {"suggestions": suggestions} if suggestions is not None else {"result": raw}
-                if warning:
-                    resp["warning"] = warning
-                self.send_json(resp)
+                self.send_json(_suggestions_response(proofread_text(text)))
             except Exception as e:
                 self.send_error_json(str(e))
 
@@ -2512,42 +2203,17 @@ class Handler(SimpleHTTPRequestHandler):
                     or load_settings().get("documentLanguage")
                     or "English"
                 ).strip()
-                raw, warning = translate_text(text, target_lang)
-                # Same JSON-array contract as proofreading: parse it into
-                # structured suggestions, falling back to the raw string.
-                suggestions = parse_json_list(raw)
-                resp = {"suggestions": suggestions} if suggestions is not None else {"result": raw}
-                if warning:
-                    resp["warning"] = warning
-                self.send_json(resp)
+                self.send_json(_suggestions_response(translate_text(text, target_lang)))
             except Exception as e:
                 self.send_error_json(str(e))
 
         elif path == "/api/suggest-tags":
             try:
                 data = self.read_body()
-                text = (data.get("text") or "").strip()
-                if not text:
-                    raise ValueError("Nothing to analyse")
-                existing = data.get("existing_tags") or []
-                raw, warning = suggest_tags_text(text, existing)
-                parsed = parse_json_list(raw) or []
-                # Constrain to the existing tags (case-insensitive) so a model
-                # can't introduce new ones, and return their canonical spelling.
-                canon = {
-                    str(t).lstrip("#").lower(): str(t).lstrip("#") for t in existing
-                }
-                seen = set()
-                tags = []
-                for t in parsed:
-                    key = str(t).lstrip("#").lower()
-                    if key in canon and key not in seen:
-                        seen.add(key)
-                        tags.append(canon[key])
-                resp = {"tags": tags}
-                if warning:
-                    resp["warning"] = warning
-                self.send_json(resp)
+                vault = str(safe_path(data.get("vault_path") or ""))
+                targets, note_tags = tag_suggestion_request(vault, data)
+                model = load_settings().get("llmSearchModel")
+                self.send_json({"id": llm_search.start_tags(vault, targets, note_tags, model)})
             except Exception as e:
                 self.send_error_json(str(e))
 

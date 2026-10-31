@@ -45,7 +45,7 @@ Nothing else has to be installed in the editor, and all searching happens locall
 
 ## apfel: Apple's on-device model (optional)
 
-Proofread, Translate and Suggest tags can use the language model built into macOS, through [apfel](https://github.com/Arthur-Ficial/apfel). Your text never leaves your Mac, and no account or API key is needed. It requires:
+Proofread and Translate can use the language model built into macOS, through [apfel](https://github.com/Arthur-Ficial/apfel). Your text never leaves your Mac, and no account or API key is needed. It requires:
 
 - macOS 26 (Tahoe) or newer on a Mac with Apple silicon (M1 or later), and
 - Apple Intelligence turned on (System Settings → Apple Intelligence & Siri).
@@ -74,7 +74,7 @@ The server listens on `http://127.0.0.1:11434/v1`, the port Ollama also uses; bo
 
 ## LLM search (optional)
 
-The **LLM Search** option in the Search panel answers questions about your notes with a language model that runs locally (see [Help.md](src/help.md#llm-search) for how to use it). It is implemented by [`server/mdsearch.py`](server/mdsearch.py) and needs:
+The **LLM Search** option in the Search panel answers questions about your notes with a language model that runs locally (see [Help.md](src/help.md#llm-search) for how to use it). **Suggest tags** uses the same model and embeddings to pick tags from similar notes ([Help.md](src/help.md#suggest-tags)). It is implemented by [`server/mdsearch.py`](server/mdsearch.py) and needs:
 
 - a Mac with **Apple silicon** (it uses Apple's MLX), and
 - **Python 3.9 or newer** (`python3`), also when you use the app, because the app's built-in Python can't install packages. From source the editor uses the Python that runs the server; the app looks for `python3` in the usual places (`/opt/homebrew/bin`, `/usr/local/bin`, python.org's framework). Get it from https://www.python.org or with `brew install python`.

@@ -190,12 +190,12 @@ This needs Zotero to be running with the **ZotSeek** plugin (with its MCP server
 
 ## AI assistance
 
-Three buttons in the toolbar use an AI model to help with the document you have open. The AI provider is chosen under **Settings → Proofreading & translation**: **Gemini**, **Anthropic**, **Mistral** or **OpenAI** (remote; each needs an API key), or **Ollama** or **apfel** (local, so your text never leaves your machine). If Ollama is selected but not running, the app falls back to a Mistral model you've set up, and tells you so.
+Proofread and Translate use an AI model to help with the document you have open. The AI provider is chosen under **Settings → Proofreading & translation**: **Gemini**, **Anthropic**, **Mistral** or **OpenAI** (remote; each needs an API key), or **Ollama** or **apfel** (local, so your text never leaves your machine). All of them are reached through their OpenAI-compatible API; for Anthropic and Gemini that means the same API keys as before work.
 
-Add a provider with **➕ Add new LLM configuration…** at the bottom of the Provider list: choose the provider, enter the model name and its API key. Adding the same provider and model again replaces its settings; **Remove** deletes the selected one. They are saved with your other settings in `~/.humd-editor/settings.json`, under `llmConfigs`. (Older versions kept these in `~/.llmconfig`, and Mistral and Ollama in separate settings; these are imported once, after which `~/.llmconfig` can be deleted.)
+Add a provider with **➕ Add new LLM configuration…** at the bottom of the Provider list: choose the provider, enter the model name and its API key. Adding the same provider and model again replaces its settings; **Remove** deletes the selected one. They are saved with your other settings in `~/.humd-editor/settings.json`, under `llmConfigs`.
 
 - **OpenAI**: leave the URL empty for OpenAI itself (an API key is required). Any other server with the same API (LM Studio, llama.cpp, vLLM, oMLX, …) works too: enter its URL, e.g. `http://localhost:1234/v1`; the key is then only needed if that server asks for one.
-- **Ollama**: needs `ollama serve` running and the model pulled (`ollama pull <model>`). The URL defaults to `http://localhost:11434`.
+- **Ollama**: needs `ollama serve` running and the model pulled (`ollama pull <model>`). The URL defaults to `http://localhost:11434/v1` (a URL without `/v1` gets it added).
 - **apfel** uses the language model built into macOS (Apple Intelligence), through the free [apfel](https://github.com/Arthur-Ficial/apfel) tool; install it with `brew install apfel` (see the README). It needs macOS 26 or newer on Apple silicon with Apple Intelligence turned on. Leave the URL empty: the app then runs `apfel` itself for each request, so nothing has to be started. Enter a URL only to use an apfel server (`apfel --serve`), e.g. on another Mac. The model is small: fine for translating or proofreading a paragraph or two, but each request (instructions, your text and the answer) must fit in about 4,000 tokens, so select a part of a longer document; if the text is too long, the app says so.
 
 ### Proofread
@@ -216,7 +216,13 @@ Click the **Translate** button (or press `⌘⇧L`) to translate the whole docum
 
 ### Suggest tags
 
-Click the **Suggest tags** button (or press `⌘⇧G`) to have the model pick, from the tags already used elsewhere in your vault, the ones that best fit the current document. The chosen tags are added (as `#tags`) on a new line at the bottom of the document. Tags that are already present are skipped, and no new tags are invented.
+Click the **Suggest tags** button (or press `⌘⇧G`) to get tags for the current document, chosen from the tags already used in your vault. This uses the local model of [LLM search](#llm-search) (same requirements), not the AI provider above, so nothing leaves your Mac: the notes most similar in meaning that already have tags are found, and the model picks the tags that fit, with those notes and their tags as examples. No new tags are invented, and tags the document already has are skipped.
+
+The suggestions appear in the side panel, with the similar notes behind each tag. Click a tag to leave it out, then **Add** to put the tags (as `#tags`) on a new line at the bottom of the document; `⌘Z` undoes it.
+
+**Untagged notes:** in the **Tags** panel, open **#notag** and click **Suggest tags for these notes…** to get suggestions for all of them at once. They appear one note at a time (a few seconds each); click a note's name to open it, and **Add** to write its tags into the note. A note that is open in a tab is left alone: add its tags there, or close the tab first.
+
+The first suggestion takes up to a minute or so, while the model loads; after that it stays loaded for 5 minutes. Tag suggestions and LLM search share the model, so they run one at a time.
 
 ## Version control
 

@@ -7,6 +7,8 @@ Usage:  python mdsearch.py /path/to/notes [llm]
         Worker mode for the humd editor's "LLM search": reads JSON requests
         ({"vault", "query", "model"?}) from stdin, one per line, and writes
         JSON events (status / sources / token / done / error) to stdout.
+        A request with "tags" instead of "query" suggests tags for notes
+        (see suggest_tags); it sends a "tagged" event per note.
 Needs:  Apple silicon Mac, Python 3.9+, and  pip install mlx-lm
 Optional: pip install fastembed
         Adds semantic search (multilingual MiniLM) alongside keyword search.
@@ -205,27 +207,33 @@ def md_files(root):
     )
 
 
+def passages(lines, size=CHUNK_CHARS):
+    """Yield (first line number, text) passages of about `size` characters."""
+    buf, start, length = [], 1, 0
+    for n, line in enumerate(lines, 1):
+        if not buf:
+            start = n
+        buf.append(line)
+        length += len(line)
+        if length >= size or (not line.strip() and length >= size // 2):
+            text = "\n".join(buf).strip()
+            if text:
+                yield start, text
+            buf, length = [], 0
+    text = "\n".join(buf).strip()
+    if text:
+        yield start, text
+
+
 def chunks(root, size=CHUNK_CHARS):
     """Yield (relative path, first line number, text) passages from every .md file."""
     for p in md_files(root):
         rel = str(p.relative_to(root))
-        buf, start, length = [], 1, 0
         try:
             lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             continue
-        for n, line in enumerate(lines, 1):
-            if not buf:
-                start = n
-            buf.append(line)
-            length += len(line)
-            if length >= size or (not line.strip() and length >= size // 2):
-                text = "\n".join(buf).strip()
-                if text:
-                    yield rel, start, text
-                buf, length = [], 0
-        text = "\n".join(buf).strip()
-        if text:
+        for start, text in passages(lines, size):
             yield rel, start, text
 
 
@@ -340,13 +348,111 @@ def build_prompt(tokenizer, q, hits):
         messages, tokenize=False, add_generation_prompt=True)
 
 
-def generate(model, tokenizer, prompt, sampler):
+def generate(model, tokenizer, prompt, sampler, max_tokens=MAX_TOKENS):
     """Yield the answer piece by piece."""
     from mlx_lm import stream_generate
     for r in stream_generate(model, tokenizer, prompt,
-                             max_tokens=MAX_TOKENS, sampler=sampler):
+                             max_tokens=max_tokens, sampler=sampler):
         # newer mlx-lm yields response objects, older versions yield strings
         yield getattr(r, "text", r)
+
+
+# --- tag suggestion ----------------------------------------------------------
+#
+# Tags for a note, from the vault's existing tags: the notes most similar in
+# meaning that already have tags are found with the embeddings, and the local
+# model picks the tags, with those notes and their tags as examples. Tested on
+# the vault's own tagged notes, the examples clearly help the model (and the
+# model clearly beats just counting the neighbours' tags).
+
+TAG_NEIGHBOURS = 6     # similar tagged notes shown to the model
+TAG_TEXT_CHARS = 2000  # start of the note given to the model
+MAX_TAGS = 3
+TAG_SYSTEM = (
+    "You tag notes in a researcher's vault. Choose 1 to 3 tags for the note "
+    "from the allowed list only; never invent tags. Answer with the tags, "
+    "comma-separated, nothing else."
+)
+INLINE_TAG = re.compile(r"(^|[^\w&#])#[\w/-]+")
+
+
+def similar_notes(index, text, exclude, candidates, k=TAG_NEIGHBOURS):
+    """The k notes in `candidates` (relative paths) most similar to `text`,
+    as [(file, score)], best first. A note's score is how well its best
+    passage matches each passage of `text`, averaged. Empty without
+    embeddings (fastembed not installed)."""
+    if index.vecs is None or not index.docs:
+        return []
+    query = [t for _, t in passages(text.splitlines())]
+    if not query:
+        return []
+    sims = index.embed(query) @ index.vecs.T  # query passages x vault passages
+    # Passages of a file are consecutive in index.docs.
+    files, starts = [], []
+    for i, (f, _, _) in enumerate(index.docs):
+        if not files or files[-1] != f:
+            files.append(f)
+            starts.append(i)
+    scores = np.maximum.reduceat(sims, starts, axis=1).mean(axis=0)
+    ranked = sorted(
+        ((float(s), f) for f, s in zip(files, scores) if f in candidates and f != exclude),
+        reverse=True,
+    )
+    return [(f, s) for s, f in ranked[:k]]
+
+
+def tag_prompt(tokenizer, text, neighbours, note_tags, allowed, existing):
+    examples = "\n".join(
+        f"- {Path(f).stem}: {', '.join(note_tags[f])}" for f, _ in neighbours
+    ) or "(none)"
+    user = f"Allowed tags: {', '.join(allowed)}\n\nSimilar notes and their tags:\n{examples}\n\n"
+    if existing:
+        user += f"The note already has these tags; don't repeat them: {', '.join(existing)}\n\n"
+    user += f"Note:\n{text[:TAG_TEXT_CHARS]}"
+    messages = [{"role": "system", "content": TAG_SYSTEM}, {"role": "user", "content": user}]
+    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+
+def parse_tags(answer, allowed, existing):
+    """The allowed tags in the model's answer (canonical spelling, at most
+    MAX_TAGS), leaving out the ones the note already has."""
+    canon = {t.lower(): t for t in allowed}
+    skip = {t.lower() for t in existing}
+    out = []
+    for part in re.split(r"[,\n]", answer):
+        key = part.strip().strip("*-.` ").lstrip("#").strip().lower()
+        if key in canon and key not in skip and canon[key] not in out:
+            out.append(canon[key])
+    return out[:MAX_TAGS]
+
+
+def suggest_tags(index, req, llm, sampler, emit, report):
+    """req["tags"]: {"targets": [{"file", "text", "existing"?}], "noteTags":
+    {file: [tag]}} (files relative to the vault). Emits a "tagged" event per
+    target: its tags, and for each the similar notes that have it."""
+    spec = req["tags"]
+    note_tags = spec["noteTags"]
+    allowed = sorted({t for tags in note_tags.values() for t in tags}, key=str.lower)
+    targets = spec["targets"]
+    for n, target in enumerate(targets, 1):
+        report(f"Choosing tags: note {n} of {len(targets)} …" if len(targets) > 1 else "Choosing tags …")
+        text = INLINE_TAG.sub(r"\1", target["text"]).strip()
+        existing = target.get("existing") or []
+        neighbours = similar_notes(index, text, target.get("file"), note_tags)
+        tags = []
+        if text:
+            prompt = tag_prompt(llm["tokenizer"], text, neighbours, note_tags, allowed, existing)
+            answer = "".join(generate(llm["model"], llm["tokenizer"], prompt, sampler, max_tokens=40))
+            tags = parse_tags(answer, allowed, existing)
+        emit(
+            "tagged",
+            file=target.get("file"),
+            tags=tags,
+            evidence={
+                t: [f for f, _ in neighbours if t.lower() in {x.lower() for x in note_tags[f]}]
+                for t in tags
+            },
+        )
 
 
 # --- worker mode (used by the humd editor server) ----------------------------
@@ -378,6 +484,7 @@ def serve():
     from mlx_lm import load
     from mlx_lm.sample_utils import make_sampler
     sampler = make_sampler(temp=0.2)
+    tag_sampler = make_sampler(temp=0.0)
     embed = None
     semantic = load_semantic()
     llm = {"name": None, "model": None, "tokenizer": None}
@@ -402,16 +509,26 @@ def serve():
                         embed = make_embedder()
                     idx.add_embeddings(embed, report)
                 index.update(root=root, sig=sig, index=idx)
+
+            def load_llm():
+                if llm["name"] != name:
+                    report(f"Loading {name} (the first run downloads several GB) …")
+                    llm["model"], llm["tokenizer"] = load(name)
+                    llm["name"] = name
+
+            if "tags" in req:
+                load_llm()
+                suggest_tags(index["index"], req, llm, tag_sampler, emit, report)
+                emit("done")
+                continue
+
             hits = index["index"].search(q)
             emit("sources", sources=[{"file": f, "line": n, "text": t} for f, n, t in hits])
             if not hits:
                 emit("done", answer="No matching passages found in your notes.")
                 continue
 
-            if llm["name"] != name:
-                report(f"Loading {name} (the first run downloads several GB) …")
-                llm["model"], llm["tokenizer"] = load(name)
-                llm["name"] = name
+            load_llm()
             report("Answering …")
             prompt = build_prompt(llm["tokenizer"], q, hits)
             for piece in generate(llm["model"], llm["tokenizer"], prompt, sampler):

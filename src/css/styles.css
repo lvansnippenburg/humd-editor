@@ -1617,6 +1617,18 @@ dialog h2 {
     border-bottom: none;
 }
 
+#proofread-list li.proofread-empty {
+    color: var(--text-secondary);
+    padding: 16px;
+}
+
+.proofread-error {
+    color: var(--text-secondary);
+    margin: 0;
+    padding: 12px 16px;
+    font-size: 12px;
+}
+
 .proofread-comment {
     margin-bottom: 4px;
 }
@@ -2066,3 +2078,54 @@ sup {
     text-decoration: underline;
 }
 
+
+/* ===== SUGGESTED TAGS (in the suggestion panel) ===== */
+.tag-suggestion-note {
+    display: block;
+    margin-bottom: 4px;
+    font-weight: 600;
+    color: var(--text-primary);
+    text-decoration: none;
+}
+
+.tag-suggestion-note:hover {
+    text-decoration: underline;
+}
+
+.tag-suggestion-chip {
+    margin: 0 4px 4px 0;
+    padding: 1px 8px;
+    font-size: 11px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: none;
+    color: var(--text-secondary);
+    text-decoration: line-through;
+    cursor: pointer;
+}
+
+.tag-suggestion-chip.selected {
+    background: var(--hover-bg);
+    color: var(--text-primary);
+    text-decoration: none;
+}
+
+.tag-suggestion-why {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-bottom: 2px;
+}
+
+.tag-files-action {
+    margin: 2px 0 4px 16px;
+}
+
+.tag-files-action button {
+    font-size: 11px;
+    padding: 2px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    cursor: pointer;
+}

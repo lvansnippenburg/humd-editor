@@ -47,6 +47,9 @@ let currentPandocRefDocPath = null;
 let currentUserNickname = "";
 let currentProofreadProvider = ""; // "<provider>/<model>" from currentLlmConfigs
 let currentLlmConfigs = [];
+// The AI providers the server supports: { id: { name, label?, url, key,
+// urlPlaceholder?, example } } (LLM_PROVIDERS in server.py).
+let llmProviders = {};
 let currentDocumentLanguage = "English"; // target language for translation (vault-wide setting)
 let currentGraphFolderColors = []; // array of {folder, color} for graph visualization
 let vaultIsGitRepo = false; // is the current vault a git working tree?
@@ -4325,7 +4328,7 @@ async function runLlmZoteroSearch(query) {
 async function resumeLlmSearch() {
   try {
     const job = await apiFetch("/api/llm-search-status");
-    if (searchMode !== "llm") return;
+    if (searchMode !== "llm" || job.kind === "tags") return;
     if (job.state === "running") pollLlmSearch();
     else if (job.state !== "idle" || llmZotero) renderLlmJob(job.state === "idle" ? null : job);
   } catch {
@@ -4343,7 +4346,7 @@ async function pollLlmSearch() {
       showStatus(`LLM search failed: ${apiErrorMessage(error)}`, true);
       return;
     }
-    if (gen !== llmPollGen) return;
+    if (gen !== llmPollGen || job.kind === "tags") return;
     if (searchMode === "llm") renderLlmJob(job);
     if (job.state !== "running") return;
     await new Promise((r) => setTimeout(r, 400));
@@ -4949,6 +4952,18 @@ function renderTagRow(entry) {
   files.className = "tag-files";
   files.style.display = "none";
 
+  if (entry.untagged) {
+    const actionLi = document.createElement("li");
+    actionLi.className = "tag-files-action";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Suggest tags for these notes…";
+    btn.title = "Suggest tags from similar notes, with LLM search's local model";
+    btn.addEventListener("click", () => runSuggestTagsForNotes(entry.files));
+    actionLi.appendChild(btn);
+    files.appendChild(actionLi);
+  }
+
   (entry.files || []).forEach((path) => {
     const name = path.split("/").pop();
     // Render exactly like a file in the file tree (icon + name).
@@ -5018,7 +5033,7 @@ function buildTagsPanel() {
   // Pin a synthetic "#notag" entry to the top for files with no tags.
   const rows = [];
   if (untagged.length > 0) {
-    rows.push({ name: "notag", count: untagged.length, files: untagged });
+    rows.push({ name: "notag", count: untagged.length, files: untagged, untagged: true });
   }
   rows.push(...entries);
 
@@ -5278,6 +5293,7 @@ async function openSettingsDialog() {
     const configsRes = await apiFetch("/api/llm-configs");
     currentLlmConfigs = configsRes.configs || [];
     currentProofreadProvider = configsRes.selected || "";
+    llmProviders = configsRes.providers || {};
   } catch (err) {
     console.error("Failed to load LLM configs:", err);
   }
@@ -5356,14 +5372,9 @@ function confirmDialog(message) {
   });
 }
 
-const LLM_PROVIDER_NAMES = {
-  gemini: "Gemini",
-  anthropic: "Anthropic",
-  mistral: "Mistral",
-  openai: "OpenAI",
-  ollama: "Ollama (local)",
-  apfel: "apfel (local)",
-};
+function llmProviderName(provider) {
+  return llmProviders[provider]?.name || provider;
+}
 
 // The Provider list: the configured providers (settings.json "llmConfigs"),
 // then an entry that opens the Add dialog.
@@ -5381,8 +5392,7 @@ function populateLlmProviderSelect() {
   for (const cfg of currentLlmConfigs) {
     const opt = document.createElement("option");
     opt.value = `${cfg.provider}/${cfg.model}`;
-    const name = LLM_PROVIDER_NAMES[cfg.provider] || cfg.provider;
-    opt.textContent = `${name}: ${cfg.model}${cfg.url ? ` (${cfg.url})` : ""}`;
+    opt.textContent = `${llmProviderName(cfg.provider)}: ${cfg.model}${cfg.url ? ` (${cfg.url})` : ""}`;
     select.appendChild(opt);
   }
   const optAdd = document.createElement("option");
@@ -5397,7 +5407,9 @@ function populateLlmProviderSelect() {
 }
 
 function openLlmConfigDialog() {
-  document.getElementById("llmconfig-provider").value = "gemini";
+  const select = document.getElementById("llmconfig-provider");
+  select.innerHTML = "";
+  for (const [id, p] of Object.entries(llmProviders)) select.add(new Option(p.label || p.name, id));
   document.getElementById("llmconfig-model").value = "";
   document.getElementById("llmconfig-key").value = "";
   document.getElementById("llmconfig-url").value = "";
@@ -5409,35 +5421,25 @@ function closeLlmConfigDialog() {
   document.getElementById("llmconfig-dialog").close();
 }
 
-// Per provider: its URL default (if it has a URL), whether it takes no or an
-// optional API key, and an example model.
-const LLM_PROVIDER_FIELDS = {
-  gemini: { model: "gemini-2.5-flash" },
-  anthropic: { model: "claude-opus-5-5" },
-  mistral: { model: "mistral-small-latest" },
-  openai: { model: "gpt-5-mini", url: "https://api.openai.com/v1" },
-  ollama: { model: "llama3.1", url: "http://localhost:11434", noKey: true },
-  // Empty URL: the server runs the `apfel` command; a URL means `apfel --serve`.
-  apfel: { model: "apple-foundationmodel", url: "empty: runs the apfel command", keyOptional: true },
-};
-
 function updateLlmConfigKeyVisibility() {
   const provider = document.getElementById("llmconfig-provider").value;
-  const f = LLM_PROVIDER_FIELDS[provider];
-  document.getElementById("llmconfig-key-group").style.display = f.noKey ? "none" : "";
+  const p = llmProviders[provider];
+  if (!p) return;
+  document.getElementById("llmconfig-key-group").style.display = p.key === "none" ? "none" : "";
   document.getElementById("llmconfig-key-label").textContent =
-    provider === "openai"
-      ? "API Key (optional for servers other than OpenAI)"
-      : f.keyOptional
-        ? "API Key (only if the server requires a token)"
+    p.key === "optional"
+      ? "API Key (only if the server requires a token)"
+      : p.urlPlaceholder
+        ? `API Key (optional for servers other than ${p.name})`
         : "API Key";
-  document.getElementById("llmconfig-url-group").style.display = f.url ? "" : "none";
-  document.getElementById("llmconfig-url").placeholder = f.url || "";
+  document.getElementById("llmconfig-url-group").style.display = p.urlPlaceholder ? "" : "none";
+  document.getElementById("llmconfig-url").placeholder = p.urlPlaceholder || "";
   const modelInput = document.getElementById("llmconfig-model");
-  modelInput.placeholder = `e.g. ${f.model}`;
+  modelInput.placeholder = `e.g. ${p.example}`;
   // apfel serves a single model.
-  if (provider === "apfel") modelInput.value = f.model;
-  else if (modelInput.value === LLM_PROVIDER_FIELDS.apfel.model) modelInput.value = "";
+  const apfelModel = llmProviders.apfel?.example;
+  if (provider === "apfel") modelInput.value = apfelModel;
+  else if (modelInput.value === apfelModel) modelInput.value = "";
 }
 
 async function saveLlmConfig() {
@@ -5450,15 +5452,15 @@ async function saveLlmConfig() {
     await apiPost("/api/add-llm-config", {
       provider,
       model,
-      apiKey: LLM_PROVIDER_FIELDS[provider].noKey ? "" : apiKey,
-      url: LLM_PROVIDER_FIELDS[provider].url ? url : "",
+      apiKey: llmProviders[provider].key === "none" ? "" : apiKey,
+      url: llmProviders[provider].urlPlaceholder ? url : "",
     });
   } catch (err) {
     alert(apiErrorMessage(err));
     return;
   }
   closeLlmConfigDialog();
-  showStatus(`Added ${LLM_PROVIDER_NAMES[provider] || provider}: ${model}`);
+  showStatus(`Added ${llmProviderName(provider)}: ${model}`);
   const configsRes = await apiFetch("/api/llm-configs");
   currentLlmConfigs = configsRes.configs || [];
   // Select the new one; it's used once the settings are saved.
@@ -5470,7 +5472,7 @@ async function removeLlmConfig() {
   const select = document.getElementById("proofread-provider-select");
   const cfg = currentLlmConfigs.find((c) => `${c.provider}/${c.model}` === select.value);
   if (!cfg) return;
-  const name = `${LLM_PROVIDER_NAMES[cfg.provider] || cfg.provider}: ${cfg.model}`;
+  const name = `${llmProviderName(cfg.provider)}: ${cfg.model}`;
   if (!(await confirmDialog(`Remove ${name}, with its API key?`))) return;
   try {
     await apiPost("/api/remove-llm-config", { provider: cfg.provider, model: cfg.model });
@@ -5688,174 +5690,259 @@ function cancelSettings() {
 
 // ===== SUGGEST TAGS =====
 
-// Ask the AI provider which existing vault tags fit the open document, then
-// append the new ones (as #tags) on a fresh line at the bottom of the document.
+// Tags from the vault's existing ones, suggested by the local model of LLM
+// search (server/mdsearch.py): it is shown the most similar notes that have
+// tags, and picks from those. Nothing leaves the Mac. Suggestions appear in
+// the suggestion panel, per note, with the similar notes behind each tag.
+
+// Suggest tags for the open document (including unsaved edits).
 async function runSuggestTags() {
   if (!currentFilePath) {
     showStatus("Open a file to suggest tags", true);
     return;
   }
-  const editor = document.getElementById("editor");
-  const text = editor.value;
+  if (activeRichHandle()) flushRichText();
+  const text = document.getElementById("editor").value;
   if (!text.trim()) {
     showStatus("Nothing to analyse", true);
     return;
   }
-
-  // Existing tags across the vault (canonical spellings from the link index).
-  const existingTags = Object.values(tagIndexCache).map((t) => t.name);
-  if (existingTags.length === 0) {
-    showStatus("No existing tags in the vault to choose from", true);
-    return;
-  }
-
-  const btn = document.querySelector(".suggest-tags-btn");
-  btn.disabled = true;
-  showStatus("Suggesting tags…");
-  try {
-    const res = await apiPost("/api/suggest-tags", { text, existing_tags: existingTags });
-    if (res.warning) showStatus(res.warning);
-
-    // Skip tags already present in the document.
-    const lower = text.toLowerCase();
-    const newTags = (res.tags || []).filter(
-      (t) => !new RegExp(`(^|[^\\w&#])#${escapeRegExp(t)}\\b`, "i").test(lower),
-    );
-
-    if (newTags.length === 0) {
-      showStatus("No new tag suggestions");
-      return;
-    }
-
-    const line = newTags.map((t) => `#${t}`).join(" ");
-    const needsBlank = text.length > 0 && !text.endsWith("\n");
-    const insert = (needsBlank ? "\n\n" : text.endsWith("\n\n") ? "" : "\n") + line + "\n";
-    const pos = editor.value.length;
-    editorReplace(editor, pos, pos, insert); // undoable; triggers preview/dirty
-    showStatus(`Added tags: ${newTags.map((t) => `#${t}`).join(" ")}`);
-  } catch (err) {
-    showStatus(`Suggest tags failed: ${apiErrorMessage(err)}`, true);
-  } finally {
-    btn.disabled = false;
-  }
+  await runTagSuggestions(
+    { path: currentFilePath, text },
+    `${fileStem(currentFilePath)}: tags from similar notes`,
+  );
 }
 
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// Suggest tags for each of `paths` (the untagged notes), shown as they come.
+async function runSuggestTagsForNotes(paths) {
+  if (!paths.length) return;
+  await runTagSuggestions(
+    { paths },
+    `${paths.length} untagged note${paths.length === 1 ? "" : "s"}: tags from similar notes`,
+  );
+}
+
+async function runTagSuggestions(request, scope) {
+  openSuggestionPanel({ mode: "tags", title: "Suggested tags", scope, loading: "Starting the local model…" });
+  const loading = document.getElementById("proofread-loading");
+  const list = document.getElementById("proofread-list");
+  let id;
+  try {
+    ({ id } = await apiPost("/api/suggest-tags", { vault_path: currentVaultPath, ...request }));
+  } catch (err) {
+    showSuggestionPanelError(err);
+    return;
+  }
+  let shown = 0;
+  for (;;) {
+    let job;
+    try {
+      job = await apiFetch("/api/llm-search-status");
+    } catch (err) {
+      showSuggestionPanelError(err);
+      return;
+    }
+    // Stop showing results once the panel is closed or used for something else.
+    if (job.id !== id || suggestionPanelMode !== "tags") return;
+    if (job.state === "error") {
+      showSuggestionPanelError(new Error(job.error));
+      return;
+    }
+    for (const result of job.results.slice(shown)) {
+      list.appendChild(buildTagSuggestionItem(result, request.path));
+      document.getElementById("proofread-suggestions").style.display = "";
+    }
+    shown = job.results.length;
+    if (job.state !== "running") break;
+    loading.innerHTML = `<p>${escapeHtml(job.status || "Working…")}</p>`;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  showSuggestionPanelList("No tags suggested.");
+}
+
+function fileStem(path) {
+  return path.split("/").pop().replace(/\.md$/i, "");
+}
+
+// One note's suggestions: its tags (toggle to leave one out), the similar
+// notes behind each, and an Add button.
+function buildTagSuggestionItem(result, openPath) {
+  const path = result.path || openPath;
+  const li = document.createElement("li");
+  li.className = "tag-suggestion";
+  if (!openPath) {
+    const title = document.createElement("a");
+    title.href = "#";
+    title.className = "tag-suggestion-note";
+    title.textContent = fileStem(path);
+    title.title = path;
+    title.addEventListener("click", (e) => {
+      e.preventDefault();
+      loadFile(path);
+    });
+    li.appendChild(title);
+  }
+  if (!result.tags.length) {
+    const none = document.createElement("div");
+    none.className = "tag-suggestion-why";
+    none.textContent = "No fitting tags found.";
+    li.appendChild(none);
+    return li;
+  }
+  const chips = document.createElement("div");
+  for (const tag of result.tags) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "tag-suggestion-chip selected";
+    chip.textContent = `#${tag}`;
+    chip.dataset.tag = tag;
+    chip.title = "Click to leave this tag out";
+    chip.addEventListener("click", () => chip.classList.toggle("selected"));
+    chips.appendChild(chip);
+  }
+  li.appendChild(chips);
+  for (const tag of result.tags) {
+    const notes = result.evidence[tag] || [];
+    if (!notes.length) continue;
+    const why = document.createElement("div");
+    why.className = "tag-suggestion-why";
+    why.textContent = `#${tag} is also on ${notes.map(fileStem).join(", ")}`;
+    li.appendChild(why);
+  }
+  const actions = document.createElement("div");
+  actions.className = "proofread-actions";
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "proofread-apply";
+  add.textContent = "Add";
+  add.addEventListener("click", async () => {
+    const tags = [...chips.querySelectorAll(".selected")].map((c) => c.dataset.tag);
+    if (!tags.length) return;
+    add.disabled = true;
+    try {
+      if (await addTagsToNote(path, tags)) {
+        add.textContent = "Added ✓";
+        li.classList.add("applied");
+        return;
+      }
+    } catch (err) {
+      showStatus(`Adding tags failed: ${apiErrorMessage(err)}`, true);
+    }
+    add.disabled = false;
+  });
+  actions.appendChild(add);
+  li.appendChild(actions);
+  return li;
+}
+
+// Append #tags on a line of their own at the end of a note: through the
+// editor (undoable) for the open document, else in the file itself. False
+// (with a message) for a note open in another tab, whose unsaved text the
+// file write would overwrite.
+async function addTagsToNote(path, tags) {
+  const line = tags.map((t) => `#${t}`).join(" ");
+  const withTags = (text) =>
+    text + (!text || text.endsWith("\n\n") ? "" : text.endsWith("\n") ? "\n" : "\n\n") + line + "\n";
+  if (path === currentFilePath) {
+    const editor = document.getElementById("editor");
+    if (activeRichHandle()) flushRichText();
+    const end = editor.value.length;
+    editorReplace(editor, end, end, withTags(editor.value).slice(end));
+    showStatus(`Added ${line}`);
+    return true;
+  }
+  if (panes.some((p) => p.tabs.some((t) => t.path === path))) {
+    showStatus(`${fileStem(path)} is open in a tab: add its tags there, or close the tab first`, true);
+    return false;
+  }
+  const { content } = await apiFetch(`/api/read-file?path=${encodeURIComponent(path)}`);
+  await queueWriteFile(path, withTags(content));
+  showStatus(`Added ${line} to ${fileStem(path)}`);
+  buildLinkIndex();
+  return true;
 }
 
 // ===== PROOFREADING =====
 
+// The shared suggestion panel (Proofread, Translate, ZotSeek): show it for
+// `mode` with a loading message, emptied of a previous run's results.
+function openSuggestionPanel({ mode, title, scope, loading }) {
+  const panel = document.getElementById("proofread-panel");
+  // Sync panel width to the sidebar (which may have been resized).
+  panel.style.width = document.getElementById("sidebar").offsetWidth + "px";
+  suggestionPanelMode = mode;
+  document.querySelector("#proofread-panel h3").textContent = title;
+  document.getElementById("proofread-scope").textContent = scope;
+  const loadingEl = document.getElementById("proofread-loading");
+  loadingEl.innerHTML = `<p>${escapeHtml(loading)}</p>`;
+  loadingEl.style.display = "";
+  document.getElementById("proofread-suggestions").style.display = "none";
+  document.getElementById("insert-translation-btn").style.display = "none";
+  document.getElementById("proofread-list").innerHTML = "";
+  panel.style.display = "";
+}
+
+// Show the panel's results list, with `emptyText` if it has no items.
+function showSuggestionPanelList(emptyText) {
+  const list = document.getElementById("proofread-list");
+  if (!list.children.length) {
+    const li = document.createElement("li");
+    li.className = "proofread-empty";
+    li.textContent = emptyText;
+    list.appendChild(li);
+  }
+  document.getElementById("proofread-loading").style.display = "none";
+  document.getElementById("proofread-suggestions").style.display = "";
+}
+
+function showSuggestionPanelError(err) {
+  document.getElementById("proofread-loading").innerHTML =
+    `<p class="proofread-error">${escapeHtml(apiErrorMessage(err))}</p>`;
+}
+
+// The text Proofread or Translate works on: the selection or the whole
+// document, which becomes proofreadRange. Null (with a message) if there is
+// nothing to `verb`.
+function actionText(verb) {
+  if (!currentFilePath) {
+    showStatus(`Open a file to ${verb}`, true);
+    return null;
+  }
+  const sel = getActionSelection();
+  if (!sel) return null; // a selection that can't be found: the user was told
+  const { isSelection, start, end } = sel;
+  const text = document.getElementById("editor").value.slice(start, end);
+  if (!text.trim()) {
+    showStatus(`Nothing to ${verb}`, true);
+    return null;
+  }
+  proofreadRange = { start, end };
+  return { text, isSelection, start, end };
+}
+
 // Proofread the selection (or whole document). One request returns language
 // corrections, passive-voice warnings and PEE paragraph-structure notes (see
-// src/PROOFREAD_SYSTEM.md), shown together in text order.
+// src/PROOFREAD_SYSTEM.md), shown together in text order. Each item is
+// clickable and highlights its source passage in the editor.
 async function runProofread() {
-  if (!currentFilePath) {
-    showStatus("Open a file to proofread", true);
-    return;
-  }
-  const editor = document.getElementById("editor");
-  const sel = getActionSelection();
-  if (!sel) return; // a selection that can't be found: the user was told
-  const { isSelection, start, end } = sel;
-  const text = editor.value.slice(start, end);
-  if (!text.trim()) {
-    showStatus("Nothing to proofread", true);
-    return;
-  }
-
-  proofreadRange = { start, end };
-
-  const panel = document.getElementById("proofread-panel");
-  const loading = document.getElementById("proofread-loading");
-  const suggestions = document.getElementById("proofread-suggestions");
-  const list = document.getElementById("proofread-list");
-
-  // Sync panel width to the sidebar (which may have been resized).
-  const sidebar = document.getElementById("sidebar");
-  const sidebarWidth = sidebar.offsetWidth;
-  panel.style.width = sidebarWidth + "px";
-
-  suggestionPanelMode = "proofread";
-  // The panel is shared with Translate, so reset its header/label each run.
-  // innerHTML reset also clears any error markup left by a previous failed run.
-  document.querySelector("#proofread-panel h3").textContent = "Suggestions";
-  loading.innerHTML = "<p>Proofreading…</p>";
-  document.getElementById("proofread-scope").textContent =
-    `${isSelection ? "Selected text" : "Whole document"} (${text.length} chars)`;
-  loading.style.display = "";
-  suggestions.style.display = "none";
-  document.getElementById("insert-translation-btn").style.display = "none";
-  list.innerHTML = "";
-  panel.style.display = "";
-
+  const action = actionText("proofread");
+  if (!action) return;
+  const { text, isSelection } = action;
+  openSuggestionPanel({
+    mode: "proofread",
+    title: "Suggestions",
+    scope: `${isSelection ? "Selected text" : "Whole document"} (${text.length} chars)`,
+    loading: "Proofreading…",
+  });
   try {
     const res = await apiPost("/api/proofread", { text });
-
-    // Non-fatal notice (e.g. Ollama not running → fell back to Mistral). Shown
-    // unobtrusively in the status bar; the suggestions still render normally.
-    if (res.warning) showStatus(res.warning);
-
-    // Preferred path: structured suggestions ({ original, suggestion, comment }).
-    // Each item is clickable and highlights its source passage in the editor.
-    if (Array.isArray(res.suggestions)) {
-      if (res.suggestions.length === 0) {
-        list.innerHTML =
-          "<li style='color: var(--text-secondary); padding: 16px;'>No suggestions found — excellent work!</li>";
-      } else {
-        for (const item of sortByPositionInText(res.suggestions)) {
-          list.appendChild(buildSuggestionItem(item));
-        }
-      }
-      loading.style.display = "none";
-      suggestions.style.display = "";
-      return;
+    const list = document.getElementById("proofread-list");
+    for (const item of sortByPositionInText(res.suggestions)) {
+      list.appendChild(buildSuggestionItem(item));
     }
-
-    // Legacy fallback: model returned a markdown bulleted list as plain text.
-    const suggestionsText = res.result || "";
-
-    // Mistral returns markdown bulleted list. Render it as HTML.
-    if (!suggestionsText.trim()) {
-      list.innerHTML =
-        "<li style='color: var(--text-secondary); padding: 16px;'>No suggestions found — excellent work!</li>";
-    } else if (typeof marked !== "undefined") {
-      // Parse the markdown (which is a bulleted list) and extract just the items.
-      const html = marked.parse(suggestionsText);
-      // marked wraps bullet lists in <ul><li>…</li></ul>, so extract and insert.
-      const tempDiv = document.createElement("div");
-      tempDiv.innerHTML = html;
-      const ul = tempDiv.querySelector("ul");
-      if (ul && ul.childNodes.length > 0) {
-        // Copy the <li> elements into our list.
-        for (const li of ul.querySelectorAll("li")) {
-          list.appendChild(li.cloneNode(true));
-        }
-      } else {
-        list.innerHTML =
-          "<li style='color: var(--text-secondary); padding: 16px;'>No suggestions found.</li>";
-      }
-    } else {
-      // Fallback if marked isn't loaded: treat as plain text bullets.
-      const lines = suggestionsText.split("\n").filter((l) => l.trim());
-      if (lines.length === 0) {
-        list.innerHTML =
-          "<li style='color: var(--text-secondary); padding: 16px;'>No suggestions found.</li>";
-      } else {
-        for (const line of lines) {
-          const clean = line.replace(/^[-•*]\s*/, "").trim();
-          if (clean) {
-            const li = document.createElement("li");
-            li.textContent = clean;
-            list.appendChild(li);
-          }
-        }
-      }
-    }
-    loading.style.display = "none";
-    suggestions.style.display = "";
+    showSuggestionPanelList("No suggestions found — excellent work!");
   } catch (err) {
-    loading.innerHTML = `<p style="color: var(--text-secondary); margin: 0; padding: 12px 16px; font-size: 12px;">${escapeHtml(apiErrorMessage(err))}</p>`;
+    showSuggestionPanelError(err);
   }
 }
 
@@ -5863,69 +5950,26 @@ async function runProofread() {
 // show the results in the proofread panel. Reuses the proofread suggestion
 // machinery: each returned item is an Apply-able original → translation pair.
 async function runTranslate() {
-  if (!currentFilePath) {
-    showStatus("Open a file to translate", true);
-    return;
-  }
-  const editor = document.getElementById("editor");
-  const sel = getActionSelection();
-  if (!sel) return; // a selection that can't be found: the user was told
-  const { isSelection, start, end } = sel;
-  const text = editor.value.slice(start, end);
-  if (!text.trim()) {
-    showStatus("Nothing to translate", true);
-    return;
-  }
-  proofreadRange = { start, end };
+  const action = actionText("translate");
+  if (!action) return;
+  const { text, isSelection } = action;
   const targetLang = currentDocumentLanguage || "English";
-
-  const panel = document.getElementById("proofread-panel");
-  const loading = document.getElementById("proofread-loading");
-  const suggestions = document.getElementById("proofread-suggestions");
-  const list = document.getElementById("proofread-list");
-
-  // Sync panel width to the sidebar (which may have been resized).
-  panel.style.width = document.getElementById("sidebar").offsetWidth + "px";
-
-  suggestionPanelMode = "translate";
-  // The panel is shared with Proofread, so set its header/label for this run.
-  document.querySelector("#proofread-panel h3").textContent = "Translation";
-  loading.innerHTML = `<p>Translating to ${escapeHtml(targetLang)}…</p>`;
-  document.getElementById("proofread-scope").textContent =
-    `${isSelection ? "Selected text" : "Whole document"} → ${targetLang} (${text.length} chars)`;
-  loading.style.display = "";
-  suggestions.style.display = "none";
-  document.getElementById("insert-translation-btn").style.display = "none";
-  list.innerHTML = "";
-  panel.style.display = "";
-
+  openSuggestionPanel({
+    mode: "translate",
+    title: "Translation",
+    scope: `${isSelection ? "Selected text" : "Whole document"} → ${targetLang} (${text.length} chars)`,
+    loading: `Translating to ${targetLang}…`,
+  });
   try {
     const res = await apiPost("/api/translate", { text, target_lang: targetLang });
-
-    // Non-fatal notice (e.g. Ollama not running → fell back to Mistral).
-    if (res.warning) showStatus(res.warning);
-
-    // Structured path: an array of { original, suggestion, comment } items,
-    // rendered and applied exactly like proofread suggestions.
-    if (Array.isArray(res.suggestions)) {
-      if (res.suggestions.length === 0) {
-        list.innerHTML = `<li style='color: var(--text-secondary); padding: 16px;'>Nothing to translate — the text is already in ${escapeHtml(targetLang)}.</li>`;
-      } else {
-        for (const item of res.suggestions) {
-          list.appendChild(buildSuggestionItem(item));
-        }
-        document.getElementById("insert-translation-btn").style.display = "";
-      }
-    } else {
-      // The model didn't return the expected array; show whatever came back.
-      list.innerHTML = `<li style='color: var(--text-secondary); padding: 16px;'>${escapeHtml(
-        res.result || "No translation returned.",
-      )}</li>`;
+    const list = document.getElementById("proofread-list");
+    for (const item of res.suggestions) list.appendChild(buildSuggestionItem(item));
+    if (res.suggestions.length) {
+      document.getElementById("insert-translation-btn").style.display = "";
     }
-    loading.style.display = "none";
-    suggestions.style.display = "";
+    showSuggestionPanelList(`Nothing to translate — the text is already in ${targetLang}.`);
   } catch (err) {
-    loading.innerHTML = `<p style="color: var(--text-secondary); margin: 0; padding: 12px 16px; font-size: 12px;">${escapeHtml(apiErrorMessage(err))}</p>`;
+    showSuggestionPanelError(err);
   }
 }
 
@@ -5981,37 +6025,21 @@ async function runZotSeek() {
     showStatus("Select a sentence to find sources for it in Zotero", true);
     return;
   }
-  const start = sel.start;
-  zotseekAnchor = { text: selected.replace(/[\s.,;:!?]+$/, ""), start };
-
-  const panel = document.getElementById("proofread-panel");
-  const loading = document.getElementById("proofread-loading");
-  const suggestions = document.getElementById("proofread-suggestions");
-  const list = document.getElementById("proofread-list");
-  panel.style.width = document.getElementById("sidebar").offsetWidth + "px";
-  suggestionPanelMode = "zotseek";
-  document.querySelector("#proofread-panel h3").textContent = "ZotSeek";
-  document.getElementById("proofread-scope").textContent =
-    `Sources for: “${query.length > 80 ? query.slice(0, 80) + "…" : query}”`;
-  loading.innerHTML = "<p>Searching your Zotero library…</p>";
-  loading.style.display = "";
-  suggestions.style.display = "none";
-  document.getElementById("insert-translation-btn").style.display = "none";
-  list.innerHTML = "";
-  panel.style.display = "";
-
+  zotseekAnchor = { text: selected.replace(/[\s.,;:!?]+$/, ""), start: sel.start };
+  openSuggestionPanel({
+    mode: "zotseek",
+    title: "ZotSeek",
+    scope: `Sources for: “${query.length > 80 ? query.slice(0, 80) + "…" : query}”`,
+    loading: "Searching your Zotero library…",
+  });
   try {
     const res = await apiPost("/api/zotseek-search", { query });
     if (res.warning) showStatus(res.warning, true);
-    if (!res.results.length) {
-      list.innerHTML =
-        "<li style='color: var(--text-secondary); padding: 16px;'>No matching sources found in your Zotero library.</li>";
-    }
+    const list = document.getElementById("proofread-list");
     for (const r of res.results) list.appendChild(buildZotSeekItem(r));
-    loading.style.display = "none";
-    suggestions.style.display = "";
+    showSuggestionPanelList("No matching sources found in your Zotero library.");
   } catch (err) {
-    loading.innerHTML = `<p style="color: var(--text-secondary); margin: 0; padding: 12px 16px; font-size: 12px;">${escapeHtml(apiErrorMessage(err))}</p>`;
+    showSuggestionPanelError(err);
   }
 }
 

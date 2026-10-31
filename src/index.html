@@ -728,21 +728,14 @@
                 </p>
 
                 <label class="settings-label" for="llmconfig-provider">Provider</label>
-                <select id="llmconfig-provider" class="settings-input">
-                    <option value="gemini">Gemini</option>
-                    <option value="anthropic">Anthropic</option>
-                    <option value="mistral">Mistral</option>
-                    <option value="openai">OpenAI (or compatible)</option>
-                    <option value="ollama">Ollama (local)</option>
-                    <option value="apfel">apfel: Apple's on-device model</option>
-                </select>
+                <!-- Filled from the server's provider table (openLlmConfigDialog). -->
+                <select id="llmconfig-provider" class="settings-input"></select>
 
                 <label class="settings-label" for="llmconfig-model" style="margin-top: 10px;">Model Name</label>
                 <input
                     type="text"
                     id="llmconfig-model"
                     class="settings-input"
-                    placeholder="e.g. gemini-2.5-flash"
                     autocomplete="off"
                     spellcheck="false"
                 />
@@ -764,7 +757,6 @@
                         type="text"
                         id="llmconfig-url"
                         class="settings-input"
-                        placeholder="http://localhost:11434"
                         autocomplete="off"
                         spellcheck="false"
                     />

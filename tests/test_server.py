@@ -4,16 +4,32 @@
 Run with:  python3 -m unittest discover -s tests
 """
 
+import json
 import sys
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
 
 import server  # noqa: E402
+
+_settings_dir = None
+
+
+def setUpModule():
+    # SETTINGS_PATH is set on import, so patching Path.home is too late: point
+    # it at a temporary file, so no test can touch the real settings.
+    global _settings_dir
+    _settings_dir = tempfile.TemporaryDirectory()
+    server.SETTINGS_PATH = Path(_settings_dir.name) / "settings.json"
+
+
+def tearDownModule():
+    _settings_dir.cleanup()
 
 
 class InlineTagTests(unittest.TestCase):
@@ -213,45 +229,6 @@ class InlineWikilinkTests(unittest.TestCase):
         )
 
 
-class TranslateTests(unittest.TestCase):
-    """translate_text should inject the target language into the system prompt
-    and reuse the proofread suggestion schema. We stub _ai_complete so no
-    network/model is needed."""
-
-    def setUp(self):
-        self._orig = server._ai_complete
-        self.captured = {}
-
-        def fake(system, user, mistral_schema, json_schema, settings):
-            self.captured.update(
-                system=system,
-                user=user,
-                mistral_schema=mistral_schema,
-                json_schema=json_schema,
-            )
-            return "[]", None
-
-        server._ai_complete = fake
-
-    def tearDown(self):
-        server._ai_complete = self._orig
-
-    def test_target_language_injected(self):
-        server.translate_text("Bonjour le monde", "Dutch")
-        self.assertIn("Dutch", self.captured["system"])
-        self.assertNotIn("{{TARGET_LANGUAGE}}", self.captured["system"])
-        self.assertEqual(self.captured["user"], "Bonjour le monde")
-
-    def test_defaults_to_english(self):
-        server.translate_text("texto", "")
-        self.assertIn("English", self.captured["system"])
-
-    def test_reuses_proofread_schema(self):
-        server.translate_text("x", "German")
-        self.assertIs(self.captured["mistral_schema"], server.PROOFREAD_SCHEMA)
-        self.assertIs(self.captured["json_schema"], server.PROOFREAD_JSON_SCHEMA)
-
-
 class PathConfinementTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -310,33 +287,227 @@ class VersionTests(unittest.TestCase):
             srv.server_close()
 
 
-class LlmConfigTests(unittest.TestCase):
+class SettingsTestCase(unittest.TestCase):
+    """Gives each test an empty settings file of its own (setUpModule already
+    keeps every test away from the real ~/.humd-editor/settings.json)."""
+
     def setUp(self):
+        server.SETTINGS_PATH.unlink(missing_ok=True)
+
+    def set_settings(self, **settings):
+        server.save_settings(settings)
+
+
+class LlmConfigTests(SettingsTestCase):
+    def test_empty(self):
+        self.assertEqual(server.load_llm_configs(), [])
+
+    def test_add_replace_and_remove(self):
+        server.add_llm_config("Gemini", "gemini-2.5-flash", "key-1")
+        server.add_llm_config("ollama", "llama3.1", "", "http://host:11434/")
+        server.add_llm_config("gemini", "gemini-2.5-flash", "key-2")  # replaces key-1
+        self.assertEqual(
+            server.load_llm_configs(),
+            [
+                {"provider": "gemini", "model": "gemini-2.5-flash", "apiKey": "key-2"},
+                {"provider": "ollama", "model": "llama3.1", "apiKey": "", "url": "http://host:11434"},
+            ],
+        )
+        server.save_settings({**server.load_settings(), "proofreadProvider": "ollama/llama3.1"})
+        server.remove_llm_config("ollama", "llama3.1")
+        self.assertEqual(len(server.load_llm_configs()), 1)
+        self.assertNotIn("proofreadProvider", server.load_settings())
+
+    def test_validation(self):
+        with self.assertRaisesRegex(ValueError, "Unknown provider"):
+            server.add_llm_config("nope", "m", "k")
+        with self.assertRaisesRegex(ValueError, "model name"):
+            server.add_llm_config("gemini", "", "k")
+        with self.assertRaisesRegex(ValueError, "API key"):
+            server.add_llm_config("mistral", "mistral-small-latest")
+        with self.assertRaisesRegex(ValueError, "API key"):
+            server.add_llm_config("openai", "gpt-5-mini")
+        # Another OpenAI-compatible server, and the local ones, need no key.
+        server.add_llm_config("openai", "local", url="http://localhost:8080/v1")
+        server.add_llm_config("apfel", "apple-foundationmodel")
+        self.assertEqual(len(server.load_llm_configs()), 2)
+
+
+class TagSuggestionTests(SettingsTestCase):
+    def setUp(self):
+        super().setUp()
+        server._file_cache.clear()
+        server._last_index_json.clear()
         self.tmp = tempfile.TemporaryDirectory()
-        self.tmp_home = Path(self.tmp.name)
-        self.orig_home = Path.home
-        Path.home = lambda: self.tmp_home
+        self.addCleanup(self.tmp.cleanup)
+        self.vault = str(Path(self.tmp.name).resolve())
+        self.set_settings(vaultPath=self.vault)
+        (Path(self.vault) / "z_notes").mkdir()
+        for name, text in [
+            ("a.md", "About trade. #Merchants #trade"),
+            ("b.md", "---\ntags: [religion]\n---\nChurches."),
+            ("z_notes/c.md", "No tags yet."),
+        ]:
+            (Path(self.vault) / name).write_text(text, encoding="utf-8")
 
-    def tearDown(self):
-        Path.home = self.orig_home
-        self.tmp.cleanup()
+    def test_document_request(self):
+        targets, note_tags = server.tag_suggestion_request(
+            self.vault, {"path": f"{self.vault}/z_notes/c.md", "text": "Draft #trade\n"}
+        )
+        self.assertEqual(note_tags, {"a.md": ["Merchants", "trade"], "b.md": ["religion"]})
+        self.assertEqual(
+            targets, [{"file": "z_notes/c.md", "text": "Draft #trade\n", "existing": ["trade"]}]
+        )
 
-    def test_load_non_existent_creates_default(self):
-        configs = server.load_llm_configs()
-        self.assertEqual(configs, [])
-        config_file = self.tmp_home / ".llmconfig"
-        self.assertTrue(config_file.exists())
-        self.assertIn("# Format: provider/model|api_key", config_file.read_text())
+    def test_notes_request(self):
+        targets, _ = server.tag_suggestion_request(
+            self.vault, {"paths": [f"{self.vault}/z_notes/c.md"]}
+        )
+        self.assertEqual(targets, [{"file": "z_notes/c.md", "text": "No tags yet."}])
 
-    def test_add_and_load_configs(self):
-        server.load_llm_configs()
-        server.add_llm_config("gemini", "gemini-2.5-flash", "api-key-1")
-        server.add_llm_config("ollama", "llama3.1", "")
-        
-        configs = server.load_llm_configs()
-        self.assertEqual(len(configs), 2)
-        self.assertEqual(configs[0], {"provider": "gemini", "model": "gemini-2.5-flash", "apiKey": "api-key-1"})
-        self.assertEqual(configs[1], {"provider": "ollama", "model": "llama3.1", "apiKey": ""})
+    def test_outside_vault_rejected(self):
+        with self.assertRaises(PermissionError):
+            server.tag_suggestion_request(self.vault, {"paths": ["/etc/hosts"]})
+
+    def test_parse_tags(self):
+        import mdsearch
+
+        allowed = ["Merchants", "religion", "trade"]
+        self.assertEqual(
+            mdsearch.parse_tags("#merchants, Religion, invented, trade", allowed, []),
+            ["Merchants", "religion", "trade"],
+        )
+        self.assertEqual(mdsearch.parse_tags("- trade\n- religion", allowed, ["Trade"]), ["religion"])
+        self.assertEqual(
+            mdsearch.parse_tags("trade, religion, merchants, trade", ["a", *allowed], []),
+            ["trade", "religion", "Merchants"],
+        )
+
+
+class FakeResponse:
+    def __init__(self, data):
+        self.body = json.dumps(data).encode("utf-8")
+
+    def read(self):
+        return self.body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+
+class AiCompleteTests(SettingsTestCase):
+    """_ai_complete routes the selected provider to the right URL and headers."""
+
+    def setUp(self):
+        super().setUp()
+        self.requests = []
+
+        def fake_urlopen(req, timeout=None):
+            self.requests.append(req)
+            return FakeResponse({"choices": [{"message": {"content": "[]"}, "finish_reason": "stop"}]})
+
+        patcher = mock.patch.object(server.urllib.request, "urlopen", fake_urlopen)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_with(self, cfg):
+        self.set_settings(llmConfigs=[cfg], proofreadProvider=f"{cfg['provider']}/{cfg['model']}")
+        self.assertEqual(server._ai_complete("sys", "text", server.TRANSLATE_JSON_SCHEMA), "[]")
+        return self.requests[-1] if self.requests else None
+
+    def test_providers(self):
+        for provider, url in [
+            ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"),
+            ("anthropic", "https://api.anthropic.com/v1/chat/completions"),
+            ("mistral", "https://api.mistral.ai/v1/chat/completions"),
+            ("openai", "https://api.openai.com/v1/chat/completions"),
+        ]:
+            req = self.run_with({"provider": provider, "model": "m", "apiKey": "secret"})
+            self.assertEqual(req.full_url, url)
+            self.assertEqual(req.get_header("Authorization"), "Bearer secret")
+            body = json.loads(req.data)
+            self.assertEqual(body["model"], "m")
+            self.assertEqual(body["messages"][0], {"role": "system", "content": "sys"})
+            self.assertEqual(body["response_format"]["type"], "json_schema")
+
+    def test_ollama_url_gets_v1(self):
+        req = self.run_with({"provider": "ollama", "model": "llama3.1", "apiKey": ""})
+        self.assertEqual(req.full_url, "http://localhost:11434/v1/chat/completions")
+        self.assertIsNone(req.get_header("Authorization"))
+        req = self.run_with(
+            {"provider": "ollama", "model": "llama3.1", "apiKey": "", "url": "http://host:11434"}
+        )
+        self.assertEqual(req.full_url, "http://host:11434/v1/chat/completions")
+
+    def test_apfel_without_url_uses_cli(self):
+        with mock.patch.object(server, "_find_tool", return_value="/usr/bin/apfel"), mock.patch.object(
+            server, "_apfel_cli_complete", return_value="[]"
+        ) as cli:
+            self.run_with({"provider": "apfel", "model": "apple-foundationmodel", "apiKey": ""})
+        cli.assert_called_once_with("/usr/bin/apfel", "sys", "text", server.TRANSLATE_JSON_SCHEMA)
+        self.assertEqual(self.requests, [])
+        req = self.run_with(
+            {"provider": "apfel", "model": "apple-foundationmodel", "apiKey": "", "url": "http://127.0.0.1:1234/v1"}
+        )
+        self.assertEqual(req.full_url, "http://127.0.0.1:1234/v1/chat/completions")
+
+    def test_no_provider(self):
+        with self.assertRaisesRegex(RuntimeError, "No AI provider"):
+            server._ai_complete("sys", "text", None)
+
+
+class TranslateTests(unittest.TestCase):
+    """translate_text puts the target language in the system prompt and uses
+    the translation schema. _ai_complete is stubbed, so no model is needed."""
+
+    def setUp(self):
+        self.captured = {}
+
+        def fake(system, user, json_schema):
+            self.captured.update(system=system, user=user, json_schema=json_schema)
+            return "[]"
+
+        patcher = mock.patch.object(server, "_ai_complete", fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_target_language_injected(self):
+        server.translate_text("Bonjour le monde", "Dutch")
+        self.assertIn("Dutch", self.captured["system"])
+        self.assertNotIn("{{TARGET_LANGUAGE}}", self.captured["system"])
+        self.assertEqual(self.captured["user"], "Bonjour le monde")
+
+    def test_defaults_to_english(self):
+        server.translate_text("texto", "")
+        self.assertIn("English", self.captured["system"])
+
+    def test_schema_is_proofread_item_without_type(self):
+        server.translate_text("x", "German")
+        item = self.captured["json_schema"]["items"]
+        self.assertEqual(sorted(item["properties"]), ["comment", "original", "suggestion"])
+        self.assertEqual(item["required"], ["original", "suggestion", "comment"])
+
+
+class ParseJsonListTests(unittest.TestCase):
+    def test_shapes(self):
+        item = {"original": "a", "suggestion": "b", "comment": ""}
+        self.assertEqual(server.parse_json_list('["x"]'), ["x"])
+        self.assertEqual(server.parse_json_list('```json\n["x"]\n```'), ["x"])
+        self.assertEqual(server.parse_json_list('Here you go: ["x"] done'), ["x"])
+        self.assertEqual(server.parse_json_list('{"items": ["x"]}'), ["x"])
+        self.assertEqual(server.parse_json_list(json.dumps(item)), [item])
+
+    def test_no_list(self):
+        self.assertIsNone(server.parse_json_list("No suggestions."))
+        self.assertIsNone(server.parse_json_list('{"a": 1}'))
+
+    def test_suggestions_response(self):
+        self.assertEqual(server._suggestions_response("[]"), {"suggestions": []})
+        with self.assertRaisesRegex(RuntimeError, "expected format: Looks fine to me"):
+            server._suggestions_response("Looks fine to me")
 
 
 if __name__ == "__main__":
