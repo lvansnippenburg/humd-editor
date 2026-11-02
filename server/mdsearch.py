@@ -38,6 +38,7 @@ from pathlib import Path
 
 np = TextEmbedding = None  # set by load_semantic() when fastembed is available
 
+"""overruled by mlx-community/Qwen2.5-3B-Instruct-4bit in the ~/.humd-editor/settings.json -in my case because of a lack of computer memory"""
 DEFAULT_LLM = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 EMBED_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 CACHE = Path.home() / ".cache" / "mdsearch" / "embeddings.npz"
