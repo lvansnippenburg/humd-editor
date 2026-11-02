@@ -42,3 +42,4 @@ src/.link-index.json
 
 # Milkdown WYSIWYG build (node_modules already ignored above)
 wysiwyg-build/.npmcache
+tests/__pycache__/
