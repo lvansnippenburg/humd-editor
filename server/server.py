@@ -2,6 +2,7 @@
 """humd-editor local server — pure Python standard library, no external deps."""
 
 import argparse
+import difflib
 import hashlib
 import json
 import mimetypes
@@ -515,9 +516,11 @@ def search_vault(
 # mdsearch.py runs as a long-lived worker process under a regular python3 (not
 # this process: the bundled .app has no pip, and the model takes several GB of
 # memory we'd rather keep out of the server). It installs its own dependencies
-# on first use. It runs one job at a time: a question (POST /api/llm-search)
-# or tag suggestions (POST /api/suggest-tags), told apart by the job's "kind";
-# the client polls GET /api/llm-search-status for progress.
+# on first use. It runs one job at a time, told apart by the job's "kind": a
+# question (POST /api/llm-search), tag suggestions (POST /api/suggest-tags) or
+# a plain answer for Proofread and Translate (LlmSearch.complete, unless an
+# external AI service is chosen); the client polls GET /api/llm-search-status
+# for progress.
 
 if getattr(sys, "frozen", False):
     MDSEARCH_PATH = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "server" / "mdsearch.py"
@@ -558,6 +561,7 @@ LLM_WORKER_IDLE_TIMEOUT = 5 * 60
 class LlmSearch:
     def __init__(self):
         self.lock = threading.Lock()
+        self.changed = threading.Condition(self.lock)  # notified on every job update
         self.proc = None
         self.job = {"state": "idle"}
         self.job_id = 0
@@ -616,6 +620,7 @@ class LlmSearch:
                         fatal = job["error"]
                     else:
                         self._arm_idle_timer(proc)
+                self.changed.notify_all()
         proc.wait()
         with self.lock:
             if self.proc is proc:
@@ -625,6 +630,7 @@ class LlmSearch:
                 self.job["error"] = fatal or (
                     f"The LLM search process stopped unexpectedly (exit code {proc.returncode})."
                 )
+            self.changed.notify_all()
 
     def _arm_idle_timer(self, proc):
         """(Re)start the countdown to stopping an idle worker. Called with
@@ -671,13 +677,41 @@ class LlmSearch:
             model,
         )
 
+    def complete(
+        self, system: str, user: str, model: str | None, step: str | None = None, timeout: float = 1800
+    ) -> str:
+        """The model's answer to one prompt (Proofread and Translate). Waits
+        for it; meanwhile the job's status, `step` (e.g. "paragraph 2 of 5")
+        and answer so far can be polled."""
+        job_id = self._start(
+            {"kind": "complete", "status": "Starting the local model …", "answer": "", "step": step},
+            {"complete": {"system": system, "user": user}},
+            "",
+            model,
+        )
+        with self.changed:
+            done = self.changed.wait_for(
+                lambda: self.job["id"] != job_id or self.job["state"] != "running", timeout
+            )
+            job = dict(self.job)
+        if not done:
+            raise RuntimeError("The local model took more than 30 minutes; try a smaller part of the text.")
+        if job["id"] != job_id:
+            raise RuntimeError("The local model was stopped.")
+        if job["state"] == "error":
+            raise RuntimeError(job["error"])
+        return job["answer"]
+
     def _start(self, job: dict, req: dict, vault: str, model: str | None):
         with self.lock:
             if self.idle_timer:
                 self.idle_timer.cancel()
                 self.idle_timer = None
             if self.job.get("state") == "running":
-                busy = "suggesting tags" if self.job.get("kind") == "tags" else "answering a question"
+                busy = {
+                    "tags": "suggesting tags",
+                    "complete": "proofreading or translating",
+                }.get(self.job.get("kind"), "answering a question")
                 raise RuntimeError(f"The local model is still {busy} — please wait.")
             self.job_id += 1
             self.job = {"id": self.job_id, "state": "running", "vault": vault, **job}
@@ -1283,9 +1317,9 @@ def _llm_base_url(cfg: dict) -> str:
 
 
 def _ai_complete(system: str, user: str, json_schema: dict | None) -> str:
-    """Run one completion with the selected provider. The answer should be
-    JSON matching json_schema (see parse_json_list), or free-form text if
-    json_schema is None."""
+    """Run one completion with the selected external provider. The answer
+    should be JSON matching json_schema (see parse_json_list), or free-form
+    text if json_schema is None."""
     settings = load_settings()
     configs = load_llm_configs(settings)
     if not configs:
@@ -1473,28 +1507,97 @@ def _apfel_cli_complete(apfel: str, system: str, user: str, json_schema: dict | 
 
 
 # --- The AI actions --------------------------------------------------------
+#
+# Proofread and Translate use LLM search's local model by default, or the
+# selected provider ("useExternalAi"). The local model is small, so it gets
+# simpler prompts (src/*_LOCAL.md) and one paragraph at a time: it proofreads
+# each with a short example, and translates each as plain text, from which the
+# items are built here (so every 'original' is exact).
 
 
-def proofread_text(text: str) -> str:
-    """Proofread `text` with the selected provider: a JSON array of findings."""
-    return _ai_complete(_prompt("PROOFREAD_SYSTEM.md"), text, PROOFREAD_JSON_SCHEMA)
+def proofread_text(text: str) -> list:
+    """Proofread `text`: a list of findings (PROOFREAD_JSON_SCHEMA items)."""
+    settings = load_settings()
+    if settings.get("useExternalAi"):
+        return _parse_suggestions(
+            _ai_complete(_prompt("PROOFREAD_SYSTEM.md"), text, PROOFREAD_JSON_SCHEMA)
+        )
+    system = _prompt("PROOFREAD_SYSTEM_LOCAL.md")
+    paragraphs = prose_paragraphs(text)
+    items: list = []
+    for n, paragraph in enumerate(paragraphs, 1):
+        raw = llm_search.complete(
+            system, paragraph, settings.get("llmSearchModel"), _step(n, len(paragraphs))
+        )
+        for item in parse_json_list(raw) or []:
+            # Only findings that can be found in the text.
+            if not isinstance(item, dict) or not str(item.get("original") or "") in paragraph:
+                continue
+            item = {k: str(item.get(k) or "") for k in ("type", "original", "suggestion", "comment")}
+            if item["type"] not in PROOFREAD_TYPES:
+                item["type"] = "correction"
+            # A "correction" that changes nothing ("No error") isn't one.
+            no_change = item["type"] == "correction" and item["suggestion"] in ("", item["original"])
+            # The same finding on a shorter or longer passage: keep the first.
+            overlaps = any(
+                i["type"] == item["type"] and (i["original"] in item["original"] or item["original"] in i["original"])
+                for i in items
+            )
+            if item["original"].strip() and not no_change and not overlaps:
+                items.append(item)
+    return items
 
 
-def translate_text(text: str, target_lang: str) -> str:
-    """Translate `text` into `target_lang` (the prompt's {{TARGET_LANGUAGE}})
-    with the selected provider: a JSON array of translated passages."""
+def translate_text(text: str, target_lang: str) -> list:
+    """Translate `text` into `target_lang` (the prompts' {{TARGET_LANGUAGE}}):
+    a list of passages with their translations (TRANSLATE_JSON_SCHEMA items)."""
     target = (target_lang or "").strip() or "English"
-    system = _prompt("TRANSLATE_SYSTEM.md").replace("{{TARGET_LANGUAGE}}", target)
-    return _ai_complete(system, text, TRANSLATE_JSON_SCHEMA)
+    settings = load_settings()
+    if settings.get("useExternalAi"):
+        system = _prompt("TRANSLATE_SYSTEM.md").replace("{{TARGET_LANGUAGE}}", target)
+        return _parse_suggestions(_ai_complete(system, text, TRANSLATE_JSON_SCHEMA))
+    system = _prompt("TRANSLATE_SYSTEM_LOCAL.md").replace("{{TARGET_LANGUAGE}}", target)
+    paragraphs = prose_paragraphs(text)
+    items = []
+    for n, paragraph in enumerate(paragraphs, 1):
+        translation = llm_search.complete(
+            system, paragraph, settings.get("llmSearchModel"), _step(n, len(paragraphs))
+        ).strip()
+        # (Nearly) unchanged: the paragraph is already in `target`.
+        if translation and difflib.SequenceMatcher(None, paragraph, translation).ratio() < 0.9:
+            items.append({"original": paragraph, "suggestion": translation, "comment": ""})
+    return items
 
 
-def _suggestions_response(raw: str) -> dict:
-    """The /api/proofread and /api/translate answer for a model's raw answer."""
+def _step(n: int, total: int) -> str | None:
+    return f"paragraph {n} of {total}" if total > 1 else None
+
+
+def prose_paragraphs(text: str) -> list[str]:
+    """The paragraphs of `text` (split at blank lines) that contain prose,
+    for the local model: without frontmatter, code blocks, and paragraphs of
+    only links, tags, citations or footnote markers."""
+    body = re.sub(r"\A---\n.*?\n---[ \t]*(\n|\Z)", "", text, flags=re.S)
+    out = []
+    for paragraph in re.split(r"\n[ \t]*\n", body):
+        paragraph = paragraph.strip()
+        if not paragraph or paragraph.startswith(("```", "~~~")):
+            continue
+        prose = re.sub(
+            r"\[\[[^\]]*\]\]|\]\([^)]*\)|(^|\s)#[\w/-]+|\[\^[^\]]*\]|\[@[^\]]*\]", " ", paragraph
+        )
+        if len(re.findall(r"[^\W\d_]{2,}", prose)) >= 3:
+            out.append(paragraph)
+    return out
+
+
+def _parse_suggestions(raw: str) -> list:
+    """The suggestions in an external provider's raw answer."""
     suggestions = parse_json_list(raw)
     if suggestions is None:
         start = " ".join(raw.split())[:200]
         raise RuntimeError(f"The AI's answer wasn't in the expected format: {start}")
-    return {"suggestions": suggestions}
+    return suggestions
 
 
 def parse_json_list(raw: str) -> list | None:
@@ -2193,7 +2296,7 @@ class Handler(SimpleHTTPRequestHandler):
                 text = (data.get("text") or "").strip()
                 if not text:
                     raise ValueError("Nothing to proofread")
-                self.send_json(_suggestions_response(proofread_text(text)))
+                self.send_json({"suggestions": proofread_text(text)})
             except Exception as e:
                 self.send_error_json(str(e))
 
@@ -2210,7 +2313,7 @@ class Handler(SimpleHTTPRequestHandler):
                     or load_settings().get("documentLanguage")
                     or "English"
                 ).strip()
-                self.send_json(_suggestions_response(translate_text(text, target_lang)))
+                self.send_json({"suggestions": translate_text(text, target_lang)})
             except Exception as e:
                 self.send_error_json(str(e))
 

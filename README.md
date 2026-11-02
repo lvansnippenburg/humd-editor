@@ -74,7 +74,7 @@ The server listens on `http://127.0.0.1:11434/v1`, the port Ollama also uses; bo
 
 ## LLM search (optional)
 
-The **LLM Search** option in the Search panel answers questions about your notes with a language model that runs locally (see [Help.md](src/help.md#llm-search) for how to use it). **Suggest tags** uses the same model and embeddings to pick tags from similar notes ([Help.md](src/help.md#suggest-tags)). It is implemented by [`server/mdsearch.py`](server/mdsearch.py) and needs:
+The **LLM Search** option in the Search panel answers questions about your notes with a language model that runs locally (see [Help.md](src/help.md#llm-search) for how to use it). **Suggest tags** uses the same model and embeddings to pick tags from similar notes ([Help.md](src/help.md#suggest-tags)), and **Proofread** and **Translate** use the same model unless an external AI service is chosen in Settings ([Help.md](src/help.md#ai-assistance); their prompts for it are `src/*_SYSTEM_LOCAL.md`). It is implemented by [`server/mdsearch.py`](server/mdsearch.py) and needs:
 
 - a Mac with **Apple silicon** (it uses Apple's MLX), and
 - **Python 3.9 or newer** (`python3`), also when you use the app, because the app's built-in Python can't install packages. From source the editor uses the Python that runs the server; the app looks for `python3` in the usual places (`/opt/homebrew/bin`, `/usr/local/bin`, python.org's framework). Get it from https://www.python.org or with `brew install python`.

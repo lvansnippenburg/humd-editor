@@ -425,7 +425,9 @@ class AiCompleteTests(SettingsTestCase):
         self.addCleanup(patcher.stop)
 
     def run_with(self, cfg):
-        self.set_settings(llmConfigs=[cfg], proofreadProvider=f"{cfg['provider']}/{cfg['model']}")
+        self.set_settings(
+            useExternalAi=True, llmConfigs=[cfg], proofreadProvider=f"{cfg['provider']}/{cfg['model']}"
+        )
         self.assertEqual(server._ai_complete("sys", "text", server.TRANSLATE_JSON_SCHEMA), "[]")
         return self.requests[-1] if self.requests else None
 
@@ -466,15 +468,110 @@ class AiCompleteTests(SettingsTestCase):
         self.assertEqual(req.full_url, "http://127.0.0.1:1234/v1/chat/completions")
 
     def test_no_provider(self):
+        self.set_settings(useExternalAi=True)
         with self.assertRaisesRegex(RuntimeError, "No AI provider"):
             server._ai_complete("sys", "text", None)
 
 
-class TranslateTests(unittest.TestCase):
-    """translate_text puts the target language in the system prompt and uses
-    the translation schema. _ai_complete is stubbed, so no model is needed."""
+
+class LocalAiTests(SettingsTestCase):
+    """Without useExternalAi, Proofread and Translate go to the local model,
+    one prose paragraph at a time."""
+
+    TEXT = (
+        "---\ntitle: x\n---\n"
+        "The archive were closed in 1890 by the city.\n\n"
+        "[[Some note]] #tag\n\n"
+        "The documents was moved to Pisa afterwards.\n"
+    )
 
     def setUp(self):
+        super().setUp()
+        self.set_settings(llmSearchModel="some/model")
+        patcher = mock.patch.object(server.llm_search, "complete")
+        self.complete = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_prose_paragraphs(self):
+        self.assertEqual(
+            server.prose_paragraphs(self.TEXT),
+            ["The archive were closed in 1890 by the city.", "The documents was moved to Pisa afterwards."],
+        )
+
+    def test_proofread(self):
+        self.complete.side_effect = [
+            '[{"type":"correction","original":"archive were","suggestion":"archive was","comment":"Agreement."},'
+            ' {"type":"correction","original":"not in the text","suggestion":"x","comment":""},'
+            ' {"type":"correction","original":"in 1890","suggestion":"in 1890","comment":"No error."},'
+            ' {"type":"correction","original":"The archive were","suggestion":"The archive was","comment":""}]',
+            '```json\n[{"type":"odd","original":"documents was","suggestion":"documents were"}]\n```',
+        ]
+        self.assertEqual(
+            server.proofread_text(self.TEXT),
+            [
+                {"type": "correction", "original": "archive were", "suggestion": "archive was", "comment": "Agreement."},
+                {"type": "correction", "original": "documents was", "suggestion": "documents were", "comment": ""},
+            ],
+        )
+        first = self.complete.call_args_list[0].args
+        self.assertEqual(first[1:], ("The archive were closed in 1890 by the city.", "some/model", "paragraph 1 of 2"))
+        self.assertIn("copy-editor", first[0])
+
+    def test_translate(self):
+        self.complete.side_effect = ["Het archief sloot in 1890.", "The documents was moved to Pisa afterwards."]
+        self.assertEqual(
+            server.translate_text(self.TEXT, "Dutch"),
+            [{"original": "The archive were closed in 1890 by the city.", "suggestion": "Het archief sloot in 1890.", "comment": ""}],
+        )
+        self.assertIn("Dutch", self.complete.call_args_list[0].args[0])
+
+
+# Stands in for mdsearch.py --serve: answers each request with a status, the
+# answer in two tokens and "done" (or an error for the user text "fail").
+FAKE_WORKER = """
+import json, sys
+for line in sys.stdin:
+    req = json.loads(line)["complete"]
+    say = lambda **ev: print(json.dumps(ev), flush=True)
+    say(event="status", message="Writing the answer …")
+    if req["user"] == "fail":
+        say(event="error", message="It failed.")
+        continue
+    say(event="token", text="[" + req["system"])
+    say(event="token", text="]")
+    say(event="done")
+"""
+
+
+class LocalCompleteTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        worker = Path(tmp.name) / "worker.py"
+        worker.write_text(FAKE_WORKER, encoding="utf-8")
+        patcher = mock.patch.object(server, "MDSEARCH_PATH", worker)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.llm = server.LlmSearch()
+        self.addCleanup(lambda: self.llm.proc and self.llm.proc.kill())
+
+    def test_answer_and_error(self):
+        self.assertEqual(self.llm.complete('"a"', "text", None), '["a"]')
+        self.assertEqual(self.llm.status()["kind"], "complete")
+        with self.assertRaisesRegex(RuntimeError, "It failed."):
+            self.llm.complete("x", "fail", None)
+        # The worker keeps running for the next request.
+        self.assertEqual(self.llm.complete('"b"', "text", None), '["b"]')
+
+
+class TranslateTests(SettingsTestCase):
+    """With an external AI service, translate_text puts the target language
+    in the system prompt and uses the translation schema. _ai_complete is
+    stubbed, so no model is needed."""
+
+    def setUp(self):
+        super().setUp()
+        self.set_settings(useExternalAi=True)
         self.captured = {}
 
         def fake(system, user, json_schema):
@@ -515,10 +612,10 @@ class ParseJsonListTests(unittest.TestCase):
         self.assertIsNone(server.parse_json_list("No suggestions."))
         self.assertIsNone(server.parse_json_list('{"a": 1}'))
 
-    def test_suggestions_response(self):
-        self.assertEqual(server._suggestions_response("[]"), {"suggestions": []})
+    def test_parse_suggestions(self):
+        self.assertEqual(server._parse_suggestions("[]"), [])
         with self.assertRaisesRegex(RuntimeError, "expected format: Looks fine to me"):
-            server._suggestions_response("Looks fine to me")
+            server._parse_suggestions("Looks fine to me")
 
 
 if __name__ == "__main__":

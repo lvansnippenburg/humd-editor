@@ -46,6 +46,8 @@ let currentCslPath = null;
 let currentPandocRefDocPath = null;
 let currentUserNickname = "";
 let currentProofreadProvider = ""; // "<provider>/<model>" from currentLlmConfigs
+// Proofread and Translate with that provider instead of LLM search's local model.
+let currentUseExternalAi = false;
 let currentLlmConfigs = [];
 // The AI providers the server supports: { id: { name, label?, url, key,
 // urlPlaceholder?, example } } (LLM_PROVIDERS in server.py).
@@ -568,6 +570,7 @@ async function initialize() {
     currentPandocRefDocPath = settings.pandocRefDocPath || null;
     currentUserNickname = settings.userNickname || "";
     currentProofreadProvider = settings.proofreadProvider || "";
+    currentUseExternalAi = settings.useExternalAi ?? false;
     currentDocumentLanguage = settings.documentLanguage || "English";
     searchZotero = settings.searchZotero ?? true;
     document.getElementById("search-zotero").checked = searchZotero;
@@ -837,6 +840,10 @@ function setupEventListeners() {
     });
 
   document.getElementById("remove-llmconfig-btn").addEventListener("click", removeLlmConfig);
+  document.getElementById("use-external-ai-toggle").addEventListener("change", (e) => {
+    updateExternalAiSettings();
+    if (e.target.checked && currentLlmConfigs.length === 0) offerFirstLlmConfig();
+  });
   document.getElementById("close-llmconfig").addEventListener("click", closeLlmConfigDialog);
   document.getElementById("cancel-llmconfig-btn").addEventListener("click", closeLlmConfigDialog);
   document.getElementById("save-llmconfig-btn").addEventListener("click", saveLlmConfig);
@@ -4333,7 +4340,7 @@ async function runLlmZoteroSearch(query) {
 async function resumeLlmSearch() {
   try {
     const job = await apiFetch("/api/llm-search-status");
-    if (searchMode !== "llm" || job.kind === "tags") return;
+    if (searchMode !== "llm" || (job.kind && job.kind !== "search")) return;
     if (job.state === "running") pollLlmSearch();
     else if (job.state !== "idle" || llmZotero) renderLlmJob(job.state === "idle" ? null : job);
   } catch {
@@ -4351,7 +4358,7 @@ async function pollLlmSearch() {
       showStatus(`LLM search failed: ${apiErrorMessage(error)}`, true);
       return;
     }
-    if (gen !== llmPollGen || job.kind === "tags") return;
+    if (gen !== llmPollGen || job.kind !== "search") return;
     if (searchMode === "llm") renderLlmJob(job);
     if (job.state !== "running") return;
     await new Promise((r) => setTimeout(r, 400));
@@ -5323,7 +5330,10 @@ async function openSettingsDialog() {
     cslPath: currentCslPath,
     pandocRefDocPath: currentPandocRefDocPath,
     proofreadProvider: currentProofreadProvider,
+    useExternalAi: currentUseExternalAi,
   };
+  document.getElementById("use-external-ai-toggle").checked = currentUseExternalAi;
+  updateExternalAiSettings();
   document.getElementById("vault-path-display").textContent = currentVaultPath;
   document.getElementById("css-editor").value = currentUserCss;
   document.getElementById("spell-check-toggle").checked = currentSpellCheck;
@@ -5340,12 +5350,21 @@ async function openSettingsDialog() {
   initGraphFolderSettings();
   document.getElementById("settings-dialog").showModal();
 
-  // If no configs exist, give the option to add one
-  if (currentLlmConfigs.length === 0) {
-    const addFirst = await confirmDialog("No AI providers are configured yet. Would you like to add one now?");
-    if (addFirst) {
-      openLlmConfigDialog();
-    }
+  if (currentUseExternalAi && currentLlmConfigs.length === 0) offerFirstLlmConfig();
+}
+
+// The provider list only matters when an external AI service is used.
+function updateExternalAiSettings() {
+  document.getElementById("external-ai-settings").style.display = document.getElementById(
+    "use-external-ai-toggle",
+  ).checked
+    ? ""
+    : "none";
+}
+
+async function offerFirstLlmConfig() {
+  if (await confirmDialog("No AI providers are configured yet. Would you like to add one now?")) {
+    openLlmConfigDialog();
   }
 }
 
@@ -5621,6 +5640,7 @@ async function saveSettings() {
     const newNickname = document.getElementById("nickname-input").value.trim();
     const providerValue = document.getElementById("proofread-provider-select").value;
     const newProofreadProvider = providerValue === "__add_new__" ? "" : providerValue;
+    const newUseExternalAi = document.getElementById("use-external-ai-toggle").checked;
     const newDocumentLanguage =
       document.getElementById("document-language-input").value.trim() || "English";
 
@@ -5644,6 +5664,7 @@ async function saveSettings() {
       pandocRefDocPath: newPandocRefDocPath,
       userNickname: newNickname,
       proofreadProvider: newProofreadProvider,
+      useExternalAi: newUseExternalAi,
       documentLanguage: newDocumentLanguage,
       graphFolderColors: currentGraphFolderColors,
     });
@@ -5657,6 +5678,7 @@ async function saveSettings() {
     currentSmartQuotes = newSmartQuotes;
     currentUserNickname = newNickname;
     currentProofreadProvider = newProofreadProvider;
+    currentUseExternalAi = newUseExternalAi;
     currentDocumentLanguage = newDocumentLanguage;
     applySpellCheck();
 
@@ -5912,6 +5934,32 @@ function showSuggestionPanelError(err) {
     `<p class="proofread-error">${escapeHtml(apiErrorMessage(err))}</p>`;
 }
 
+// Await `request` (Proofread or Translate). With the local model, which can
+// take a while (and loads first), the panel shows its progress meanwhile.
+async function withLocalModelProgress(request, verb) {
+  if (currentUseExternalAi) return request;
+  const mode = suggestionPanelMode;
+  const loading = document.getElementById("proofread-loading");
+  let waiting = true;
+  (async () => {
+    while (waiting) {
+      await new Promise((r) => setTimeout(r, 700));
+      const job = await apiFetch("/api/llm-search-status").catch(() => null);
+      if (!waiting || suggestionPanelMode !== mode) return;
+      if (job?.kind === "complete" && job.state === "running") {
+        const step = job.step ? `${job.step}, ` : "";
+        const written = job.answer ? ` (${job.answer.length} characters so far)` : "";
+        loading.innerHTML = `<p>${escapeHtml(`${verb} with the local model (${step}${job.status})${written}`)}</p>`;
+      }
+    }
+  })();
+  try {
+    return await request;
+  } finally {
+    waiting = false;
+  }
+}
+
 // The text Proofread or Translate works on: the selection or the whole
 // document, which becomes proofreadRange. Null (with a message) if there is
 // nothing to `verb`.
@@ -5947,7 +5995,7 @@ async function runProofread() {
     loading: "Proofreading…",
   });
   try {
-    const res = await apiPost("/api/proofread", { text });
+    const res = await withLocalModelProgress(apiPost("/api/proofread", { text }), "Proofreading");
     const list = document.getElementById("proofread-list");
     for (const item of sortByPositionInText(res.suggestions)) {
       list.appendChild(buildSuggestionItem(item));
@@ -5973,7 +6021,10 @@ async function runTranslate() {
     loading: `Translating to ${targetLang}…`,
   });
   try {
-    const res = await apiPost("/api/translate", { text, target_lang: targetLang });
+    const res = await withLocalModelProgress(
+      apiPost("/api/translate", { text, target_lang: targetLang }),
+      "Translating",
+    );
     const list = document.getElementById("proofread-list");
     for (const item of res.suggestions) list.appendChild(buildSuggestionItem(item));
     if (res.suggestions.length) {

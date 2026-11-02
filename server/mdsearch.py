@@ -8,7 +8,9 @@ Usage:  python mdsearch.py /path/to/notes [llm]
         ({"vault", "query", "model"?}) from stdin, one per line, and writes
         JSON events (status / sources / token / done / error) to stdout.
         A request with "tags" instead of "query" suggests tags for notes
-        (see suggest_tags); it sends a "tagged" event per note.
+        (see suggest_tags); it sends a "tagged" event per note. One with
+        "complete" ({"system", "user"}, no vault) just has the model answer:
+        the editor's Proofread and Translate (see complete).
 Needs:  Apple silicon Mac, Python 3.9+, and  pip install mlx-lm
 Optional: pip install fastembed
         Adds semantic search (multilingual MiniLM) alongside keyword search.
@@ -455,6 +457,38 @@ def suggest_tags(index, req, llm, sampler, emit, report):
         )
 
 
+# --- plain answers (the editor's Proofread and Translate) ---------------------
+
+COMPLETE_MAX_TOKENS = 4096  # room for proofreading or translating a long selection
+THINK = re.compile(r"<think>.*?</think>", re.S)  # a reasoning model's (Qwen3) thoughts
+
+
+def complete(llm, req, sampler, emit, report):
+    """req["complete"]: {"system", "user"}. Streams the answer as "token"
+    events; "done" carries all of it, without a reasoning model's thoughts."""
+    from mlx_lm import stream_generate
+    spec = req["complete"]
+    messages = [
+        {"role": "system", "content": spec["system"]},
+        {"role": "user", "content": spec["user"]},
+    ]
+    prompt = llm["tokenizer"].apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True)
+    report("Writing the answer …")
+    parts, finish = [], None
+    for r in stream_generate(llm["model"], llm["tokenizer"], prompt,
+                             max_tokens=COMPLETE_MAX_TOKENS, sampler=sampler):
+        text = getattr(r, "text", r)
+        parts.append(text)
+        emit("token", text=text)
+        finish = getattr(r, "finish_reason", None) or finish
+    if finish == "length":
+        emit("error", message="The local model's answer was cut off because it got too "
+                              "long. Select a smaller part of the text and try again.")
+        return
+    emit("done", answer=THINK.sub("", "".join(parts)).strip())
+
+
 # --- worker mode (used by the humd editor server) ----------------------------
 
 def serve():
@@ -495,10 +529,21 @@ def serve():
             continue
         try:
             req = json.loads(line)
-            root = Path(req["vault"]).resolve()
-            q = (req.get("query") or "").strip()
             name = req.get("model") or DEFAULT_LLM
 
+            def load_llm():
+                if llm["name"] != name:
+                    report(f"Loading {name} (the first run downloads several GB) …")
+                    llm["model"], llm["tokenizer"] = load(name)
+                    llm["name"] = name
+
+            if "complete" in req:
+                load_llm()
+                complete(llm, req, sampler, emit, report)
+                continue
+
+            root = Path(req["vault"]).resolve()
+            q = (req.get("query") or "").strip()
             report("Reading notes …")
             sig = vault_signature(root)
             if index["root"] != root or index["sig"] != sig:
@@ -509,12 +554,6 @@ def serve():
                         embed = make_embedder()
                     idx.add_embeddings(embed, report)
                 index.update(root=root, sig=sig, index=idx)
-
-            def load_llm():
-                if llm["name"] != name:
-                    report(f"Loading {name} (the first run downloads several GB) …")
-                    llm["model"], llm["tokenizer"] = load(name)
-                    llm["name"] = name
 
             if "tags" in req:
                 load_llm()

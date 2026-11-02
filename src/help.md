@@ -190,7 +190,9 @@ This needs Zotero to be running with the **ZotSeek** plugin (with its MCP server
 
 ## AI assistance
 
-Proofread and Translate use an AI model to help with the document you have open. The AI provider is chosen under **Settings → Proofreading & translation**: **Gemini**, **Anthropic**, **Mistral** or **OpenAI** (remote; each needs an API key), or **Ollama** or **apfel** (local, so your text never leaves your machine). All of them are reached through their OpenAI-compatible API; for Anthropic and Gemini that means the same API keys as before work.
+Proofread and Translate use an AI model to help with the document you have open. By default this is the local model of [LLM search](#llm-search), on your Mac: your text never leaves it, and no account or API key is needed (the requirements are the same as for LLM search). The model is small, so it works one paragraph at a time; the side panel shows how far it has got. The first use loads the model, which takes up to a minute; it then stays loaded for 5 minutes, shared with LLM search and Suggest tags, which run one at a time.
+
+The local model is good at spelling and grammar, but weaker than the large external services at style, at the passive voice and in translation; it doesn't check the paragraph structure (PEE). For those, tick **Use an external AI service instead** under **Settings → Proofreading & translation** and choose a provider: **Gemini**, **Anthropic**, **Mistral** or **OpenAI** (remote; each needs an API key), or **Ollama** or **apfel** (local). All of them are reached through their OpenAI-compatible API; for Anthropic and Gemini that means the same API keys as before work.
 
 Add a provider with **➕ Add new LLM configuration…** at the bottom of the Provider list: choose the provider, enter the model name and its API key. Adding the same provider and model again replaces its settings; **Remove** deletes the selected one. They are saved with your other settings in `~/.humd-editor/settings.json`, under `llmConfigs`.
 

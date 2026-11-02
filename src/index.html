@@ -652,16 +652,25 @@
             <div class="settings-section">
                 <h3>Proofreading &amp; translation</h3>
                 <p class="settings-hint">
-                    Proofread, translate or suggest tags with an AI provider: Gemini, Anthropic,
-                    Mistral or OpenAI (remote), or Ollama or apfel (local: your text never leaves
-                    your machine). Add providers with “Add new LLM configuration” in the list below.
+                    Proofread and Translate use the local model of LLM search, on this Mac: your
+                    text never leaves it (Apple silicon only; the first use downloads the model).
                 </p>
-                <label class="settings-label">Provider</label>
-                <div class="file-path-container">
-                    <select id="proofread-provider-select" class="settings-input" style="flex: 1"></select>
-                    <button id="remove-llmconfig-btn" type="button" title="Remove the selected AI provider">
-                        Remove
-                    </button>
+                <label class="settings-toggle" style="margin-top: 8px">
+                    <input type="checkbox" id="use-external-ai-toggle" />
+                    <span>Use an external AI service instead</span>
+                </label>
+                <div id="external-ai-settings">
+                    <p class="settings-hint">
+                        Gemini, Anthropic, Mistral or OpenAI (remote), or Ollama or apfel (local).
+                        Add one with “Add new LLM configuration” in the list below.
+                    </p>
+                    <label class="settings-label">Provider</label>
+                    <div class="file-path-container">
+                        <select id="proofread-provider-select" class="settings-input" style="flex: 1"></select>
+                        <button id="remove-llmconfig-btn" type="button" title="Remove the selected AI provider">
+                            Remove
+                        </button>
+                    </div>
                 </div>
 
                 <label class="settings-label" style="margin-top: 10px">Translation language</label>
