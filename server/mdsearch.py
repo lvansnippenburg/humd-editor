@@ -1,34 +1,31 @@
 #!/usr/bin/env python3
-"""Ask questions about a directory of markdown notes, answered by a local LLM.
+"""The retrieval worker of the humd editor's LLM search and Suggest tags.
 
-Usage:  python mdsearch.py /path/to/notes [llm]
-        llm = a Hugging Face repo id or a local folder (default below)
-        python mdsearch.py --serve
-        Worker mode for the humd editor's "LLM search": reads JSON requests
-        ({"vault", "query", "model"?}) from stdin, one per line, and writes
-        JSON events (status / sources / token / done / error) to stdout.
-        A request with "tags" instead of "query" suggests tags for notes
-        (see suggest_tags); it sends a "tagged" event per note. One with
-        "complete" ({"system", "user"}, no vault) just has the model answer:
-        the editor's Proofread and Translate (see complete).
-Needs:  Apple silicon Mac, Python 3.9+, and  pip install mlx-lm
-Optional: pip install fastembed
-        Adds semantic search (multilingual MiniLM) alongside keyword search.
-        Without it the script uses keyword search (BM25) only.
+Finds the passages of a directory of markdown notes that best match a
+question, and the notes most similar to a text. The editor's server
+(server.py) sends the passages and notes to the AI model; this process never
+talks to a model and never writes to the notes.
 
-Missing packages are installed automatically into a private virtual
-environment (DEPS_VENV below), so the system Python is left untouched. If that
-fails, the error explains how to install them by hand.
+Usage:  python mdsearch.py --serve
+        Reads JSON requests from stdin, one per line, and answers each with
+        JSON events on stdout: any number of {"event": "status", "message"},
+        then {"event": "result", …} or {"event": "error", "message"}.
+          {"vault", "query"}  →  result {"passages": [{"file", "line", "text"}]}
+          {"vault", "similar": {"text", "file"?, "candidates": [file]}}
+                              →  result {"notes": [[file, score]]}
+        (files relative to the vault; see Index.search and similar_notes).
 
-Passages are retrieved, the top ones are given to the model, and it must cite
-them as [file:line]. Nothing is ever written to your notes.
+Passages are found by keyword matching (BM25) fused with semantic matching
+(a multilingual MiniLM model via fastembed). fastembed is installed
+automatically into a private virtual environment (DEPS_VENV), so the system
+Python is left untouched; without it only keyword matching is used, and no
+similar notes are found.
 """
 import hashlib
 import importlib
 import json
 import math
 import os
-import platform
 import re
 import subprocess
 import sys
@@ -38,29 +35,15 @@ from pathlib import Path
 
 np = TextEmbedding = None  # set by load_semantic() when fastembed is available
 
-"""overruled by mlx-community/Qwen2.5-3B-Instruct-4bit in the ~/.humd-editor/settings.json -in my case because of a lack of computer memory"""
-DEFAULT_LLM = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 EMBED_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 CACHE = Path.home() / ".cache" / "mdsearch" / "embeddings.npz"
 DEPS_VENV = Path.home() / ".humd-editor" / "mdsearch-venv"
-REQUIRED = [("mlx_lm", "mlx-lm")]          # (import name, pip name)
-OPTIONAL = [("fastembed", "fastembed")]
-MAX_TOKENS = 1024   # upper limit on answer length
+PACKAGES = [("fastembed", "fastembed")]  # (import name, pip name)
 TOP_K = 8           # passages handed to the model
 CHUNK_CHARS = 500   # passage size; MiniLM was trained on short inputs (~128 tokens)
 POOL = 50           # candidates taken from each ranking before fusion
 RRF_K = 60          # reciprocal rank fusion constant
-
-SYSTEM = (
-    "You answer questions about a researcher's markdown notes using ONLY the "
-    "excerpts provided. Cite every claim as [file:line]. If the excerpts do not "
-    "contain the answer, say so plainly: that only means the retrieved passages "
-    "lack it, not that the notes do. Never add facts from outside the excerpts."
-)
-
-
-class SetupError(Exception):
-    """Dependencies are missing and couldn't be installed; message says what to do."""
+SIMILAR_NOTES = 6   # similar notes returned (examples for tag suggestion)
 
 
 # --- dependencies ------------------------------------------------------------
@@ -93,92 +76,47 @@ def venv_missing(modules):
     return out
 
 
-def manual_instructions(reason):
-    venv = str(DEPS_VENV).replace(str(Path.home()), "~")
-    return (
-        f"LLM search could not install its Python packages automatically.\n\n"
-        f"{reason}\n\n"
-        f"Install them by hand in Terminal:\n\n"
-        f"  python3 -m venv {venv}\n"
-        f"  {venv}/bin/python -m pip install mlx-lm fastembed\n\n"
-        f"Then search again. (fastembed is optional: without it only keyword "
-        f"retrieval is used.) If python3 is missing, install it from "
-        f"https://www.python.org or with `brew install python`."
-    )
-
-
-def run_pip(args):
-    r = subprocess.run(
-        [str(venv_python()), "-m", "pip", "install", "--disable-pip-version-check", *args],
-        capture_output=True, text=True,
-    )
-    if r.returncode != 0:
-        tail = "\n".join((r.stderr or r.stdout).strip().splitlines()[-6:])
-        raise RuntimeError(f"pip install {' '.join(args)} failed:\n{tail}")
-
-
 def install_into_venv(report):
     """Create the private venv if needed and install the packages it lacks.
-
-    Required packages must succeed; optional ones may fail (reported, not fatal).
-    """
+    Raises RuntimeError with what went wrong."""
     if not venv_python().exists():
         report(f"Creating Python environment for LLM search in {DEPS_VENV} …")
         r = subprocess.run([sys.executable, "-m", "venv", str(DEPS_VENV)],
                            capture_output=True, text=True)
         if r.returncode != 0:
-            raise SetupError(manual_instructions(
-                f"Creating the virtual environment failed:\n{(r.stderr or r.stdout).strip()}"))
-    req = venv_missing(REQUIRED)
-    if req:
-        report(f"Installing {', '.join(req)} (one-time, may take a few minutes) …")
-        try:
-            run_pip(req)
-        except RuntimeError as e:
-            raise SetupError(manual_instructions(str(e)))
-    opt = venv_missing(OPTIONAL)
-    if opt:
-        report(f"Installing {', '.join(opt)} for semantic search …")
-        try:
-            run_pip(opt)
-        except RuntimeError as e:
-            report(f"Semantic search unavailable (keyword retrieval only): {e}")
+            raise RuntimeError(f"Creating the virtual environment failed:\n{(r.stderr or r.stdout).strip()}")
+    pkgs = venv_missing(PACKAGES)
+    if pkgs:
+        report(f"Installing {', '.join(pkgs)} for semantic search (one-time, may take a few minutes) …")
+        r = subprocess.run(
+            [str(venv_python()), "-m", "pip", "install", "--disable-pip-version-check", *pkgs],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            tail = "\n".join((r.stderr or r.stdout).strip().splitlines()[-6:])
+            raise RuntimeError(f"pip install {' '.join(pkgs)} failed:\n{tail}")
 
 
 def ensure_dependencies(report):
-    """Make mlx-lm (and if possible fastembed) importable.
-
-    Uses the current interpreter when it already has everything; otherwise
-    switches to the private venv (installing into it first), re-executing this
-    script there. Raises SetupError with manual instructions when that fails.
-    """
-    if platform.system() != "Darwin" or platform.machine() != "arm64":
-        raise SetupError(
-            "LLM search runs the model locally with Apple's MLX, which needs a Mac "
-            "with Apple silicon and an arm64 (not Rosetta/Intel) Python. "
-            f"This Python reports {platform.system()} {platform.machine()}.")
-    if not missing(REQUIRED) and not missing(OPTIONAL):
+    """Make fastembed importable if possible: use the current interpreter when
+    it has it, otherwise the private venv (installing into it first),
+    re-executing this script there. Without it, only keyword search is used."""
+    if not missing(PACKAGES):
         return
-    in_venv = Path(sys.prefix).resolve() == DEPS_VENV.resolve()
-    if not in_venv:
-        if venv_missing(REQUIRED) or venv_missing(OPTIONAL):
-            try:
-                install_into_venv(report)
-            except SetupError:
-                if not missing(REQUIRED):
-                    report("Semantic search unavailable (fastembed not installed): "
-                           "using keyword retrieval only.")
-                    return  # this interpreter can still do keyword + LLM
-                raise
-        if not venv_missing(REQUIRED):
-            # Same stdin/stdout, so the server's pipes carry over.
-            os.execv(str(venv_python()), [str(venv_python()), *sys.argv])
-    req = missing(REQUIRED)
-    if req:
-        raise SetupError(manual_instructions(
-            f"Still missing after installation: {', '.join(req)}."))
-    if missing(OPTIONAL):
-        report("fastembed not installed: using keyword retrieval only.")
+    if Path(sys.prefix).resolve() != DEPS_VENV.resolve():
+        try:
+            install_into_venv(report)
+        except RuntimeError as e:
+            venv = str(DEPS_VENV).replace(str(Path.home()), "~")
+            report(
+                f"Semantic search unavailable, using keyword search only. {e} "
+                f"To install it by hand: python3 -m venv {venv} && "
+                f"{venv}/bin/python -m pip install fastembed"
+            )
+            return
+        # Same stdin/stdout, so the server's pipes carry over.
+        os.execv(str(venv_python()), [str(venv_python()), *sys.argv])
+    report("fastembed not installed: using keyword search only.")
 
 
 def load_semantic():
@@ -339,47 +277,9 @@ class Index:
         return [self.docs[i] for i, _ in fused.most_common(k)]
 
 
-# --- answering ---------------------------------------------------------------
+# --- similar notes (tag suggestion) ------------------------------------------
 
-def build_prompt(tokenizer, q, hits):
-    context = "\n\n".join(f"[{f}:{n}]\n{t}" for f, n, t in hits)
-    messages = [
-        {"role": "system", "content": SYSTEM},
-        {"role": "user", "content": f"Excerpts:\n\n{context}\n\nQuestion: {q}"},
-    ]
-    return tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True)
-
-
-def generate(model, tokenizer, prompt, sampler, max_tokens=MAX_TOKENS):
-    """Yield the answer piece by piece."""
-    from mlx_lm import stream_generate
-    for r in stream_generate(model, tokenizer, prompt,
-                             max_tokens=max_tokens, sampler=sampler):
-        # newer mlx-lm yields response objects, older versions yield strings
-        yield getattr(r, "text", r)
-
-
-# --- tag suggestion ----------------------------------------------------------
-#
-# Tags for a note, from the vault's existing tags: the notes most similar in
-# meaning that already have tags are found with the embeddings, and the local
-# model picks the tags, with those notes and their tags as examples. Tested on
-# the vault's own tagged notes, the examples clearly help the model (and the
-# model clearly beats just counting the neighbours' tags).
-
-TAG_NEIGHBOURS = 6     # similar tagged notes shown to the model
-TAG_TEXT_CHARS = 2000  # start of the note given to the model
-MAX_TAGS = 3
-TAG_SYSTEM = (
-    "You tag notes in a researcher's vault. Choose 1 to 3 tags for the note "
-    "from the allowed list only; never invent tags. Answer with the tags, "
-    "comma-separated, nothing else."
-)
-INLINE_TAG = re.compile(r"(^|[^\w&#])#[\w/-]+")
-
-
-def similar_notes(index, text, exclude, candidates, k=TAG_NEIGHBOURS):
+def similar_notes(index, text, exclude, candidates, k=SIMILAR_NOTES):
     """The k notes in `candidates` (relative paths) most similar to `text`,
     as [(file, score)], best first. A note's score is how well its best
     passage matches each passage of `text`, averaged. Empty without
@@ -404,93 +304,7 @@ def similar_notes(index, text, exclude, candidates, k=TAG_NEIGHBOURS):
     return [(f, s) for s, f in ranked[:k]]
 
 
-def tag_prompt(tokenizer, text, neighbours, note_tags, allowed, existing):
-    examples = "\n".join(
-        f"- {Path(f).stem}: {', '.join(note_tags[f])}" for f, _ in neighbours
-    ) or "(none)"
-    user = f"Allowed tags: {', '.join(allowed)}\n\nSimilar notes and their tags:\n{examples}\n\n"
-    if existing:
-        user += f"The note already has these tags; don't repeat them: {', '.join(existing)}\n\n"
-    user += f"Note:\n{text[:TAG_TEXT_CHARS]}"
-    messages = [{"role": "system", "content": TAG_SYSTEM}, {"role": "user", "content": user}]
-    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-
-
-def parse_tags(answer, allowed, existing):
-    """The allowed tags in the model's answer (canonical spelling, at most
-    MAX_TAGS), leaving out the ones the note already has."""
-    canon = {t.lower(): t for t in allowed}
-    skip = {t.lower() for t in existing}
-    out = []
-    for part in re.split(r"[,\n]", answer):
-        key = part.strip().strip("*-.` ").lstrip("#").strip().lower()
-        if key in canon and key not in skip and canon[key] not in out:
-            out.append(canon[key])
-    return out[:MAX_TAGS]
-
-
-def suggest_tags(index, req, llm, sampler, emit, report):
-    """req["tags"]: {"targets": [{"file", "text", "existing"?}], "noteTags":
-    {file: [tag]}} (files relative to the vault). Emits a "tagged" event per
-    target: its tags, and for each the similar notes that have it."""
-    spec = req["tags"]
-    note_tags = spec["noteTags"]
-    allowed = sorted({t for tags in note_tags.values() for t in tags}, key=str.lower)
-    targets = spec["targets"]
-    for n, target in enumerate(targets, 1):
-        report(f"Choosing tags: note {n} of {len(targets)} …" if len(targets) > 1 else "Choosing tags …")
-        text = INLINE_TAG.sub(r"\1", target["text"]).strip()
-        existing = target.get("existing") or []
-        neighbours = similar_notes(index, text, target.get("file"), note_tags)
-        tags = []
-        if text:
-            prompt = tag_prompt(llm["tokenizer"], text, neighbours, note_tags, allowed, existing)
-            answer = "".join(generate(llm["model"], llm["tokenizer"], prompt, sampler, max_tokens=40))
-            tags = parse_tags(answer, allowed, existing)
-        emit(
-            "tagged",
-            file=target.get("file"),
-            tags=tags,
-            evidence={
-                t: [f for f, _ in neighbours if t.lower() in {x.lower() for x in note_tags[f]}]
-                for t in tags
-            },
-        )
-
-
-# --- plain answers (the editor's Proofread and Translate) ---------------------
-
-COMPLETE_MAX_TOKENS = 4096  # room for proofreading or translating a long selection
-THINK = re.compile(r"<think>.*?</think>", re.S)  # a reasoning model's (Qwen3) thoughts
-
-
-def complete(llm, req, sampler, emit, report):
-    """req["complete"]: {"system", "user"}. Streams the answer as "token"
-    events; "done" carries all of it, without a reasoning model's thoughts."""
-    from mlx_lm import stream_generate
-    spec = req["complete"]
-    messages = [
-        {"role": "system", "content": spec["system"]},
-        {"role": "user", "content": spec["user"]},
-    ]
-    prompt = llm["tokenizer"].apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True)
-    report("Writing the answer …")
-    parts, finish = [], None
-    for r in stream_generate(llm["model"], llm["tokenizer"], prompt,
-                             max_tokens=COMPLETE_MAX_TOKENS, sampler=sampler):
-        text = getattr(r, "text", r)
-        parts.append(text)
-        emit("token", text=text)
-        finish = getattr(r, "finish_reason", None) or finish
-    if finish == "length":
-        emit("error", message="The local model's answer was cut off because it got too "
-                              "long. Select a smaller part of the text and try again.")
-        return
-    emit("done", answer=THINK.sub("", "".join(parts)).strip())
-
-
-# --- worker mode (used by the humd editor server) ----------------------------
+# --- worker mode ---------------------------------------------------------------
 
 def serve():
     out = sys.stdout
@@ -504,11 +318,7 @@ def serve():
 
     # Before the redirect below: this may re-exec into the private venv, which
     # must inherit the real stdout (pip output is captured, so nothing leaks).
-    try:
-        ensure_dependencies(report)
-    except SetupError as e:
-        emit("fatal", message=str(e))
-        return
+    ensure_dependencies(report)
 
     # Anything a library prints must not corrupt the JSON protocol on stdout:
     # keep a private handle on the real stdout and point fd 1 at stderr.
@@ -516,13 +326,8 @@ def serve():
     os.dup2(2, 1)
     sys.stdout = sys.stderr
 
-    from mlx_lm import load
-    from mlx_lm.sample_utils import make_sampler
-    sampler = make_sampler(temp=0.2)
-    tag_sampler = make_sampler(temp=0.0)
     embed = None
     semantic = load_semantic()
-    llm = {"name": None, "model": None, "tokenizer": None}
     index = {"root": None, "sig": None, "index": None}
 
     for line in sys.stdin:
@@ -530,105 +335,29 @@ def serve():
             continue
         try:
             req = json.loads(line)
-            name = req.get("model") or DEFAULT_LLM
-
-            def load_llm():
-                if llm["name"] != name:
-                    report(f"Loading {name} (the first run downloads several GB) …")
-                    llm["model"], llm["tokenizer"] = load(name)
-                    llm["name"] = name
-
-            if "complete" in req:
-                load_llm()
-                complete(llm, req, sampler, emit, report)
-                continue
-
             root = Path(req["vault"]).resolve()
-            q = (req.get("query") or "").strip()
             report("Reading notes …")
             sig = vault_signature(root)
             if index["root"] != root or index["sig"] != sig:
                 idx = Index(root)
                 if semantic:
                     if embed is None:
-                        report("Loading embedding model (the first run downloads it) …")
+                        report("Loading the search model (the first run downloads it) …")
                         embed = make_embedder()
                     idx.add_embeddings(embed, report)
                 index.update(root=root, sig=sig, index=idx)
-
-            if "tags" in req:
-                load_llm()
-                suggest_tags(index["index"], req, llm, tag_sampler, emit, report)
-                emit("done")
-                continue
-
-            hits = index["index"].search(q)
-            emit("sources", sources=[{"file": f, "line": n, "text": t} for f, n, t in hits])
-            if not hits:
-                emit("done", answer="No matching passages found in your notes.")
-                continue
-
-            load_llm()
-            report("Answering …")
-            prompt = build_prompt(llm["tokenizer"], q, hits)
-            for piece in generate(llm["model"], llm["tokenizer"], prompt, sampler):
-                emit("token", text=piece)
-            emit("done")
-        except Exception as e:  # keep the worker alive for the next question
+            if "similar" in req:
+                spec = req["similar"]
+                notes = similar_notes(index["index"], spec["text"], spec.get("file"), set(spec["candidates"]))
+                emit("result", notes=notes)
+            else:
+                hits = index["index"].search(req["query"])
+                emit("result", passages=[{"file": f, "line": n, "text": t} for f, n, t in hits])
+        except Exception as e:  # keep the worker alive for the next request
             emit("error", message=f"{type(e).__name__}: {e}")
 
 
-# --- command line ------------------------------------------------------------
-
-def main():
-    if sys.argv[1:] == ["--serve"]:
-        serve()
-        return
-    if not 2 <= len(sys.argv) <= 3:
-        sys.exit(__doc__)
-    root = Path(sys.argv[1]).resolve()
-    llm_name = sys.argv[2] if len(sys.argv) == 3 else DEFAULT_LLM
-
-    try:
-        ensure_dependencies(print)
-    except SetupError as e:
-        sys.exit(str(e))
-
-    index = Index(root)
-    if not index.docs:
-        sys.exit(f"No markdown passages found in {root}")
-    print(f"Indexed {len(index.docs)} passages from {root}")
-
-    if load_semantic():
-        print(f"Loading embedding model {EMBED_MODEL} (first run downloads it) ...")
-        index.add_embeddings(make_embedder())
-    else:
-        print("fastembed not installed: using keyword search only.")
-
-    from mlx_lm import load
-    from mlx_lm.sample_utils import make_sampler
-
-    print(f"Loading {llm_name} (the first run downloads it) ...")
-    model, tokenizer = load(llm_name)
-    sampler = make_sampler(temp=0.2)
-
-    while True:
-        try:
-            q = input("\n> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            break
-        if not q:
-            continue
-        hits = index.search(q)
-        if not hits:
-            print("No matching passages.")
-            continue
-        print("Sources:", ", ".join(f"{f}:{n}" for f, n, _ in hits))
-        print()
-        for piece in generate(model, tokenizer, build_prompt(tokenizer, q, hits), sampler):
-            print(piece, end="", flush=True)
-        print()
-
-
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] != ["--serve"]:
+        sys.exit(__doc__)
+    serve()

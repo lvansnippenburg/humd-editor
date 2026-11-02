@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -298,39 +299,352 @@ class SettingsTestCase(unittest.TestCase):
         server.save_settings(settings)
 
 
-class LlmConfigTests(SettingsTestCase):
+class AiModelTests(SettingsTestCase):
     def test_empty(self):
-        self.assertEqual(server.load_llm_configs(), [])
+        self.assertEqual(server.load_ai_models(), [])
+        with self.assertRaisesRegex(RuntimeError, "No AI model is set up"):
+            server.selected_ai_model()
 
     def test_add_replace_and_remove(self):
-        server.add_llm_config("Gemini", "gemini-2.5-flash", "key-1")
-        server.add_llm_config("ollama", "llama3.1", "", "http://host:11434/")
-        server.add_llm_config("gemini", "gemini-2.5-flash", "key-2")  # replaces key-1
+        server.add_ai_model("https://api.mistral.ai/v1/", "mistral-small-latest", "key-1")
+        server.add_ai_model("http://127.0.0.1:8000/v1", "qwen", small=True)
+        server.add_ai_model("https://api.mistral.ai/v1", "mistral-small-latest", "key-2")  # replaces key-1
+        models = server.load_ai_models()
         self.assertEqual(
-            server.load_llm_configs(),
+            models,
             [
-                {"provider": "gemini", "model": "gemini-2.5-flash", "apiKey": "key-2"},
-                {"provider": "ollama", "model": "llama3.1", "apiKey": "", "url": "http://host:11434"},
+                {"url": "https://api.mistral.ai/v1", "model": "mistral-small-latest", "apiKey": "key-2", "small": False},
+                {"url": "http://127.0.0.1:8000/v1", "model": "qwen", "apiKey": "", "small": True},
             ],
         )
-        server.save_settings({**server.load_settings(), "proofreadProvider": "ollama/llama3.1"})
-        server.remove_llm_config("ollama", "llama3.1")
-        self.assertEqual(len(server.load_llm_configs()), 1)
-        self.assertNotIn("proofreadProvider", server.load_settings())
+        self.assertEqual([server.ai_model_name(m) for m in models], ["Mistral", "oMLX"])
+        self.assertEqual(server.ai_model_name({"url": "http://host:1234/v1"}), "host:1234")
+        # Without a selection the first one is used.
+        self.assertEqual(server.selected_ai_model()["model"], "mistral-small-latest")
+        key = server.ai_model_key(models[1])
+        server.save_settings({**server.load_settings(), "aiModel": key})
+        self.assertEqual(server.selected_ai_model()["model"], "qwen")
+        server.remove_ai_model(key)
+        self.assertEqual(len(server.load_ai_models()), 1)
+        self.assertNotIn("aiModel", server.load_settings())
+
+    def test_selection_gone(self):
+        server.add_ai_model("http://localhost:11434/v1", "qwen3:4b")
+        server.save_settings({**server.load_settings(), "aiModel": "gone @ http://x/v1"})
+        with self.assertRaisesRegex(RuntimeError, "not set up any more"):
+            server.selected_ai_model()
 
     def test_validation(self):
-        with self.assertRaisesRegex(ValueError, "Unknown provider"):
-            server.add_llm_config("nope", "m", "k")
+        with self.assertRaisesRegex(ValueError, "URL"):
+            server.add_ai_model("localhost:8000", "m")
         with self.assertRaisesRegex(ValueError, "model name"):
-            server.add_llm_config("gemini", "", "k")
-        with self.assertRaisesRegex(ValueError, "API key"):
-            server.add_llm_config("mistral", "mistral-small-latest")
-        with self.assertRaisesRegex(ValueError, "API key"):
-            server.add_llm_config("openai", "gpt-5-mini")
-        # Another OpenAI-compatible server, and the local ones, need no key.
-        server.add_llm_config("openai", "local", url="http://localhost:8080/v1")
-        server.add_llm_config("apfel", "apple-foundationmodel")
-        self.assertEqual(len(server.load_llm_configs()), 2)
+            server.add_ai_model("http://localhost:8000/v1", " ")
+
+
+class FakeChatService(BaseHTTPRequestHandler):
+    """An OpenAI-compatible /v1/chat/completions. It streams `pieces`, then
+    `finish_reason`; it rejects a request with an option named in `reject`
+    (400, as a strict service would), and answers model "missing" with 404."""
+
+    pieces = ["<think>hmm</think>", "Hello", " world"]
+    finish_reason = "stop"
+    reject = ()
+    requests = []
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        FakeChatService.requests.append((self.path, dict(self.headers), body))
+        rejected = next((o for o in self.reject if o in body or body.get("response_format", {}).get("type") == o), None)
+        if body["model"] == "missing" or rejected:
+            code, message = (404, "model 'missing' not found") if not rejected else (400, f"Unsupported: {rejected}")
+            data = json.dumps({"error": {"message": message}}).encode()
+            self.send_response(code)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        chunks = [{"choices": [{"delta": {"content": p}, "finish_reason": None}]} for p in self.pieces]
+        chunks.append({"choices": [{"delta": {}, "finish_reason": self.finish_reason}]})
+        for c in chunks:
+            self.wfile.write(f"data: {json.dumps(c)}\n\n".encode())
+        self.wfile.write(b"data: [DONE]\n\n")
+
+    def log_message(self, *args):
+        pass
+
+
+class AiChatTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), FakeChatService)
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+        cls.cfg = {"url": f"http://127.0.0.1:{cls.srv.server_address[1]}/v1", "model": "qwen", "apiKey": "secret"}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        cls.srv.server_close()
+
+    def setUp(self):
+        FakeChatService.requests.clear()
+        FakeChatService.finish_reason = "stop"
+        FakeChatService.reject = ()
+
+    def test_streams_the_answer(self):
+        pieces = []
+        answer = server.ai_chat("sys", "Hi", self.cfg, max_tokens=40, temperature=0.2, on_text=pieces.append)
+        self.assertEqual(answer, "Hello world")  # without the thoughts
+        self.assertEqual(pieces, ["<think>hmm</think>", "Hello", " world"])
+        path, headers, body = FakeChatService.requests[0]
+        self.assertEqual(path, "/v1/chat/completions")
+        self.assertEqual(headers["Authorization"], "Bearer secret")
+        self.assertEqual(
+            body,
+            {
+                "model": "qwen",
+                "messages": [{"role": "system", "content": "sys"}, {"role": "user", "content": "Hi"}],
+                "stream": True,
+                "max_tokens": 40,
+                "temperature": 0.2,
+            },
+        )
+
+    def test_json_schema(self):
+        server.ai_chat("sys", "Hi", self.cfg, json_schema=server.TRANSLATE_JSON_SCHEMA)
+        fmt = FakeChatService.requests[0][2]["response_format"]
+        self.assertEqual(fmt["type"], "json_schema")
+        self.assertEqual(fmt["json_schema"]["schema"]["properties"]["items"], server.TRANSLATE_JSON_SCHEMA)
+
+    def test_rejected_options_are_dropped(self):
+        FakeChatService.reject = ("temperature", "max_tokens", "json_schema")
+        server.ai_chat("sys", "Hi", self.cfg, json_schema={}, max_tokens=40, temperature=0.2)
+        body = FakeChatService.requests[-1][2]
+        self.assertNotIn("temperature", body)
+        self.assertEqual(body["max_completion_tokens"], 40)
+        self.assertEqual(body["response_format"], {"type": "json_object"})
+        self.assertEqual(len(FakeChatService.requests), 4)
+
+    def test_cut_off(self):
+        FakeChatService.finish_reason = "length"
+        with self.assertRaisesRegex(RuntimeError, "cut off"):
+            server.ai_chat("sys", "Hi", self.cfg)
+
+    def test_missing_model(self):
+        with self.assertRaisesRegex(RuntimeError, r"error 404: model 'missing' not found.*Check the URL"):
+            server.ai_chat("sys", "Hi", {**self.cfg, "model": "missing"})
+
+    def test_unreachable(self):
+        with self.assertRaisesRegex(RuntimeError, r"Could not reach 127.0.0.1:9 at http://127.0.0.1:9/v1 — is it running"):
+            server.ai_chat("sys", "Hi", {"url": "http://127.0.0.1:9/v1", "model": "m"})
+
+
+class AiJobsTests(unittest.TestCase):
+    def test_one_job_at_a_time(self):
+        jobs = server.AiJobs()
+        release = threading.Event()
+        jobs.start("search", lambda job: release.wait(5), answer="")
+        with self.assertRaisesRegex(RuntimeError, "still answering a question"):
+            jobs.run("proofread", lambda job: None)
+        release.set()
+        for _ in range(50):
+            if jobs.status()["state"] != "running":
+                break
+            time.sleep(0.05)
+        self.assertEqual(jobs.status()["state"], "done")
+        with self.assertRaisesRegex(ValueError, "boom"):
+            jobs.run("translate", lambda job: (_ for _ in ()).throw(ValueError("boom")))
+        self.assertEqual((jobs.status()["kind"], jobs.status()["state"], jobs.status()["error"]), ("translate", "error", "boom"))
+
+
+def wait_for_job(job_id):
+    for _ in range(100):
+        job = server.ai_jobs.status()
+        if job["id"] == job_id and job["state"] != "running":
+            return job
+        time.sleep(0.05)
+    raise AssertionError("the job didn't finish")
+
+
+class AiActionTests(SettingsTestCase):
+    """The AI functions, with the model (ai_chat) and the retrieval worker
+    stubbed."""
+
+    TEXT = (
+        "---\ntitle: x\n---\n"
+        "The archive were closed in 1890 by the city.\n\n"
+        "[[Some note]] #tag\n\n"
+        "The documents was moved to Pisa afterwards.\n"
+    )
+
+    def setUp(self):
+        super().setUp()
+        server.add_ai_model("http://127.0.0.1:8000/v1", "small-model", small=True)
+        server.add_ai_model("https://api.example.com/v1", "large-model", "k")
+        patcher = mock.patch.object(server, "ai_chat")
+        self.chat = patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(server.retrieval_worker, "call")
+        self.worker = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def use(self, model):
+        cfg = next(m for m in server.load_ai_models() if m["model"] == model)
+        server.save_settings({**server.load_settings(), "aiModel": server.ai_model_key(cfg)})
+
+    def test_prose_paragraphs(self):
+        self.assertEqual(
+            server.prose_paragraphs(self.TEXT),
+            ["The archive were closed in 1890 by the city.", "The documents was moved to Pisa afterwards."],
+        )
+
+    def test_proofread_small_model(self):
+        self.use("small-model")
+        self.chat.side_effect = [
+            '[{"type":"correction","original":"archive were","suggestion":"archive was","comment":"Agreement."},'
+            ' {"type":"correction","original":"not in the text","suggestion":"x","comment":""},'
+            ' {"type":"correction","original":"in 1890","suggestion":"in 1890","comment":"No error."},'
+            ' {"type":"correction","original":"The archive were","suggestion":"The archive was","comment":""}]',
+            '```json\n[{"type":"odd","original":"documents was","suggestion":"documents were"}]\n```',
+        ]
+        self.assertEqual(
+            server.proofread_text(self.TEXT),
+            [
+                {"type": "correction", "original": "archive were", "suggestion": "archive was", "comment": "Agreement."},
+                {"type": "correction", "original": "documents was", "suggestion": "documents were", "comment": ""},
+            ],
+        )
+        system, paragraph, cfg = self.chat.call_args_list[0].args
+        self.assertIn("copy-editor", system)  # PROOFREAD_SYSTEM_SMALL.md
+        self.assertEqual(paragraph, "The archive were closed in 1890 by the city.")
+        self.assertEqual(cfg["model"], "small-model")
+        job = server.ai_jobs.status()
+        self.assertEqual((job["kind"], job["state"], job["step"]), ("proofread", "done", "paragraph 2 of 2"))
+
+    def test_proofread_large_model(self):
+        self.use("large-model")
+        self.chat.return_value = '{"items": [{"type": "passive", "original": "was moved", "suggestion": "", "comment": "Passive."}]}'
+        self.assertEqual(
+            server.proofread_text(self.TEXT),
+            [{"type": "passive", "original": "was moved", "suggestion": "", "comment": "Passive."}],
+        )
+        (system, text, cfg), kwargs = self.chat.call_args
+        self.assertEqual(text, self.TEXT)  # all at once
+        self.assertIs(kwargs["json_schema"], server.PROOFREAD_JSON_SCHEMA)
+        self.chat.return_value = "Looks fine to me"
+        with self.assertRaisesRegex(RuntimeError, "expected format"):
+            server.proofread_text(self.TEXT)
+
+    def test_translate(self):
+        self.use("small-model")
+        self.chat.side_effect = ["Het archief sloot in 1890.", "The documents was moved to Pisa afterwards."]
+        self.assertEqual(
+            server.translate_text(self.TEXT, "Dutch"),
+            [{"original": "The archive were closed in 1890 by the city.", "suggestion": "Het archief sloot in 1890.", "comment": ""}],
+        )
+        self.assertIn("Dutch", self.chat.call_args_list[0].args[0])
+        self.use("large-model")
+        self.chat.side_effect = None
+        self.chat.return_value = "[]"
+        server.translate_text("texto", "")
+        (system, _, _), kwargs = self.chat.call_args
+        self.assertIn("English", system)
+        self.assertNotIn("{{TARGET_LANGUAGE}}", system)
+        item = kwargs["json_schema"]["items"]
+        self.assertEqual(sorted(item["properties"]), ["comment", "original", "suggestion"])
+
+    def test_llm_search(self):
+        self.worker.return_value = {"passages": [{"file": "a.md", "line": 3, "text": "Because."}]}
+
+        def answer(system, user, cfg, on_text, **kwargs):
+            on_text("Because [a.md:3].")
+            return "Because [a.md:3]."
+
+        self.chat.side_effect = answer
+        job = wait_for_job(server.start_llm_search("/vault", "Why?"))
+        self.assertEqual(self.worker.call_args.args[0], {"vault": "/vault", "query": "Why?"})
+        self.assertEqual(job["sources"], [{"file": "a.md", "line": 3, "text": "Because.", "path": "/vault/a.md"}])
+        self.assertEqual((job["state"], job["answer"]), ("done", "Because [a.md:3]."))
+        self.assertIn("Excerpts:\n\n[a.md:3]\nBecause.\n\nQuestion: Why?", self.chat.call_args.args[1])
+        self.worker.return_value = {"passages": []}
+        job = wait_for_job(server.start_llm_search("/vault", "What?"))
+        self.assertEqual(job["answer"], "No matching passages found in your notes.")
+
+    def test_tag_suggestions(self):
+        note_tags = {"a.md": ["Merchants", "trade"], "b.md": ["religion"]}
+        self.worker.return_value = {"notes": [["a.md", 0.8], ["b.md", 0.3]]}
+        self.chat.return_value = "trade, invented, Religion"
+        targets = [{"file": "c.md", "text": "Draft about #trade and churches", "existing": ["trade"]}]
+        job = wait_for_job(server.start_tag_suggestions("/vault", targets, note_tags))
+        self.assertEqual(job["state"], "done")
+        self.assertEqual(
+            job["results"],
+            [{"path": "/vault/c.md", "tags": ["religion"], "evidence": {"religion": ["/vault/b.md"]}}],
+        )
+        similar = self.worker.call_args.args[0]["similar"]
+        self.assertEqual(similar["text"], "Draft about  and churches")  # without its tags
+        self.assertIn("- a: Merchants, trade", self.chat.call_args.args[1])
+
+    def test_parse_tags(self):
+        allowed = ["Merchants", "religion", "trade"]
+        self.assertEqual(
+            server.parse_tags("#merchants, Religion, invented, trade", allowed, []),
+            ["Merchants", "religion", "trade"],
+        )
+        self.assertEqual(server.parse_tags("- trade\n- religion", allowed, ["Trade"]), ["religion"])
+        self.assertEqual(
+            server.parse_tags("trade, religion, merchants, trade", ["a", *allowed], []),
+            ["trade", "religion", "Merchants"],
+        )
+
+
+# Stands in for mdsearch.py --serve: a status and the request back as its
+# result, or an error for the query "fail"; the query "exit" ends it.
+FAKE_WORKER = """
+import json, sys
+for line in sys.stdin:
+    req = json.loads(line)
+    say = lambda **ev: print(json.dumps(ev), flush=True)
+    say(event="status", message="Reading notes …")
+    if req.get("query") == "exit":
+        sys.exit(3)
+    if req.get("query") == "fail":
+        say(event="error", message="It failed.")
+    else:
+        say(event="result", request=req)
+"""
+
+
+class RetrievalWorkerTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        worker = Path(tmp.name) / "worker.py"
+        worker.write_text(FAKE_WORKER, encoding="utf-8")
+        patcher = mock.patch.object(server, "MDSEARCH_PATH", worker)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.worker = server.RetrievalWorker()
+        self.addCleanup(self.stop_worker)
+
+    def stop_worker(self):
+        self.worker.idle_timer.cancel()
+        self.worker._stop(self.worker.proc)
+
+    def test_requests(self):
+        statuses = []
+        self.assertEqual(self.worker.call({"query": "a"}, statuses.append), {"request": {"query": "a"}})
+        self.assertEqual(statuses, ["Reading notes …"])
+        with self.assertRaisesRegex(RuntimeError, "It failed."):
+            self.worker.call({"query": "fail"})
+        first = self.worker.proc
+        self.worker.call({"query": "b"})
+        self.assertIs(self.worker.proc, first)  # the same worker throughout
+        with self.assertRaisesRegex(RuntimeError, "stopped unexpectedly \\(exit code 3\\)"):
+            self.worker.call({"query": "exit"})
+        self.assertEqual(self.worker.call({"query": "c"}), {"request": {"query": "c"}})  # a new one
 
 
 class TagSuggestionTests(SettingsTestCase):
@@ -379,224 +693,6 @@ class TagSuggestionTests(SettingsTestCase):
     def test_outside_vault_rejected(self):
         with self.assertRaises(PermissionError):
             server.tag_suggestion_request(self.vault, {"paths": ["/etc/hosts"]})
-
-    def test_parse_tags(self):
-        import mdsearch
-
-        allowed = ["Merchants", "religion", "trade"]
-        self.assertEqual(
-            mdsearch.parse_tags("#merchants, Religion, invented, trade", allowed, []),
-            ["Merchants", "religion", "trade"],
-        )
-        self.assertEqual(mdsearch.parse_tags("- trade\n- religion", allowed, ["Trade"]), ["religion"])
-        self.assertEqual(
-            mdsearch.parse_tags("trade, religion, merchants, trade", ["a", *allowed], []),
-            ["trade", "religion", "Merchants"],
-        )
-
-
-class FakeResponse:
-    def __init__(self, data):
-        self.body = json.dumps(data).encode("utf-8")
-
-    def read(self):
-        return self.body
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        pass
-
-
-class AiCompleteTests(SettingsTestCase):
-    """_ai_complete routes the selected provider to the right URL and headers."""
-
-    def setUp(self):
-        super().setUp()
-        self.requests = []
-
-        def fake_urlopen(req, timeout=None):
-            self.requests.append(req)
-            return FakeResponse({"choices": [{"message": {"content": "[]"}, "finish_reason": "stop"}]})
-
-        patcher = mock.patch.object(server.urllib.request, "urlopen", fake_urlopen)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def run_with(self, cfg):
-        self.set_settings(
-            useExternalAi=True, llmConfigs=[cfg], proofreadProvider=f"{cfg['provider']}/{cfg['model']}"
-        )
-        self.assertEqual(server._ai_complete("sys", "text", server.TRANSLATE_JSON_SCHEMA), "[]")
-        return self.requests[-1] if self.requests else None
-
-    def test_providers(self):
-        for provider, url in [
-            ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"),
-            ("anthropic", "https://api.anthropic.com/v1/chat/completions"),
-            ("mistral", "https://api.mistral.ai/v1/chat/completions"),
-            ("openai", "https://api.openai.com/v1/chat/completions"),
-        ]:
-            req = self.run_with({"provider": provider, "model": "m", "apiKey": "secret"})
-            self.assertEqual(req.full_url, url)
-            self.assertEqual(req.get_header("Authorization"), "Bearer secret")
-            body = json.loads(req.data)
-            self.assertEqual(body["model"], "m")
-            self.assertEqual(body["messages"][0], {"role": "system", "content": "sys"})
-            self.assertEqual(body["response_format"]["type"], "json_schema")
-
-    def test_ollama_url_gets_v1(self):
-        req = self.run_with({"provider": "ollama", "model": "llama3.1", "apiKey": ""})
-        self.assertEqual(req.full_url, "http://localhost:11434/v1/chat/completions")
-        self.assertIsNone(req.get_header("Authorization"))
-        req = self.run_with(
-            {"provider": "ollama", "model": "llama3.1", "apiKey": "", "url": "http://host:11434"}
-        )
-        self.assertEqual(req.full_url, "http://host:11434/v1/chat/completions")
-
-    def test_apfel_without_url_uses_cli(self):
-        with mock.patch.object(server, "_find_tool", return_value="/usr/bin/apfel"), mock.patch.object(
-            server, "_apfel_cli_complete", return_value="[]"
-        ) as cli:
-            self.run_with({"provider": "apfel", "model": "apple-foundationmodel", "apiKey": ""})
-        cli.assert_called_once_with("/usr/bin/apfel", "sys", "text", server.TRANSLATE_JSON_SCHEMA)
-        self.assertEqual(self.requests, [])
-        req = self.run_with(
-            {"provider": "apfel", "model": "apple-foundationmodel", "apiKey": "", "url": "http://127.0.0.1:1234/v1"}
-        )
-        self.assertEqual(req.full_url, "http://127.0.0.1:1234/v1/chat/completions")
-
-    def test_no_provider(self):
-        self.set_settings(useExternalAi=True)
-        with self.assertRaisesRegex(RuntimeError, "No AI provider"):
-            server._ai_complete("sys", "text", None)
-
-
-
-class LocalAiTests(SettingsTestCase):
-    """Without useExternalAi, Proofread and Translate go to the local model,
-    one prose paragraph at a time."""
-
-    TEXT = (
-        "---\ntitle: x\n---\n"
-        "The archive were closed in 1890 by the city.\n\n"
-        "[[Some note]] #tag\n\n"
-        "The documents was moved to Pisa afterwards.\n"
-    )
-
-    def setUp(self):
-        super().setUp()
-        self.set_settings(llmSearchModel="some/model")
-        patcher = mock.patch.object(server.llm_search, "complete")
-        self.complete = patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def test_prose_paragraphs(self):
-        self.assertEqual(
-            server.prose_paragraphs(self.TEXT),
-            ["The archive were closed in 1890 by the city.", "The documents was moved to Pisa afterwards."],
-        )
-
-    def test_proofread(self):
-        self.complete.side_effect = [
-            '[{"type":"correction","original":"archive were","suggestion":"archive was","comment":"Agreement."},'
-            ' {"type":"correction","original":"not in the text","suggestion":"x","comment":""},'
-            ' {"type":"correction","original":"in 1890","suggestion":"in 1890","comment":"No error."},'
-            ' {"type":"correction","original":"The archive were","suggestion":"The archive was","comment":""}]',
-            '```json\n[{"type":"odd","original":"documents was","suggestion":"documents were"}]\n```',
-        ]
-        self.assertEqual(
-            server.proofread_text(self.TEXT),
-            [
-                {"type": "correction", "original": "archive were", "suggestion": "archive was", "comment": "Agreement."},
-                {"type": "correction", "original": "documents was", "suggestion": "documents were", "comment": ""},
-            ],
-        )
-        first = self.complete.call_args_list[0].args
-        self.assertEqual(first[1:], ("The archive were closed in 1890 by the city.", "some/model", "paragraph 1 of 2"))
-        self.assertIn("copy-editor", first[0])
-
-    def test_translate(self):
-        self.complete.side_effect = ["Het archief sloot in 1890.", "The documents was moved to Pisa afterwards."]
-        self.assertEqual(
-            server.translate_text(self.TEXT, "Dutch"),
-            [{"original": "The archive were closed in 1890 by the city.", "suggestion": "Het archief sloot in 1890.", "comment": ""}],
-        )
-        self.assertIn("Dutch", self.complete.call_args_list[0].args[0])
-
-
-# Stands in for mdsearch.py --serve: answers each request with a status, the
-# answer in two tokens and "done" (or an error for the user text "fail").
-FAKE_WORKER = """
-import json, sys
-for line in sys.stdin:
-    req = json.loads(line)["complete"]
-    say = lambda **ev: print(json.dumps(ev), flush=True)
-    say(event="status", message="Writing the answer …")
-    if req["user"] == "fail":
-        say(event="error", message="It failed.")
-        continue
-    say(event="token", text="[" + req["system"])
-    say(event="token", text="]")
-    say(event="done")
-"""
-
-
-class LocalCompleteTests(unittest.TestCase):
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        worker = Path(tmp.name) / "worker.py"
-        worker.write_text(FAKE_WORKER, encoding="utf-8")
-        patcher = mock.patch.object(server, "MDSEARCH_PATH", worker)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        self.llm = server.LlmSearch()
-        self.addCleanup(lambda: self.llm.proc and self.llm.proc.kill())
-
-    def test_answer_and_error(self):
-        self.assertEqual(self.llm.complete('"a"', "text", None), '["a"]')
-        self.assertEqual(self.llm.status()["kind"], "complete")
-        with self.assertRaisesRegex(RuntimeError, "It failed."):
-            self.llm.complete("x", "fail", None)
-        # The worker keeps running for the next request.
-        self.assertEqual(self.llm.complete('"b"', "text", None), '["b"]')
-
-
-class TranslateTests(SettingsTestCase):
-    """With an external AI service, translate_text puts the target language
-    in the system prompt and uses the translation schema. _ai_complete is
-    stubbed, so no model is needed."""
-
-    def setUp(self):
-        super().setUp()
-        self.set_settings(useExternalAi=True)
-        self.captured = {}
-
-        def fake(system, user, json_schema):
-            self.captured.update(system=system, user=user, json_schema=json_schema)
-            return "[]"
-
-        patcher = mock.patch.object(server, "_ai_complete", fake)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def test_target_language_injected(self):
-        server.translate_text("Bonjour le monde", "Dutch")
-        self.assertIn("Dutch", self.captured["system"])
-        self.assertNotIn("{{TARGET_LANGUAGE}}", self.captured["system"])
-        self.assertEqual(self.captured["user"], "Bonjour le monde")
-
-    def test_defaults_to_english(self):
-        server.translate_text("texto", "")
-        self.assertIn("English", self.captured["system"])
-
-    def test_schema_is_proofread_item_without_type(self):
-        server.translate_text("x", "German")
-        item = self.captured["json_schema"]["items"]
-        self.assertEqual(sorted(item["properties"]), ["comment", "original", "suggestion"])
-        self.assertEqual(item["required"], ["original", "suggestion", "comment"])
 
 
 class ParseJsonListTests(unittest.TestCase):

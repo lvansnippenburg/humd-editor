@@ -162,43 +162,32 @@ Finds every note in your vault containing the text you type (case-insensitive), 
 
 ### LLM search
 
-Ask a question in your own words — for example *"Why did the glassmakers move to Murano?"* — and press `Enter`. A language model running **locally on your Mac** reads the passages from your notes that best match the question and writes an answer, citing its sources as `[note.md:12]`. Click a citation, or one of the **Sources** listed under the answer, to open the note at that line. Nothing leaves your computer and your notes are never changed.
+Ask a question in your own words — for example *"Why did the glassmakers move to Murano?"* — and press `Enter`. The passages from your notes that best match the question are found, and the [AI model](#ai-assistance) reads them and writes an answer, citing its sources as `[note.md:12]`. Click a citation, or one of the **Sources** listed under the answer, to open the note at that line. Your notes are never changed. With a model server on your Mac (oMLX, Ollama) nothing leaves your computer; with a service on the internet, the matching passages are sent to it.
 
-**Also search Zotero (ZotSeek)**, the option under the buttons, sends the same question to your Zotero library as well (see [ZotSeek](#zotseek-find-sources-in-zotero)). The matching publications are listed under **Zotero (ZotSeek)**, below the answer; they appear even when the local model isn't available. Their **Cite** button inserts the citation at the cursor in the editor. Turn the option off to search only your notes; the choice is remembered.
+**Also search Zotero (ZotSeek)**, the option under the buttons, sends the same question to your Zotero library as well (see [ZotSeek](#zotseek-find-sources-in-zotero)). The matching publications are listed under **Zotero (ZotSeek)**, below the answer; they appear even when the AI model isn't available. Their **Cite** button inserts the citation at the cursor in the editor. Turn the option off to search only your notes; the choice is remembered.
 
 How it finds passages: keyword matching (good for names and exact terms) combined with *semantic* matching, which also finds passages that say the same thing in other words, in several languages. The model only uses those passages: if they don't contain the answer, it says so — which means the retrieved passages lack it, not necessarily your notes.
 
 Good to know:
 
-- **Requirements:** a Mac with Apple silicon (M1 or later) and Python 3.9 or newer. See the README for details.
-- **First use takes a while.** The needed Python packages are installed automatically (about a minute), and the language model (several GB) and a small search model are downloaded once. The panel shows what is happening. Later questions start much faster, because the model stays loaded (it takes about 5 GB of memory). After 5 minutes without a question it is unloaded to free that memory; the next question then takes a few seconds longer while the model loads again.
-- **If installing fails**, the panel shows the error and the exact commands to install the packages by hand in Terminal.
+- **Requirements:** an AI model (see [AI assistance](#ai-assistance)) and Python 3.9 or newer, for finding the passages. See the README for details.
+- **The first question takes a while.** The package for semantic matching is installed automatically (about a minute), and a small search model is downloaded once. The panel shows what is happening. The search model and the index of your notes then stay in memory until 5 minutes after the last question.
+- **If installing fails**, only keyword matching is used, and the README explains how to install the package by hand.
 - One question is answered at a time. You can switch back to **Words** while an answer is being written; switching to **LLM Search** again shows it.
 - Notes in hidden folders (such as `.trash`) are not searched.
-- **Choosing another model:** add `"llmSearchModel": "<model>"` to `~/.humd-editor/settings.json`, where `<model>` is an MLX model on Hugging Face (e.g. `mlx-community/Qwen2.5-3B-Instruct-4bit` for a smaller, faster one). It is used from the next question on. The default is `mlx-community/Qwen2.5-7B-Instruct-4bit`.
-
-### ZotSeek: find sources in Zotero
-
-Select a sentence in the editor, open the **text actions** menu in the toolbar and choose **ZotSeek**. Your Zotero library is searched for publications that match what the sentence *says* — also when they use other words or another language — and the results appear in the side panel: title, author and year, the citation key, and the best-matching passage with the page in the PDF.
-
-- **Cite** adds the citation after the sentence, before its full stop: `… in 1291 [@molaSilkIndustryRenaissance2003].` Cite more results to add them to the same citation (`[@a; @b]`); if the sentence already ends with a citation, the key is added to it.
-- **Zotero Item** selects the item in Zotero; **PDF** opens the PDF at the matching page.
-
-The page number is *not* added to the citation: the page shown is the page in the PDF file, which often differs from the printed page number. Check the passage and add the page yourself, e.g. `[@molaSilkIndustryRenaissance2003, p. 45]`.
-
-This needs Zotero to be running with the **ZotSeek** plugin (with its MCP server enabled) and **Better BibTeX**, which provides the citation keys. Citation markup is ignored when searching, so you can select a sentence that already has footnotes or citations.
 
 ## AI assistance
 
-Proofread and Translate use an AI model to help with the document you have open. By default this is the local model of [LLM search](#llm-search), on your Mac: your text never leaves it, and no account or API key is needed (the requirements are the same as for LLM search). The model is small, so it works one paragraph at a time; the side panel shows how far it has got. The first use loads the model, which takes up to a minute; it then stays loaded for 5 minutes, shared with LLM search and Suggest tags, which run one at a time.
+LLM search, Proofread, Translate and Suggest tags use an AI model of your choice, set under **Settings → AI → Model**. Any service with an OpenAI-compatible API works:
 
-The local model is good at spelling and grammar, but weaker than the large external services at style, at the passive voice and in translation; it doesn't check the paragraph structure (PEE). For those, tick **Use an external AI service instead** under **Settings → Proofreading & translation** and choose a provider: **Gemini**, **Anthropic**, **Mistral** or **OpenAI** (remote; each needs an API key), or **Ollama** or **apfel** (local). All of them are reached through their OpenAI-compatible API; for Anthropic and Gemini that means the same API keys as before work.
+- **on the internet**: Gemini, OpenAI, Mistral or Anthropic. These are large models, good at everything below; each needs an account and an API key, and your text is sent to the service.
+- **on your Mac**: a model server such as oMLX or Ollama, with a model you have downloaded in it. Your text never leaves your Mac and no account is needed, but the models are smaller. The server has to be running.
 
-Add a provider with **➕ Add new LLM configuration…** at the bottom of the Provider list: choose the provider, enter the model name and its API key. Adding the same provider and model again replaces its settings; **Remove** deletes the selected one. They are saved with your other settings in `~/.humd-editor/settings.json`, under `llmConfigs`.
+Add a model with **➕ Add a model…** at the bottom of the list: choose the service, which fills in its URL (or choose **Other** and enter the URL of any server with the same API, e.g. LM Studio), enter the model name and, if the service needs one, the API key. Adding the same model at the same URL again replaces its settings; **Remove** deletes the selected one. Select the model to use and click **Save**.
 
-- **OpenAI**: leave the URL empty for OpenAI itself (an API key is required). Any other server with the same API (LM Studio, llama.cpp, vLLM, oMLX, …) works too: enter its URL, e.g. `http://localhost:1234/v1`; the key is then only needed if that server asks for one.
-- **Ollama**: needs `ollama serve` running and the model pulled (`ollama pull <model>`). The URL defaults to `http://localhost:11434/v1` (a URL without `/v1` gets it added).
-- **apfel** uses the language model built into macOS (Apple Intelligence), through the free [apfel](https://github.com/Arthur-Ficial/apfel) tool; install it with `brew install apfel` (see the README). It needs macOS 26 or newer on Apple silicon with Apple Intelligence turned on. Leave the URL empty: the app then runs `apfel` itself for each request, so nothing has to be started. Enter a URL only to use an apfel server (`apfel --serve`), e.g. on another Mac. The model is small: fine for translating or proofreading a paragraph or two, but each request (instructions, your text and the answer) must fit in about 4,000 tokens, so select a part of a longer document; if the text is too long, the app says so.
+**Small model**: tick it in the Add dialog for small models (a few billion parameters, as usually run on a Mac). Proofread and Translate then work one paragraph at a time, with simpler instructions; the side panel shows how far they have got. Such a model is good at spelling and grammar, but weaker at style and translation, and doesn't check the paragraph structure (PEE). Without it, the whole text is sent at once, with the full instructions.
+
+Only one AI task runs at a time: a question, a proofread, a translation or tag suggestions.
 
 ### Proofread
 
@@ -210,21 +199,21 @@ Each suggestion is labelled with what kind of finding it is:
 - **Passive voice** — a clause in the passive ("the treaty was signed"). When the text makes clear who acted, an active rewrite is offered that you can apply. Otherwise it is a warning only (no **Apply**): the comment says whether the passive is acceptable here — for example because the actor is unknown — or hides who is responsible.
 - **Structure (PEE)** — a paragraph that doesn't follow the order **P**oint (its claim), **E**vidence (sources, quotations, citations, examples), **E**xplanation (what the evidence shows and how it supports the point), or in which one of these is missing or weak. The comment names what is missing or weak and the most important fix. Clicking it highlights the start of the paragraph; there is nothing to apply, as the fix is yours to write. Paragraphs with a sound structure, headings, lists, quotes and footnotes are not reported.
 
-The instructions given to the model are in `PROOFREAD_SYSTEM.md` (in the app's `src` folder) and can be adjusted to your own house style; restart the app after changing them.
+The instructions given to the model are in `PROOFREAD_SYSTEM.md` (`PROOFREAD_SYSTEM_SMALL.md` for a small model), in the app's `src` folder, and can be adjusted to your own house style.
 
 ### Translate
 
-Click the **Translate** button (or press `⌘⇧L`) to translate the whole document, or select some text first to translate just that part. The target language is set under **Settings → Proofreading & translation** (default English). Translations appear in the same side panel as proofread suggestions; click **Apply** to replace a passage with its translation, which closes the panel. Markdown syntax is left untranslated.
+Click the **Translate** button (or press `⌘⇧L`) to translate the whole document, or select some text first to translate just that part. The target language is set under **Settings → AI** (default English). Translations appear in the same side panel as proofread suggestions; click **Apply** to replace a passage with its translation, which closes the panel. Markdown syntax is left untranslated.
 
 ### Suggest tags
 
-Click the **Suggest tags** button (or press `⌘⇧G`) to get tags for the current document, chosen from the tags already used in your vault. This uses the local model of [LLM search](#llm-search) (same requirements), not the AI provider above, so nothing leaves your Mac: the notes most similar in meaning that already have tags are found, and the model picks the tags that fit, with those notes and their tags as examples. No new tags are invented, and tags the document already has are skipped.
+Click the **Suggest tags** button (or press `⌘⇧G`) to get tags for the current document, chosen from the tags already used in your vault. The notes most similar in meaning that already have tags are found (as in [LLM search](#llm-search), with the same requirements), and the AI model picks the tags that fit, with those notes and their tags as examples. No new tags are invented, and tags the document already has are skipped.
 
 The suggestions appear in the side panel, with the similar notes behind each tag. Click a tag to leave it out, then **Add** to put the tags (as `#tags`) on a new line at the bottom of the document; `⌘Z` undoes it.
 
 **Untagged notes:** in the **Tags** panel, open **#notag** and click **Suggest tags for these notes…** to get suggestions for all of them at once. They appear one note at a time (a few seconds each); click a note's name to open it, and **Add** to write its tags into the note. A note that is open in a tab is left alone: add its tags there, or close the tab first.
 
-The first suggestion takes up to a minute or so, while the model loads; after that it stays loaded for 5 minutes. Tag suggestions and LLM search share the model, so they run one at a time.
+The first suggestion can take a minute, while the search model loads.
 
 ## Version control
 

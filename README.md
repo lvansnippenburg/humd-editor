@@ -43,62 +43,27 @@ The **ZotSeek** text action finds sources in your Zotero library for a selected 
 
 Nothing else has to be installed in the editor, and all searching happens locally in Zotero.
 
-## apfel: Apple's on-device model (optional)
+## AI (optional)
 
-Proofread and Translate can use the language model built into macOS, through [apfel](https://github.com/Arthur-Ficial/apfel). Your text never leaves your Mac, and no account or API key is needed. It requires:
+**LLM search**, **Suggest tags**, **Proofread** and **Translate** use an AI model of your choice (see [Help.md](src/help.md#ai-assistance)). Any service with an OpenAI-compatible chat API works: on the internet Gemini, OpenAI, Mistral or Anthropic (each needs an API key), or a model server on your Mac such as oMLX or [Ollama](https://ollama.com), which keeps your text on it. Add one under **Settings → AI → Model → ➕ Add a model…**: choose the service (which fills in its URL) or enter any URL, the model name and, if the service needs one, the API key. The selected model is used by all four functions.
 
-- macOS 26 (Tahoe) or newer on a Mac with Apple silicon (M1 or later), and
-- Apple Intelligence turned on (System Settings → Apple Intelligence & Siri).
+For example, for oMLX: service **oMLX** (URL `http://127.0.0.1:8000/v1`), the model's name as oMLX lists it, its API key if you set one in oMLX, and **Small model** on.
 
-Install apfel with Homebrew, and check that the model is available:
-```
-brew install apfel
-apfel --model-info        # should show "available: yes"
-```
+**Small model.** Tick it for small local models (a few billion parameters). Proofread and Translate then work one paragraph at a time, with simpler prompts that such models handle well; large models get the whole selection at once, with the full prompts (which also check the paragraph structure). The prompts are the `src/*_SYSTEM.md` files (`*_SMALL.md` for small models), and can be edited.
 
-Then add it in the editor: **Settings → Proofreading & translation → Provider → ➕ Add new LLM configuration…**, choose **apfel**, leave the URL empty, and click **Add Configuration**. Select it as the provider and save the settings.
-
-**Starting apfel.** With the URL left empty, nothing has to be started: the editor runs the `apfel` command for each request (it looks in `/opt/homebrew/bin`, `/usr/local/bin` and your `PATH`). The model itself is kept loaded by macOS, so this is as fast as a server.
-
-To use apfel as a server instead — for example on another Mac — start it and enter its URL in the configuration:
-```
-apfel --serve                     # in a Terminal window, until you close it
-brew services start apfel         # or: in the background, also after a restart
-brew services stop apfel          # stop the background server
-```
-The server listens on `http://127.0.0.1:11434/v1`, the port Ollama also uses; both can run side by side, as apfel only listens on `127.0.0.1`. To keep them apart, start apfel with `apfel --serve --port 11435` and use `http://127.0.0.1:11435/v1` as the URL. If no URL is set and the `apfel` command isn't found, the editor tries that default server address.
-
-**Limits.** The model is small. It translates a few paragraphs well, but proofreading is weaker than with the remote providers. Each request — instructions, your text and the answer together — must fit in about 4,000 tokens (8,000 on macOS 27 with an M3 or newer and 12 GB of memory; `apfel --model-info` shows yours). For translation that is roughly 4,000 characters of text at a time; select a part of a longer document. If the text is too long, the editor says so.
-
-**Updating and removing.** `brew upgrade apfel` updates it; `brew uninstall apfel` removes it (stop the background server first, if you started one).
+The models are stored in `~/.humd-editor/settings.json` as `"aiModels"` (with their API keys), and the selected one as `"aiModel"`.
 
 ## LLM search (optional)
 
-The **LLM Search** option in the Search panel answers questions about your notes with a language model that runs locally (see [Help.md](src/help.md#llm-search) for how to use it). **Suggest tags** uses the same model and embeddings to pick tags from similar notes ([Help.md](src/help.md#suggest-tags)), and **Proofread** and **Translate** use the same model unless an external AI service is chosen in Settings ([Help.md](src/help.md#ai-assistance); their prompts for it are `src/*_SYSTEM_LOCAL.md`). It is implemented by [`server/mdsearch.py`](server/mdsearch.py) and needs:
+The **LLM Search** option in the Search panel answers questions about your notes ([Help.md](src/help.md#llm-search)): the passages that best match the question are found in your notes, and the AI model answers from them. **Suggest tags** finds the notes most similar to the one being tagged in the same way ([Help.md](src/help.md#suggest-tags)). Finding passages and similar notes is done by [`server/mdsearch.py`](server/mdsearch.py), which runs as a separate process and needs **Python 3.9 or newer** (`python3`), also when you use the app, because the app's built-in Python can't install packages. From source the editor uses the Python that runs the server; the app looks for `python3` in the usual places (`/opt/homebrew/bin`, `/usr/local/bin`, python.org's framework). Get it from https://www.python.org or with `brew install python`.
 
-- a Mac with **Apple silicon** (it uses Apple's MLX), and
-- **Python 3.9 or newer** (`python3`), also when you use the app, because the app's built-in Python can't install packages. From source the editor uses the Python that runs the server; the app looks for `python3` in the usual places (`/opt/homebrew/bin`, `/usr/local/bin`, python.org's framework). Get it from https://www.python.org or with `brew install python`.
-
-On first use the required packages — `mlx-lm`, and `fastembed` for semantic matching — are installed automatically into a private environment at `~/.humd-editor/mdsearch-venv`, so your own Python installation is left untouched. If that fails, the app shows the error and these commands, which you can also run yourself:
+Passages are found by keyword matching combined with *semantic* matching, which needs the `fastembed` package. On first use it is installed automatically into a private environment at `~/.humd-editor/mdsearch-venv`, so your own Python installation is left untouched, and a small multilingual search model is downloaded once. If that fails, only keyword matching is used (and Suggest tags gets no similar notes as examples); you can also install it yourself:
 ```
 python3 -m venv ~/.humd-editor/mdsearch-venv
-~/.humd-editor/mdsearch-venv/bin/python -m pip install mlx-lm fastembed
+~/.humd-editor/mdsearch-venv/bin/python -m pip install fastembed
 ```
-`fastembed` is optional: without it only keyword matching is used to find passages. If your `python3` already has both packages, it is used directly and no environment is created.
+Passage embeddings are cached in `~/.cache/mdsearch`, so only new or changed notes are processed later. The process keeps the search model and the index in memory, and stops after 5 minutes without a request (`WORKER_IDLE_TIMEOUT` in `server/server.py`).
 
-The first question also downloads the language model (several GB) and a small embedding model; Hugging Face keeps them in `~/.cache/huggingface`. Passage embeddings are cached in `~/.cache/mdsearch`, so only new or changed notes are processed later.
+**Removing it.** Delete `~/.humd-editor/mdsearch-venv` and `~/.cache/mdsearch`.
 
-**Settings.** The model can be changed by adding a key to `~/.humd-editor/settings.json` (there is no field for it in the Settings dialog yet):
-```
-"llmSearchModel": "mlx-community/Qwen2.5-3B-Instruct-4bit"
-```
-Any MLX chat model on Hugging Face (or a local model folder) works; the default is `mlx-community/Qwen2.5-7B-Instruct-4bit`. Smaller models answer faster and use less memory, larger ones answer better. The model stays in memory between questions and is unloaded after 5 minutes without one (`LLM_WORKER_IDLE_TIMEOUT` in `server/server.py`).
-
-**Command line.** The same search also works in Terminal, without the editor:
-```
-python3 server/mdsearch.py /path/to/notes [model]
-```
-
-**Removing it.** Delete `~/.humd-editor/mdsearch-venv`, `~/.cache/mdsearch`, and the downloaded models under `~/.cache/huggingface/hub`.
-
-**Building the app.** `build_app.sh` bundles `mdsearch.py` into `Humd Editor.app`; the Python packages are not bundled and are installed on first use as described above.
+**Building the app.** `build_app.sh` bundles `mdsearch.py` into `Humd Editor.app`; `fastembed` is not bundled and is installed on first use as described above.

@@ -45,13 +45,12 @@ let currentBibPath = null;
 let currentCslPath = null;
 let currentPandocRefDocPath = null;
 let currentUserNickname = "";
-let currentProofreadProvider = ""; // "<provider>/<model>" from currentLlmConfigs
-// Proofread and Translate with that provider instead of LLM search's local model.
-let currentUseExternalAi = false;
-let currentLlmConfigs = [];
-// The AI providers the server supports: { id: { name, label?, url, key,
-// urlPlaceholder?, example } } (LLM_PROVIDERS in server.py).
-let llmProviders = {};
+// The AI models (settings.json "aiModels", each with its "key" and service
+// "name" from /api/ai-models), the selected one's key ("aiModel"), and the
+// services the Add dialog offers (AI_PRESETS in server.py).
+let currentAiModels = [];
+let currentAiModel = "";
+let aiPresets = [];
 let currentDocumentLanguage = "English"; // target language for translation (vault-wide setting)
 let currentGraphFolderColors = []; // array of {folder, color} for graph visualization
 let vaultIsGitRepo = false; // is the current vault a git working tree?
@@ -569,8 +568,6 @@ async function initialize() {
     currentCslPath = settings.cslStylePath || null;
     currentPandocRefDocPath = settings.pandocRefDocPath || null;
     currentUserNickname = settings.userNickname || "";
-    currentProofreadProvider = settings.proofreadProvider || "";
-    currentUseExternalAi = settings.useExternalAi ?? false;
     currentDocumentLanguage = settings.documentLanguage || "English";
     searchZotero = settings.searchZotero ?? true;
     document.getElementById("search-zotero").checked = searchZotero;
@@ -830,24 +827,20 @@ function setupEventListeners() {
   document.getElementById("graph-btn").addEventListener("click", openGraphTab);
   document.getElementById("change-vault-btn").addEventListener("click", changeVaultFolder);
   document.getElementById("settings-btn").addEventListener("click", openSettingsDialog);
-  document
-    .getElementById("proofread-provider-select")
-    .addEventListener("change", (e) => {
-      if (e.target.value === "__add_new__") {
-        e.target.value = currentProofreadProvider;
-        openLlmConfigDialog();
-      }
-    });
-
-  document.getElementById("remove-llmconfig-btn").addEventListener("click", removeLlmConfig);
-  document.getElementById("use-external-ai-toggle").addEventListener("change", (e) => {
-    updateExternalAiSettings();
-    if (e.target.checked && currentLlmConfigs.length === 0) offerFirstLlmConfig();
+  document.getElementById("ai-model-select").addEventListener("change", (e) => {
+    // "Add a model…" isn't a choice: go back to the model shown before.
+    if (e.target.value === "__add_new__") {
+      e.target.value = e.target.dataset.shown;
+      openAiModelDialog();
+    } else {
+      e.target.dataset.shown = e.target.value;
+    }
   });
-  document.getElementById("close-llmconfig").addEventListener("click", closeLlmConfigDialog);
-  document.getElementById("cancel-llmconfig-btn").addEventListener("click", closeLlmConfigDialog);
-  document.getElementById("save-llmconfig-btn").addEventListener("click", saveLlmConfig);
-  document.getElementById("llmconfig-provider").addEventListener("change", updateLlmConfigKeyVisibility);
+  document.getElementById("remove-ai-model-btn").addEventListener("click", removeAiModel);
+  document.getElementById("close-ai-model").addEventListener("click", closeAiModelDialog);
+  document.getElementById("cancel-ai-model-btn").addEventListener("click", closeAiModelDialog);
+  document.getElementById("save-ai-model-btn").addEventListener("click", saveAiModel);
+  document.getElementById("ai-model-preset").addEventListener("change", applyAiPreset);
   document.getElementById("help-btn").addEventListener("click", openHelpDialog);
   document.getElementById("close-help").addEventListener("click", closeHelpDialog);
   document.getElementById("close-proofread").addEventListener("click", closeProofreadPanel);
@@ -4284,8 +4277,9 @@ async function onSearchZoteroChange(e) {
 }
 
 // ----- LLM search -----
-// The server runs a local model (server/mdsearch.py) on passages retrieved
-// from the vault. One question at a time; progress is polled.
+// The server finds the passages that match the question (server/mdsearch.py)
+// and has the AI model answer from them. One AI job at a time; progress is
+// polled.
 
 let llmPollGen = 0;
 let lastLlmJob = null; // last status from the server, re-rendered with the Zotero results
@@ -4339,7 +4333,7 @@ async function runLlmZoteroSearch(query) {
 // switching away mid-answer), and keep polling if it's still running.
 async function resumeLlmSearch() {
   try {
-    const job = await apiFetch("/api/llm-search-status");
+    const job = await apiFetch("/api/ai-status");
     if (searchMode !== "llm" || (job.kind && job.kind !== "search")) return;
     if (job.state === "running") pollLlmSearch();
     else if (job.state !== "idle" || llmZotero) renderLlmJob(job.state === "idle" ? null : job);
@@ -4353,7 +4347,7 @@ async function pollLlmSearch() {
   while (gen === llmPollGen) {
     let job;
     try {
-      job = await apiFetch("/api/llm-search-status");
+      job = await apiFetch("/api/ai-status");
     } catch (error) {
       showStatus(`LLM search failed: ${apiErrorMessage(error)}`, true);
       return;
@@ -4970,7 +4964,7 @@ function renderTagRow(entry) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = "Suggest tags for these notes…";
-    btn.title = "Suggest tags from similar notes, with LLM search's local model";
+    btn.title = "Suggest tags from similar notes, with the AI model";
     btn.addEventListener("click", () => runSuggestTagsForNotes(entry.files));
     actionLi.appendChild(btn);
     files.appendChild(actionLi);
@@ -5307,17 +5301,12 @@ let settingsBeforeEdit = {
 };
 
 async function openSettingsDialog() {
-  // Load LLM configurations from backend
   try {
-    const configsRes = await apiFetch("/api/llm-configs");
-    currentLlmConfigs = configsRes.configs || [];
-    currentProofreadProvider = configsRes.selected || "";
-    llmProviders = configsRes.providers || {};
+    await loadAiModels();
   } catch (err) {
-    console.error("Failed to load LLM configs:", err);
+    console.error("Failed to load the AI models:", err);
   }
-  
-  populateLlmProviderSelect();
+  populateAiModelSelect();
 
   settingsBeforeEdit = {
     vaultPath: currentVaultPath,
@@ -5329,11 +5318,7 @@ async function openSettingsDialog() {
     bibPath: currentBibPath,
     cslPath: currentCslPath,
     pandocRefDocPath: currentPandocRefDocPath,
-    proofreadProvider: currentProofreadProvider,
-    useExternalAi: currentUseExternalAi,
   };
-  document.getElementById("use-external-ai-toggle").checked = currentUseExternalAi;
-  updateExternalAiSettings();
   document.getElementById("vault-path-display").textContent = currentVaultPath;
   document.getElementById("css-editor").value = currentUserCss;
   document.getElementById("spell-check-toggle").checked = currentSpellCheck;
@@ -5349,23 +5334,6 @@ async function openSettingsDialog() {
   document.getElementById("document-language-input").value = currentDocumentLanguage;
   initGraphFolderSettings();
   document.getElementById("settings-dialog").showModal();
-
-  if (currentUseExternalAi && currentLlmConfigs.length === 0) offerFirstLlmConfig();
-}
-
-// The provider list only matters when an external AI service is used.
-function updateExternalAiSettings() {
-  document.getElementById("external-ai-settings").style.display = document.getElementById(
-    "use-external-ai-toggle",
-  ).checked
-    ? ""
-    : "none";
-}
-
-async function offerFirstLlmConfig() {
-  if (await confirmDialog("No AI providers are configured yet. Would you like to add one now?")) {
-    openLlmConfigDialog();
-  }
 }
 
 function confirmDialog(message) {
@@ -5403,117 +5371,91 @@ function confirmDialog(message) {
   });
 }
 
-function llmProviderName(provider) {
-  return llmProviders[provider]?.name || provider;
+async function loadAiModels() {
+  const res = await apiFetch("/api/ai-models");
+  currentAiModels = res.models || [];
+  currentAiModel = res.selected || "";
+  aiPresets = res.presets || [];
 }
 
-// The Provider list: the configured providers (settings.json "llmConfigs"),
-// then an entry that opens the Add dialog.
-function populateLlmProviderSelect() {
-  const select = document.getElementById("proofread-provider-select");
+// The Model list: the AI models, then an entry that opens the Add dialog.
+function populateAiModelSelect() {
+  const select = document.getElementById("ai-model-select");
   select.innerHTML = "";
-
-  if (currentLlmConfigs.length === 0) {
-    const none = document.createElement("option");
-    none.value = "";
-    none.textContent = "No AI provider set up yet";
+  if (currentAiModels.length === 0) {
+    const none = new Option("No AI model set up yet", "");
     none.disabled = true;
-    select.appendChild(none);
+    select.add(none);
   }
-  for (const cfg of currentLlmConfigs) {
-    const opt = document.createElement("option");
-    opt.value = `${cfg.provider}/${cfg.model}`;
-    opt.textContent = `${llmProviderName(cfg.provider)}: ${cfg.model}${cfg.url ? ` (${cfg.url})` : ""}`;
-    select.appendChild(opt);
+  for (const m of currentAiModels) {
+    select.add(new Option(`${m.name}: ${m.model}${m.small ? " (small)" : ""}`, m.key));
   }
-  const optAdd = document.createElement("option");
-  optAdd.value = "__add_new__";
-  optAdd.textContent = "➕ Add new LLM configuration…";
-  select.appendChild(optAdd);
-
-  const values = currentLlmConfigs.map((c) => `${c.provider}/${c.model}`);
-  select.value = values.includes(currentProofreadProvider)
-    ? currentProofreadProvider
-    : values[0] || "";
+  select.add(new Option("➕ Add a model…", "__add_new__"));
+  const keys = currentAiModels.map((m) => m.key);
+  select.value = keys.includes(currentAiModel) ? currentAiModel : keys[0] || "";
+  select.dataset.shown = select.value;
+  document.getElementById("remove-ai-model-btn").disabled = keys.length === 0;
 }
 
-function openLlmConfigDialog() {
-  const select = document.getElementById("llmconfig-provider");
+function openAiModelDialog() {
+  const select = document.getElementById("ai-model-preset");
   select.innerHTML = "";
-  for (const [id, p] of Object.entries(llmProviders)) select.add(new Option(p.label || p.name, id));
-  document.getElementById("llmconfig-model").value = "";
-  document.getElementById("llmconfig-key").value = "";
-  document.getElementById("llmconfig-url").value = "";
-  updateLlmConfigKeyVisibility();
-  document.getElementById("llmconfig-dialog").showModal();
+  for (const [i, p] of aiPresets.entries()) select.add(new Option(p.name, String(i)));
+  select.add(new Option("Other (enter the URL)", ""));
+  document.getElementById("ai-model-name").value = "";
+  document.getElementById("ai-model-key").value = "";
+  applyAiPreset();
+  document.getElementById("ai-model-dialog").showModal();
 }
 
-function closeLlmConfigDialog() {
-  document.getElementById("llmconfig-dialog").close();
+function closeAiModelDialog() {
+  document.getElementById("ai-model-dialog").close();
 }
 
-function updateLlmConfigKeyVisibility() {
-  const provider = document.getElementById("llmconfig-provider").value;
-  const p = llmProviders[provider];
-  if (!p) return;
-  document.getElementById("llmconfig-key-group").style.display = p.key === "none" ? "none" : "";
-  document.getElementById("llmconfig-key-label").textContent =
-    p.key === "optional"
-      ? "API Key (only if the server requires a token)"
-      : p.urlPlaceholder
-        ? `API Key (optional for servers other than ${p.name})`
-        : "API Key";
-  document.getElementById("llmconfig-url-group").style.display = p.urlPlaceholder ? "" : "none";
-  document.getElementById("llmconfig-url").placeholder = p.urlPlaceholder || "";
-  const modelInput = document.getElementById("llmconfig-model");
-  modelInput.placeholder = `e.g. ${p.example}`;
-  // apfel serves a single model.
-  const apfelModel = llmProviders.apfel?.example;
-  if (provider === "apfel") modelInput.value = apfelModel;
-  else if (modelInput.value === apfelModel) modelInput.value = "";
+// Fill in the chosen service's URL, an example model and its usual size.
+function applyAiPreset() {
+  const p = aiPresets[document.getElementById("ai-model-preset").value];
+  document.getElementById("ai-model-url").value = p?.url || "";
+  document.getElementById("ai-model-name").placeholder = p ? `e.g. ${p.example}` : "";
+  document.getElementById("ai-model-small").checked = !!p?.small;
 }
 
-async function saveLlmConfig() {
-  const provider = document.getElementById("llmconfig-provider").value;
-  const model = document.getElementById("llmconfig-model").value.trim();
-  const apiKey = document.getElementById("llmconfig-key").value.trim();
-  const url = document.getElementById("llmconfig-url").value.trim();
-
+async function saveAiModel() {
+  let key;
   try {
-    await apiPost("/api/add-llm-config", {
-      provider,
-      model,
-      apiKey: llmProviders[provider].key === "none" ? "" : apiKey,
-      url: llmProviders[provider].urlPlaceholder ? url : "",
-    });
+    ({ key } = await apiPost("/api/add-ai-model", {
+      url: document.getElementById("ai-model-url").value.trim(),
+      model: document.getElementById("ai-model-name").value.trim(),
+      apiKey: document.getElementById("ai-model-key").value.trim(),
+      small: document.getElementById("ai-model-small").checked,
+    }));
   } catch (err) {
     alert(apiErrorMessage(err));
     return;
   }
-  closeLlmConfigDialog();
-  showStatus(`Added ${llmProviderName(provider)}: ${model}`);
-  const configsRes = await apiFetch("/api/llm-configs");
-  currentLlmConfigs = configsRes.configs || [];
+  closeAiModelDialog();
+  await loadAiModels();
   // Select the new one; it's used once the settings are saved.
-  currentProofreadProvider = `${provider}/${model}`;
-  populateLlmProviderSelect();
+  currentAiModel = key;
+  populateAiModelSelect();
+  showStatus(`Added ${key}`);
 }
 
-async function removeLlmConfig() {
-  const select = document.getElementById("proofread-provider-select");
-  const cfg = currentLlmConfigs.find((c) => `${c.provider}/${c.model}` === select.value);
-  if (!cfg) return;
-  const name = `${llmProviderName(cfg.provider)}: ${cfg.model}`;
-  if (!(await confirmDialog(`Remove ${name}, with its API key?`))) return;
+async function removeAiModel() {
+  const select = document.getElementById("ai-model-select");
+  const m = currentAiModels.find((x) => x.key === select.value);
+  if (!m) return;
+  const name = `${m.name}: ${m.model}`;
+  if (!(await confirmDialog(`Remove ${name}${m.apiKey ? ", with its API key" : ""}?`))) return;
   try {
-    await apiPost("/api/remove-llm-config", { provider: cfg.provider, model: cfg.model });
+    await apiPost("/api/remove-ai-model", { key: m.key });
   } catch (err) {
     showStatus(apiErrorMessage(err), true);
     return;
   }
-  currentLlmConfigs = currentLlmConfigs.filter((c) => c !== cfg);
-  if (currentProofreadProvider === select.value) currentProofreadProvider = "";
-  populateLlmProviderSelect();
+  currentAiModels = currentAiModels.filter((x) => x !== m);
+  if (currentAiModel === m.key) currentAiModel = "";
+  populateAiModelSelect();
   showStatus(`Removed ${name}`);
 }
 
@@ -5638,9 +5580,8 @@ async function saveSettings() {
       pandocRefDocDisplay && pandocRefDocDisplay !== "None selected" ? pandocRefDocDisplay : null;
 
     const newNickname = document.getElementById("nickname-input").value.trim();
-    const providerValue = document.getElementById("proofread-provider-select").value;
-    const newProofreadProvider = providerValue === "__add_new__" ? "" : providerValue;
-    const newUseExternalAi = document.getElementById("use-external-ai-toggle").checked;
+    const modelValue = document.getElementById("ai-model-select").value;
+    const newAiModel = modelValue === "__add_new__" ? "" : modelValue;
     const newDocumentLanguage =
       document.getElementById("document-language-input").value.trim() || "English";
 
@@ -5663,8 +5604,7 @@ async function saveSettings() {
       cslStylePath: newCslPath,
       pandocRefDocPath: newPandocRefDocPath,
       userNickname: newNickname,
-      proofreadProvider: newProofreadProvider,
-      useExternalAi: newUseExternalAi,
+      aiModel: newAiModel,
       documentLanguage: newDocumentLanguage,
       graphFolderColors: currentGraphFolderColors,
     });
@@ -5677,8 +5617,7 @@ async function saveSettings() {
     currentAutoSave = newAutoSave;
     currentSmartQuotes = newSmartQuotes;
     currentUserNickname = newNickname;
-    currentProofreadProvider = newProofreadProvider;
-    currentUseExternalAi = newUseExternalAi;
+    currentAiModel = newAiModel;
     currentDocumentLanguage = newDocumentLanguage;
     applySpellCheck();
 
@@ -5724,10 +5663,10 @@ function cancelSettings() {
 
 // ===== SUGGEST TAGS =====
 
-// Tags from the vault's existing ones, suggested by the local model of LLM
-// search (server/mdsearch.py): it is shown the most similar notes that have
-// tags, and picks from those. Nothing leaves the Mac. Suggestions appear in
-// the suggestion panel, per note, with the similar notes behind each tag.
+// Tags from the vault's existing ones, suggested by the AI model: it is shown
+// the most similar notes that have tags (found by server/mdsearch.py), and
+// picks from those. Suggestions appear in the suggestion panel, per note,
+// with the similar notes behind each tag.
 
 // Suggest tags for the open document (including unsaved edits).
 async function runSuggestTags() {
@@ -5757,7 +5696,7 @@ async function runSuggestTagsForNotes(paths) {
 }
 
 async function runTagSuggestions(request, scope) {
-  openSuggestionPanel({ mode: "tags", title: "Suggested tags", scope, loading: "Starting the local model…" });
+  openSuggestionPanel({ mode: "tags", title: "Suggested tags", scope, loading: "Starting…" });
   const loading = document.getElementById("proofread-loading");
   const list = document.getElementById("proofread-list");
   let id;
@@ -5771,7 +5710,7 @@ async function runTagSuggestions(request, scope) {
   for (;;) {
     let job;
     try {
-      job = await apiFetch("/api/llm-search-status");
+      job = await apiFetch("/api/ai-status");
     } catch (err) {
       showSuggestionPanelError(err);
       return;
@@ -5934,22 +5873,21 @@ function showSuggestionPanelError(err) {
     `<p class="proofread-error">${escapeHtml(apiErrorMessage(err))}</p>`;
 }
 
-// Await `request` (Proofread or Translate). With the local model, which can
-// take a while (and loads first), the panel shows its progress meanwhile.
-async function withLocalModelProgress(request, verb) {
-  if (currentUseExternalAi) return request;
+// Await `request` (Proofread or Translate), meanwhile showing its progress in
+// the panel: which paragraph a small model is at, and how much it has written.
+async function withAiProgress(request, verb) {
   const mode = suggestionPanelMode;
   const loading = document.getElementById("proofread-loading");
   let waiting = true;
   (async () => {
     while (waiting) {
       await new Promise((r) => setTimeout(r, 700));
-      const job = await apiFetch("/api/llm-search-status").catch(() => null);
+      const job = await apiFetch("/api/ai-status").catch(() => null);
       if (!waiting || suggestionPanelMode !== mode) return;
-      if (job?.kind === "complete" && job.state === "running") {
+      if (job?.kind === mode && job.state === "running") {
         const step = job.step ? `${job.step}, ` : "";
         const written = job.answer ? ` (${job.answer.length} characters so far)` : "";
-        loading.innerHTML = `<p>${escapeHtml(`${verb} with the local model (${step}${job.status})${written}`)}</p>`;
+        loading.innerHTML = `<p>${escapeHtml(`${verb} (${step}${job.status})${written}`)}</p>`;
       }
     }
   })();
@@ -5995,7 +5933,7 @@ async function runProofread() {
     loading: "Proofreading…",
   });
   try {
-    const res = await withLocalModelProgress(apiPost("/api/proofread", { text }), "Proofreading");
+    const res = await withAiProgress(apiPost("/api/proofread", { text }), "Proofreading");
     const list = document.getElementById("proofread-list");
     for (const item of sortByPositionInText(res.suggestions)) {
       list.appendChild(buildSuggestionItem(item));
@@ -6021,7 +5959,7 @@ async function runTranslate() {
     loading: `Translating to ${targetLang}…`,
   });
   try {
-    const res = await withLocalModelProgress(
+    const res = await withAiProgress(
       apiPost("/api/translate", { text, target_lang: targetLang }),
       "Translating",
     );

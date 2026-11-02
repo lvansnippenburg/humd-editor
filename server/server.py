@@ -510,17 +510,20 @@ def search_vault(
 
 
 # ---------------------------------------------------------------------------
-# LLM search (local model via server/mdsearch.py)
+# The retrieval worker (server/mdsearch.py) and AI jobs
 # ---------------------------------------------------------------------------
 #
-# mdsearch.py runs as a long-lived worker process under a regular python3 (not
-# this process: the bundled .app has no pip, and the model takes several GB of
-# memory we'd rather keep out of the server). It installs its own dependencies
-# on first use. It runs one job at a time, told apart by the job's "kind": a
-# question (POST /api/llm-search), tag suggestions (POST /api/suggest-tags) or
-# a plain answer for Proofread and Translate (LlmSearch.complete, unless an
-# external AI service is chosen); the client polls GET /api/llm-search-status
-# for progress.
+# LLM search and Suggest tags need the passages of the vault that match a
+# question, and the notes most similar to a text. They're found with an
+# embedding model (fastembed + numpy) in mdsearch.py, a long-lived worker
+# process under a regular python3 (the bundled .app has no pip), which
+# installs fastembed on first use. The AI model itself is called from here
+# (see the AI section).
+#
+# One AI job runs at a time: a question (POST /api/llm-search), tag
+# suggestions (POST /api/suggest-tags), or a proofread or translation (POST
+# /api/proofread, /api/translate). The client polls GET /api/ai-status for
+# its progress.
 
 if getattr(sys, "frozen", False):
     MDSEARCH_PATH = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "server" / "mdsearch.py"
@@ -552,104 +555,68 @@ def _find_python() -> str:
     return found
 
 
-# The worker keeps the model loaded (several GB) between questions. After this
-# many seconds without a request it is stopped, which frees that memory; the
-# next question starts a new one and loads the model again.
-LLM_WORKER_IDLE_TIMEOUT = 5 * 60
+# The worker keeps the search model and the vault's index in memory between
+# requests. After this many seconds without a request it is stopped, which
+# frees that memory; the next request starts a new one.
+WORKER_IDLE_TIMEOUT = 5 * 60
 
 
-class LlmSearch:
+class RetrievalWorker:
+    """mdsearch.py --serve. call() sends it one request and returns the
+    result; requests are handled one at a time."""
+
     def __init__(self):
         self.lock = threading.Lock()
-        self.changed = threading.Condition(self.lock)  # notified on every job update
         self.proc = None
-        self.job = {"state": "idle"}
-        self.job_id = 0
         self.idle_timer = None
 
-    def _spawn(self):
-        self.proc = subprocess.Popen(
-            [_find_python(), "-u", str(MDSEARCH_PATH), "--serve"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            bufsize=1,
-        )
-        threading.Thread(target=self._read, args=(self.proc,), daemon=True).start()
-
-    def _read(self, proc):
-        """Apply the worker's events to the current job."""
-        fatal = None
-        for line in proc.stdout:
-            try:
-                ev = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            with self.lock:
-                job, kind = self.job, ev.get("event")
-                if kind == "status":
-                    job["status"] = ev.get("message", "")
-                elif kind == "sources":
-                    root = job.get("vault", "")
-                    job["sources"] = [
-                        {**s, "path": os.path.join(root, s["file"])}
-                        for s in ev.get("sources", [])
-                    ]
-                elif kind == "tagged":
-                    root = job.get("vault", "")
-                    job["results"].append({
-                        "path": os.path.join(root, ev["file"]) if ev.get("file") else None,
-                        "tags": ev.get("tags", []),
-                        "evidence": {
-                            t: [os.path.join(root, f) for f in files]
-                            for t, files in (ev.get("evidence") or {}).items()
-                        },
-                    })
-                elif kind == "token":
-                    job["answer"] = job.get("answer", "") + ev.get("text", "")
-                elif kind == "done":
-                    if ev.get("answer"):
-                        job["answer"] = ev["answer"]
-                    job["state"] = "done"
-                    self._arm_idle_timer(proc)
-                elif kind in ("error", "fatal"):
-                    job["state"] = "error"
-                    job["error"] = ev.get("message", "LLM search failed")
-                    if kind == "fatal":
-                        fatal = job["error"]
-                    else:
-                        self._arm_idle_timer(proc)
-                self.changed.notify_all()
-        proc.wait()
+    def call(self, req: dict, on_status=None) -> dict:
+        """The worker's result for `req` (see mdsearch.py). on_status gets its
+        progress messages (e.g. while it installs fastembed)."""
         with self.lock:
-            if self.proc is proc:
-                self.proc = None
-            if self.job.get("state") == "running":
-                self.job["state"] = "error"
-                self.job["error"] = fatal or (
-                    f"The LLM search process stopped unexpectedly (exit code {proc.returncode})."
+            if self.idle_timer:
+                self.idle_timer.cancel()
+            if self.proc is None or self.proc.poll() is not None:
+                if self.proc is not None:  # it stopped: close its pipes
+                    self.proc.stdin.close()
+                    self.proc.stdout.close()
+                self.proc = subprocess.Popen(
+                    [_find_python(), "-u", str(MDSEARCH_PATH), "--serve"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    bufsize=1,
                 )
-            self.changed.notify_all()
+            proc = self.proc
+            try:
+                proc.stdin.write(json.dumps(req) + "\n")
+                proc.stdin.flush()
+                for line in proc.stdout:
+                    try:
+                        ev = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    kind = ev.pop("event", None)
+                    if kind == "status" and on_status:
+                        on_status(ev.get("message", ""))
+                    elif kind == "result":
+                        return ev
+                    elif kind == "error":
+                        raise RuntimeError(ev.get("message") or "Searching the notes failed.")
+            except OSError:  # the worker is gone (broken pipe)
+                pass
+            finally:
+                self.idle_timer = threading.Timer(WORKER_IDLE_TIMEOUT, self._stop, args=(proc,))
+                self.idle_timer.daemon = True
+                self.idle_timer.start()
+            raise RuntimeError(f"The search process stopped unexpectedly (exit code {proc.wait()}).")
 
-    def _arm_idle_timer(self, proc):
-        """(Re)start the countdown to stopping an idle worker. Called with
-        self.lock held, whenever a request has finished."""
-        if self.idle_timer:
-            self.idle_timer.cancel()
-        self.idle_timer = threading.Timer(
-            LLM_WORKER_IDLE_TIMEOUT, self._stop_idle_worker, args=(proc, self.job_id)
-        )
-        self.idle_timer.daemon = True
-        self.idle_timer.start()
-
-    def _stop_idle_worker(self, proc, job_id):
+    def _stop(self, proc):
         with self.lock:
-            # Only if no request came in since the timer was armed.
-            if self.proc is not proc or self.job_id != job_id or self.job.get("state") == "running":
+            if self.proc is not proc:
                 return
             self.proc = None
-            self.idle_timer = None
         try:
             proc.stdin.close()  # the worker ends at end of input
             proc.wait(timeout=30)
@@ -657,82 +624,86 @@ class LlmSearch:
             proc.kill()
         except Exception:
             pass
+        proc.stdout.close()
 
-    def start(self, vault: str, query: str, model: str | None):
-        """Answer a question about the notes."""
-        return self._start(
-            {"kind": "search", "query": query, "status": "Starting LLM search …", "sources": [], "answer": ""},
-            {"vault": vault, "query": query},
-            vault,
-            model,
-        )
 
-    def start_tags(self, vault: str, targets: list, note_tags: dict, model: str | None):
-        """Suggest tags for notes (mdsearch.suggest_tags; files relative to
-        the vault): job["results"] gets one entry per target."""
-        return self._start(
-            {"kind": "tags", "status": "Starting the local model …", "results": [], "total": len(targets)},
-            {"vault": vault, "tags": {"targets": targets, "noteTags": note_tags}},
-            vault,
-            model,
-        )
+retrieval_worker = RetrievalWorker()
 
-    def complete(
-        self, system: str, user: str, model: str | None, step: str | None = None, timeout: float = 1800
-    ) -> str:
-        """The model's answer to one prompt (Proofread and Translate). Waits
-        for it; meanwhile the job's status, `step` (e.g. "paragraph 2 of 5")
-        and answer so far can be polled."""
-        job_id = self._start(
-            {"kind": "complete", "status": "Starting the local model …", "answer": "", "step": step},
-            {"complete": {"system": system, "user": user}},
-            "",
-            model,
-        )
-        with self.changed:
-            done = self.changed.wait_for(
-                lambda: self.job["id"] != job_id or self.job["state"] != "running", timeout
-            )
-            job = dict(self.job)
-        if not done:
-            raise RuntimeError("The local model took more than 30 minutes; try a smaller part of the text.")
-        if job["id"] != job_id:
-            raise RuntimeError("The local model was stopped.")
-        if job["state"] == "error":
-            raise RuntimeError(job["error"])
-        return job["answer"]
 
-    def _start(self, job: dict, req: dict, vault: str, model: str | None):
+class AiJobs:
+    """The current AI job, as GET /api/ai-status reports it: {"id", "kind",
+    "state" ("running" | "done" | "error"), "status", "error"?} and per kind
+    "search": "query", "sources", "answer"; "tags": "results", "total";
+    "proofread" and "translate": "step" (e.g. "paragraph 2 of 5"), "answer"
+    (the model's answer so far)."""
+
+    BUSY = {
+        "search": "answering a question",
+        "tags": "suggesting tags",
+        "proofread": "proofreading",
+        "translate": "translating",
+    }
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.job = {"state": "idle"}
+        self.last_id = 0
+
+    def _begin(self, kind: str, fields: dict) -> dict:
         with self.lock:
-            if self.idle_timer:
-                self.idle_timer.cancel()
-                self.idle_timer = None
             if self.job.get("state") == "running":
-                busy = {
-                    "tags": "suggesting tags",
-                    "complete": "proofreading or translating",
-                }.get(self.job.get("kind"), "answering a question")
-                raise RuntimeError(f"The local model is still {busy} — please wait.")
-            self.job_id += 1
-            self.job = {"id": self.job_id, "state": "running", "vault": vault, **job}
+                raise RuntimeError(f"The AI is still {self.BUSY[self.job['kind']]} — please wait.")
+            self.last_id += 1
+            self.job = {"id": self.last_id, "kind": kind, "state": "running", "status": "Starting …", **fields}
+            return self.job
+
+    def _end(self, job: dict, error: Exception | None = None) -> None:
+        with self.lock:
+            job["state"] = "error" if error else "done"
+            if error:
+                job["error"] = str(error)
+
+    def update(self, job: dict, **fields) -> None:
+        with self.lock:
+            job.update(fields)
+
+    def append(self, job: dict, key: str, value) -> None:
+        """Add to the job's text or list `key`."""
+        with self.lock:
+            job[key] = job[key] + value
+
+    def run(self, kind: str, work, **fields):
+        """Run work(job) as the current job, in this thread; returns its result."""
+        job = self._begin(kind, fields)
+        try:
+            result = work(job)
+        except Exception as e:
+            self._end(job, e)
+            raise
+        self._end(job)
+        return result
+
+    def start(self, kind: str, work, **fields) -> int:
+        """Run work(job) as the current job, in the background; returns its id."""
+        job = self._begin(kind, fields)
+
+        def go():
             try:
-                if self.proc is None or self.proc.poll() is not None:
-                    self._spawn()
-                if model:
-                    req["model"] = model
-                self.proc.stdin.write(json.dumps(req) + "\n")
-                self.proc.stdin.flush()
+                work(job)
             except Exception as e:
-                self.job["state"] = "error"
-                self.job["error"] = str(e)
-            return self.job_id
+                self._end(job, e)
+            else:
+                self._end(job)
+
+        threading.Thread(target=go, daemon=True).start()
+        return job["id"]
 
     def status(self) -> dict:
         with self.lock:
-            return dict(self.job)
+            return {k: list(v) if isinstance(v, list) else v for k, v in self.job.items()}
 
 
-llm_search = LlmSearch()
+ai_jobs = AiJobs()
 
 
 # Finished texts, not notes: their tags are neither suggested nor learnt from.
@@ -740,7 +711,7 @@ TAG_EXCLUDED_FOLDER = "z_output"
 
 
 def tag_suggestion_request(vault: str, data: dict) -> tuple[list, dict]:
-    """The targets and tagged notes for LlmSearch.start_tags, for POST
+    """The targets and tagged notes for start_tag_suggestions, for POST
     /api/suggest-tags: {"text", "path"?} (a document, possibly unsaved) or
     {"paths": [...]} (saved notes, e.g. the untagged ones). Notes in
     TAG_EXCLUDED_FOLDER are left out of both."""
@@ -1157,7 +1128,7 @@ def zotero_lua_path(csl_path: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# AI: proofreading, translation and tag suggestion
+# AI: LLM search, tag suggestion, proofreading and translation
 # ---------------------------------------------------------------------------
 
 # The system prompts live in src/*.md so they can be edited without touching
@@ -1200,156 +1171,219 @@ TRANSLATE_JSON_SCHEMA = {
 }
 
 
-# --- Providers and their configurations (settings.json "llmConfigs") -------
+# --- AI models (settings.json "aiModels") ----------------------------------
 #
-# Every provider is reached through its OpenAI-compatible chat completions
-# API at `url`. Per provider: `key` says whether an API key is "required"
-# (unless a different URL is given), "optional" or not used ("none");
-# `urlPlaceholder` is set when the URL can be changed; `example` is an example
-# model. The frontend builds the Add dialog from this table.
-#
-# apfel (https://github.com/Arthur-Ficial/apfel) gives access to Apple's
-# on-device model. Without a URL the `apfel` command is run per request (no
-# server needed); with a URL, or if the command isn't installed, `apfel
-# --serve` is used. Its default port is Ollama's, but it only listens on
-# 127.0.0.1 (IPv4), so this reaches it even when Ollama runs too.
-LLM_PROVIDERS = {
-    "gemini": {
-        "name": "Gemini",
-        "url": "https://generativelanguage.googleapis.com/v1beta/openai",
-        "key": "required",
-        "example": "gemini-2.5-flash",
-    },
-    "anthropic": {
-        "name": "Anthropic",
-        "url": "https://api.anthropic.com/v1",
-        "key": "required",
-        "example": "claude-opus-5-5",
-    },
-    "mistral": {
-        "name": "Mistral",
-        "url": "https://api.mistral.ai/v1",
-        "key": "required",
-        "example": "mistral-small-latest",
-    },
-    "openai": {
-        "name": "OpenAI",
-        "label": "OpenAI (or compatible)",
-        "url": "https://api.openai.com/v1",
-        "urlPlaceholder": "https://api.openai.com/v1",
-        "key": "required",
-        "example": "gpt-5-mini",
-    },
-    "ollama": {
-        "name": "Ollama",
-        "label": "Ollama (local)",
-        "url": "http://localhost:11434/v1",
-        "urlPlaceholder": "http://localhost:11434/v1",
-        "key": "none",
-        "example": "llama3.1",
-    },
-    "apfel": {
-        "name": "apfel",
-        "label": "apfel: Apple's on-device model",
-        "url": "http://127.0.0.1:11434/v1",
-        "urlPlaceholder": "empty: runs the apfel command",
-        "key": "optional",
-        "example": "apple-foundationmodel",
-    },
-}
-
-# "Could not reach …" hints for the local servers.
-_UNREACHABLE_HINTS = {"ollama": "is Ollama running?", "apfel": "is `apfel --serve` running?"}
+# Every AI model is reached through the OpenAI-compatible chat completions API
+# of its service: {"url" (…/v1), "model", "apiKey" (if the service needs one),
+# "small"}. "small" marks a small (local) model: Proofread and Translate then
+# work one paragraph at a time, with simpler prompts (src/*_SMALL.md). The
+# selected model, used by all AI functions, is "aiModel" (its ai_model_key).
+# AI_PRESETS fill in the URL in the Add dialog; any other URL works too.
+AI_PRESETS = [
+    {"name": "Gemini", "url": "https://generativelanguage.googleapis.com/v1beta/openai", "example": "gemini-2.5-flash"},
+    {"name": "OpenAI", "url": "https://api.openai.com/v1", "example": "gpt-5-mini"},
+    {"name": "Mistral", "url": "https://api.mistral.ai/v1", "example": "mistral-small-latest"},
+    {"name": "Anthropic", "url": "https://api.anthropic.com/v1", "example": "claude-sonnet-5-5"},
+    {"name": "oMLX", "url": "http://127.0.0.1:8000/v1", "example": "mlx-community/Qwen3-4B-Instruct-2507-4bit", "small": True},
+    {"name": "Ollama", "url": "http://localhost:11434/v1", "example": "qwen3:4b", "small": True},
+]
 
 
-def load_llm_configs(settings: dict | None = None) -> list[dict]:
-    """The configured providers: [{"provider", "model", "apiKey", "url"?}],
-    one per provider/model. "proofreadProvider" holds the selected one as
-    "<provider>/<model>"."""
-    configs = (settings if settings is not None else load_settings()).get("llmConfigs")
-    if not isinstance(configs, list):
+def ai_model_key(cfg: dict) -> str:
+    return f"{cfg['model']} @ {cfg['url']}"
+
+
+def ai_model_name(cfg: dict) -> str:
+    """The service's name: its preset's, or the URL's host."""
+    preset = next((p for p in AI_PRESETS if p["url"] == cfg["url"]), None)
+    return preset["name"] if preset else (urlparse(cfg["url"]).netloc or cfg["url"])
+
+
+def _is_local(url: str) -> bool:
+    return (urlparse(url).hostname or "") in ("localhost", "127.0.0.1", "::1")
+
+
+def load_ai_models(settings: dict | None = None) -> list[dict]:
+    models = (settings if settings is not None else load_settings()).get("aiModels")
+    if not isinstance(models, list):
         return []
-    return [c for c in configs if isinstance(c, dict) and c.get("provider")]
+    return [m for m in models if isinstance(m, dict) and m.get("url") and m.get("model")]
 
 
-def add_llm_config(provider: str, model: str, api_key: str = "", url: str = "") -> None:
-    """Add a provider/model, or replace the settings of an existing one."""
-    entry = {"provider": provider.strip().lower(), "model": model.strip(), "apiKey": api_key.strip()}
-    if url.strip():
-        entry["url"] = url.strip().rstrip("/")
-    p = LLM_PROVIDERS.get(entry["provider"])
-    if not p:
-        raise ValueError(f"Unknown provider '{provider}' (supported: {', '.join(LLM_PROVIDERS)})")
+def add_ai_model(url: str, model: str, api_key: str = "", small: bool = False) -> dict:
+    """Add a model, or replace the settings of the same model at the same URL."""
+    entry = {"url": url.strip().rstrip("/"), "model": model.strip(), "apiKey": api_key.strip(), "small": bool(small)}
+    if not re.match(r"https?://", entry["url"]):
+        raise ValueError("Enter the service's URL (http://… or https://…)")
     if not entry["model"]:
         raise ValueError("A model name is required")
-    if p["key"] == "required" and not entry["apiKey"] and entry.get("url", p["url"]) == p["url"]:
-        raise ValueError(f"An API key is required for {p['name']}")
-    same = lambda c: (c.get("provider"), c.get("model")) == (entry["provider"], entry["model"])
     with _lock:
         settings = load_settings()
-        configs = load_llm_configs(settings)
-        if any(same(c) for c in configs):
-            configs = [entry if same(c) else c for c in configs]
+        models = load_ai_models(settings)
+        same = [i for i, m in enumerate(models) if ai_model_key(m) == ai_model_key(entry)]
+        if same:
+            models[same[0]] = entry
         else:
-            configs.append(entry)
-        settings["llmConfigs"] = configs
+            models.append(entry)
+        settings["aiModels"] = models
         save_settings(settings)
+    return entry
 
 
-def remove_llm_config(provider: str, model: str) -> None:
-    """Remove a provider/model, and the selection if it was the selected one."""
+def remove_ai_model(key: str) -> None:
+    """Remove a model, and the selection if it was the selected one."""
     with _lock:
         settings = load_settings()
-        settings["llmConfigs"] = [
-            c for c in load_llm_configs(settings) if (c["provider"], c.get("model")) != (provider, model)
-        ]
-        if settings.get("proofreadProvider") == f"{provider}/{model}":
-            settings.pop("proofreadProvider")
+        settings["aiModels"] = [m for m in load_ai_models(settings) if ai_model_key(m) != key]
+        if settings.get("aiModel") == key:
+            settings.pop("aiModel")
         save_settings(settings)
 
 
-def _llm_base_url(cfg: dict) -> str:
-    url = (cfg.get("url") or LLM_PROVIDERS[cfg["provider"]]["url"]).rstrip("/")
-    # Ollama URLs from before the OpenAI-compatible API have no /v1.
-    if cfg["provider"] == "ollama" and not url.endswith("/v1"):
-        url += "/v1"
-    return url
-
-
-def _ai_complete(system: str, user: str, json_schema: dict | None) -> str:
-    """Run one completion with the selected external provider. The answer
-    should be JSON matching json_schema (see parse_json_list), or free-form
-    text if json_schema is None."""
-    settings = load_settings()
-    configs = load_llm_configs(settings)
-    if not configs:
-        raise RuntimeError(
-            "No AI provider is set up. Add one under Settings → Proofreading & translation."
-        )
-    selected = settings.get("proofreadProvider")
-    cfg = next((c for c in configs if f"{c['provider']}/{c.get('model')}" == selected), None)
+def selected_ai_model(settings: dict | None = None) -> dict:
+    settings = settings if settings is not None else load_settings()
+    models = load_ai_models(settings)
+    if not models:
+        raise RuntimeError("No AI model is set up. Add one under Settings → AI.")
+    selected = settings.get("aiModel")
+    cfg = next((m for m in models if ai_model_key(m) == selected), None)
     if cfg is None:
         if selected:
             raise RuntimeError(
-                f"The selected AI provider '{selected}' is not set up any more. "
-                "Choose another one under Settings → Proofreading & translation."
+                f"The selected AI model ({selected}) is not set up any more. "
+                "Choose another one under Settings → AI."
             )
-        cfg = configs[0]
-    if cfg["provider"] not in LLM_PROVIDERS:
-        raise RuntimeError(
-            f"Unknown AI provider '{cfg['provider']}' (supported: {', '.join(LLM_PROVIDERS)})."
+        cfg = models[0]
+    return cfg
+
+
+# --- Talking to the model ---------------------------------------------------
+
+# A reasoning model's thoughts (Qwen3 and others), left out of answers.
+THINK = re.compile(r"<think>.*?(</think>|\Z)", re.S)
+
+
+def ai_chat(
+    system: str,
+    user: str,
+    cfg: dict,
+    *,
+    json_schema: dict | None = None,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+    on_text=None,
+) -> str:
+    """The answer of the model `cfg` to one prompt, without a reasoning
+    model's thoughts. It is streamed: on_text gets each piece as it comes.
+
+    json_schema asks for JSON of that shape, wrapped in an object as
+    structured output requires one at the top level (parse_json_list unwraps
+    it). A service that rejects one of the request's options (structured
+    output, temperature, max_tokens) is asked again without it."""
+    name = ai_model_name(cfg)
+    body = {
+        "model": cfg["model"],
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        "stream": True,
+    }
+    if max_tokens:
+        body["max_tokens"] = max_tokens
+    if temperature is not None:
+        body["temperature"] = temperature
+    if json_schema is not None:
+        wrapped = {"type": "object", "properties": {"items": json_schema}, "required": ["items"]}
+        body["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": "result", "schema": wrapped, "strict": False},
+        }
+    headers = {"Content-Type": "application/json"}
+    if cfg.get("apiKey"):
+        headers["Authorization"] = f"Bearer {cfg['apiKey']}"
+    while True:
+        req = urllib.request.Request(
+            f"{cfg['url']}/chat/completions",
+            data=json.dumps(body).encode("utf-8"),
+            method="POST",
+            headers=headers,
         )
-    if cfg["provider"] == "apfel" and not cfg.get("url"):
-        apfel = _find_tool("apfel")
-        if apfel:
-            return _apfel_cli_complete(apfel, system, user, json_schema)
-    return _openai_complete(cfg, system, user, json_schema)
+        try:
+            # Generous: a local server may first have to load the model.
+            resp = urllib.request.urlopen(req, timeout=600)
+            break
+        except urllib.error.HTTPError as e:
+            err = _api_error(name, e)
+            if any(t in str(err) for t in ("context window", "context overflow", "context_length")):
+                raise RuntimeError(
+                    f"The text is too long for {name}'s model. Select a smaller part of the text and try again."
+                )
+            if e.code in (400, 422) and _relax_request(body, str(err)):
+                continue
+            if e.code == 404:
+                raise RuntimeError(f"{err} Check the URL ({cfg['url']}) and the model name ('{cfg['model']}').")
+            raise err
+        except urllib.error.URLError as e:
+            hint = " — is it running?" if _is_local(cfg["url"]) else ""
+            raise RuntimeError(f"Could not reach {name} at {cfg['url']}{hint} ({e.reason})")
+
+    parts, finish = [], None
+    with resp:
+        # Server-sent events: "data: {json}" lines, ending with "data: [DONE]".
+        for raw in resp:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(chunk, list) and chunk:  # Gemini wraps an error in a list
+                chunk = chunk[0]
+            if chunk.get("error"):
+                err = chunk["error"]
+                raise RuntimeError(f"{name}: {err.get('message', err) if isinstance(err, dict) else err}")
+            for choice in chunk.get("choices") or []:
+                finish = choice.get("finish_reason") or finish
+                text = (choice.get("delta") or {}).get("content")
+                if text:
+                    parts.append(text)
+                    if on_text:
+                        on_text(text)
+    if finish == "length":
+        raise RuntimeError(
+            f"{name}'s answer was cut off because it got too long. Select a smaller part of the text and try again."
+        )
+    answer = THINK.sub("", "".join(parts)).strip()
+    if not answer:
+        raise RuntimeError(f"{name} returned an empty answer.")
+    return answer
+
+
+def _relax_request(body: dict, message: str) -> bool:
+    """Drop or replace the option of `body` the service rejected (going by its
+    error message), or step down to a simpler response format; False if
+    there's nothing left to try."""
+    m = message.lower()
+    if "max_tokens" in body and "max_tokens" in m:
+        body["max_completion_tokens"] = body.pop("max_tokens")  # OpenAI's reasoning models
+    elif "temperature" in body and "temperature" in m:
+        del body["temperature"]
+    elif body.get("response_format", {}).get("type") == "json_schema":
+        body["response_format"] = {"type": "json_object"}
+    elif "response_format" in body:
+        del body["response_format"]
+    else:
+        return False
+    return True
 
 
 def _api_error(name: str, e: urllib.error.HTTPError) -> RuntimeError:
-    """A readable error for a provider's HTTP error: its own message rather
+    """A readable error for a service's HTTP error: its own message rather
     than the raw JSON body, with a hint for the common cases."""
     body = e.read().decode("utf-8", "replace")
+    e.close()
     message = body
     try:
         data = json.loads(body)
@@ -1376,206 +1410,206 @@ def _api_error(name: str, e: urllib.error.HTTPError) -> RuntimeError:
     return RuntimeError(f"{name} error {e.code}: {message}" + (f" {hint}" if hint else ""))
 
 
-def _openai_complete(cfg: dict, system: str, user: str, json_schema: dict | None) -> str:
-    """One completion via the OpenAI chat completions API of the provider in
-    `cfg`. json_schema=None asks for free-form text. The schema is wrapped in
-    an object, as structured output requires one at the top level
-    (parse_json_list unwraps it); a server that rejects structured output is
-    asked again with JSON mode, then without either."""
-    provider, model = cfg["provider"], cfg["model"]
-    base = _llm_base_url(cfg)
-    p = LLM_PROVIDERS[provider]
-    name = p["name"] if base == p["url"] or provider != "openai" else f"The server at {base}"
-    body = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    }
-    formats = [None]
-    if json_schema is not None:
-        wrapped = {"type": "object", "properties": {"items": json_schema}, "required": ["items"]}
-        formats = [
-            {"type": "json_schema", "json_schema": {"name": "result", "schema": wrapped, "strict": False}},
-            {"type": "json_object"},
-            None,
-        ]
-    headers = {"Content-Type": "application/json"}
-    if cfg.get("apiKey"):
-        headers["Authorization"] = f"Bearer {cfg['apiKey']}"
-    for i, fmt in enumerate(formats):
-        if fmt:
-            body["response_format"] = fmt
-        else:
-            body.pop("response_format", None)
-        req = urllib.request.Request(
-            f"{base}/chat/completions",
-            data=json.dumps(body).encode("utf-8"),
-            method="POST",
-            headers=headers,
+# --- LLM search ---------------------------------------------------------------
+
+SEARCH_MAX_TOKENS = 2048
+
+
+def start_llm_search(vault: str, query: str) -> int:
+    """Answer a question about the notes from the passages that match it."""
+    cfg = selected_ai_model()
+
+    def work(job):
+        found = retrieval_worker.call({"vault": vault, "query": query}, lambda m: ai_jobs.update(job, status=m))
+        passages = found["passages"]
+        ai_jobs.update(job, sources=[{**p, "path": os.path.join(vault, p["file"])} for p in passages])
+        if not passages:
+            ai_jobs.update(job, answer="No matching passages found in your notes.")
+            return
+        ai_jobs.update(job, status=f"Answering with {ai_model_name(cfg)} …")
+        context = "\n\n".join(f"[{p['file']}:{p['line']}]\n{p['text']}" for p in passages)
+        answer = ai_chat(
+            _prompt("SEARCH_SYSTEM.md"),
+            f"Excerpts:\n\n{context}\n\nQuestion: {query}",
+            cfg,
+            max_tokens=SEARCH_MAX_TOKENS,
+            temperature=0.2,
+            on_text=lambda t: ai_jobs.append(job, "answer", t),
         )
-        try:
-            with urllib.request.urlopen(req, timeout=300) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            break
-        except urllib.error.HTTPError as e:
-            err = _api_error(name, e)
-            if any(t in str(err) for t in ("context window", "context overflow", "context_length")):
-                raise RuntimeError(
-                    f"The text is too long for {name}'s model. "
-                    "Select a smaller part of the text and try again."
-                )
-            if e.code in (400, 422) and i < len(formats) - 1 and "response_format" in body:
-                continue  # try a simpler response format
-            if e.code == 404:
-                if provider == "ollama" and "not found" in str(err):
-                    raise RuntimeError(
-                        f"Ollama doesn't have the model '{model}'. "
-                        f"Download it with `ollama pull {model}`, or add another model in Settings."
-                    )
-                raise RuntimeError(f"{err} Check the URL ({base}) and the model name ('{model}').")
-            raise err
-        except urllib.error.URLError as e:
-            hint = _UNREACHABLE_HINTS.get(provider)
-            raise RuntimeError(
-                f"Could not reach {name} at {base}{f' — {hint}' if hint else ''} ({e.reason})"
-            )
+        ai_jobs.update(job, answer=answer)
 
-    choices = data.get("choices") or []
-    if not choices:
-        raise RuntimeError(f"{name} returned no answer.")
-    if choices[0].get("finish_reason") == "length":
-        raise RuntimeError(
-            f"{name}'s answer was cut off because it got too long. "
-            "Select a smaller part of the text and try again."
-        )
-    out = (choices[0].get("message", {}).get("content") or "").strip()
-    if not out:
-        raise RuntimeError(f"{name} returned an empty answer.")
-    return out
+    return ai_jobs.start("search", work, query=query, sources=[], answer="")
 
 
-# apfel's exit codes (`apfel --help`).
-_APFEL_EXIT_MESSAGES = {
-    3: "Apple's model declined this text (content guardrails).",
-    4: "The text is too long for apfel's model. Select a smaller part of the text and try again.",
-    5: "Apple's on-device model isn't available. Turn on Apple Intelligence in System Settings.",
-    6: "Apple's on-device model is busy. Try again in a moment.",
-}
-
-
-def _apfel_cli_complete(apfel: str, system: str, user: str, json_schema: dict | None) -> str:
-    """One completion by running the `apfel` command. The text goes in on
-    stdin; with json_schema, --schema makes the model return JSON in that
-    shape, wrapped in an object as with the OpenAI API."""
-    cmd = [apfel, "-q", "-s", system]
-    schema_file = None
-    try:
-        if json_schema is not None:
-            wrapped = {"type": "object", "properties": {"items": json_schema}, "required": ["items"]}
-            schema_file = tempfile.NamedTemporaryFile(
-                "w", suffix=".json", delete=False, encoding="utf-8"
-            )
-            json.dump(wrapped, schema_file)
-            schema_file.close()
-            cmd += ["--schema", schema_file.name]
-        try:
-            result = subprocess.run(
-                cmd, input=user, capture_output=True, text=True, encoding="utf-8", timeout=300
-            )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("apfel took longer than 5 minutes and was stopped.")
-    finally:
-        if schema_file:
-            os.unlink(schema_file.name)
-    err = " ".join(result.stderr.split())
-    if result.returncode != 0:
-        raise RuntimeError(
-            _APFEL_EXIT_MESSAGES.get(result.returncode)
-            or f"apfel failed (exit code {result.returncode}): {err[:300] or 'no message'}"
-        )
-    if "finish_reason=length" in err:
-        raise RuntimeError(
-            "apfel's answer was cut off because it got too long. "
-            "Select a smaller part of the text and try again."
-        )
-    out = result.stdout.strip()
-    if not out:
-        raise RuntimeError("apfel returned an empty answer.")
-    return out
-
-
-# --- The AI actions --------------------------------------------------------
+# --- Tag suggestion -----------------------------------------------------------
 #
-# Proofread and Translate use LLM search's local model by default, or the
-# selected provider ("useExternalAi"). The local model is small, so it gets
-# simpler prompts (src/*_LOCAL.md) and one paragraph at a time: it proofreads
-# each with a short example, and translates each as plain text, from which the
-# items are built here (so every 'original' is exact).
+# Tags for a note, from the vault's existing tags: the notes most similar in
+# meaning that already have tags are found with the embeddings, and the model
+# picks the tags, with those notes and their tags as examples. Tested on the
+# vault's own tagged notes, the examples clearly help the model (and the model
+# clearly beats just counting the neighbours' tags).
+
+TAG_TEXT_CHARS = 2000  # start of the note given to the model
+MAX_TAGS = 3
+_INLINE_TAG_ANY = re.compile(r"(^|[^\w&#])#[\w/-]+")
+
+
+def start_tag_suggestions(vault: str, targets: list, note_tags: dict) -> int:
+    """Suggest tags for `targets` (see tag_suggestion_request): the job's
+    "results" gets {"path", "tags", "evidence": {tag: [similar notes]}} per
+    target."""
+    cfg = selected_ai_model()
+    allowed = sorted({t for tags in note_tags.values() for t in tags}, key=str.lower)
+
+    def work(job):
+        status = lambda m: ai_jobs.update(job, status=m)
+        for n, target in enumerate(targets, 1):
+            status(f"Choosing tags: note {n} of {len(targets)} …" if len(targets) > 1 else "Choosing tags …")
+            text = _INLINE_TAG_ANY.sub(r"\1", target["text"]).strip()
+            existing = target.get("existing") or []
+            tags, notes = [], []
+            if text:
+                similar = {"text": text, "file": target.get("file"), "candidates": list(note_tags)}
+                notes = [f for f, _ in retrieval_worker.call({"vault": vault, "similar": similar}, status)["notes"]]
+                answer = ai_chat(
+                    _prompt("SUGGEST_TAGS_SYSTEM.md"),
+                    _tag_request(text, notes, note_tags, allowed, existing),
+                    cfg,
+                    max_tokens=200,
+                    temperature=0,
+                )
+                tags = parse_tags(answer, allowed, existing)
+            result = {
+                "path": os.path.join(vault, target["file"]) if target.get("file") else None,
+                "tags": tags,
+                "evidence": {
+                    t: [os.path.join(vault, f) for f in notes if t.lower() in {x.lower() for x in note_tags[f]}]
+                    for t in tags
+                },
+            }
+            ai_jobs.append(job, "results", [result])
+
+    return ai_jobs.start("tags", work, results=[], total=len(targets))
+
+
+def _tag_request(text: str, notes: list, note_tags: dict, allowed: list, existing: list) -> str:
+    examples = "\n".join(f"- {Path(f).stem}: {', '.join(note_tags[f])}" for f in notes) or "(none)"
+    user = f"Allowed tags: {', '.join(allowed)}\n\nSimilar notes and their tags:\n{examples}\n\n"
+    if existing:
+        user += f"The note already has these tags; don't repeat them: {', '.join(existing)}\n\n"
+    return user + f"Note:\n{text[:TAG_TEXT_CHARS]}"
+
+
+def parse_tags(answer: str, allowed: list, existing: list) -> list:
+    """The allowed tags in the model's answer (canonical spelling, at most
+    MAX_TAGS), leaving out the ones the note already has."""
+    canon = {t.lower(): t for t in allowed}
+    skip = {t.lower() for t in existing}
+    out = []
+    for part in re.split(r"[,\n]", answer):
+        key = part.strip().strip("*-.` ").lstrip("#").strip().lower()
+        if key in canon and key not in skip and canon[key] not in out:
+            out.append(canon[key])
+    return out[:MAX_TAGS]
+
+
+# --- Proofreading and translation ----------------------------------------------
+#
+# A large model gets the whole text at once, with the full prompt
+# (src/PROOFREAD_SYSTEM.md, src/TRANSLATE_SYSTEM.md) and a JSON schema for its
+# answer. A small one ("small" in its settings) gets simpler prompts
+# (src/*_SMALL.md) and one paragraph at a time: it proofreads each with a short
+# example, and translates each as plain text, from which the items are built
+# here (so every 'original' is exact).
+
+SMALL_MAX_TOKENS = 4096  # room for a long paragraph
 
 
 def proofread_text(text: str) -> list:
     """Proofread `text`: a list of findings (PROOFREAD_JSON_SCHEMA items)."""
-    settings = load_settings()
-    if settings.get("useExternalAi"):
-        return _parse_suggestions(
-            _ai_complete(_prompt("PROOFREAD_SYSTEM.md"), text, PROOFREAD_JSON_SCHEMA)
-        )
-    system = _prompt("PROOFREAD_SYSTEM_LOCAL.md")
-    paragraphs = prose_paragraphs(text)
-    items: list = []
-    for n, paragraph in enumerate(paragraphs, 1):
-        raw = llm_search.complete(
-            system, paragraph, settings.get("llmSearchModel"), _step(n, len(paragraphs))
-        )
-        for item in parse_json_list(raw) or []:
-            # Only findings that can be found in the text.
-            if not isinstance(item, dict) or not str(item.get("original") or "") in paragraph:
-                continue
-            item = {k: str(item.get(k) or "") for k in ("type", "original", "suggestion", "comment")}
-            if item["type"] not in PROOFREAD_TYPES:
-                item["type"] = "correction"
-            # A "correction" that changes nothing ("No error") isn't one.
-            no_change = item["type"] == "correction" and item["suggestion"] in ("", item["original"])
-            # The same finding on a shorter or longer passage: keep the first.
-            overlaps = any(
-                i["type"] == item["type"] and (i["original"] in item["original"] or item["original"] in i["original"])
-                for i in items
+    cfg = selected_ai_model()
+
+    def work(job):
+        if not cfg.get("small"):
+            ai_jobs.update(job, status=f"Waiting for {ai_model_name(cfg)} …")
+            raw = ai_chat(
+                _prompt("PROOFREAD_SYSTEM.md"), text, cfg,
+                json_schema=PROOFREAD_JSON_SCHEMA, on_text=lambda t: ai_jobs.append(job, "answer", t),
             )
-            if item["original"].strip() and not no_change and not overlaps:
-                items.append(item)
-    return items
+            return _parse_suggestions(raw)
+        items: list = []
+        for paragraph in _each_paragraph(job, text, cfg):
+            raw = ai_chat(
+                _prompt("PROOFREAD_SYSTEM_SMALL.md"), paragraph, cfg,
+                max_tokens=SMALL_MAX_TOKENS, temperature=0.2, on_text=lambda t: ai_jobs.append(job, "answer", t),
+            )
+            for item in parse_json_list(raw) or []:
+                # Only findings that can be found in the text.
+                if not isinstance(item, dict) or not str(item.get("original") or "") in paragraph:
+                    continue
+                item = {k: str(item.get(k) or "") for k in ("type", "original", "suggestion", "comment")}
+                if item["type"] not in PROOFREAD_TYPES:
+                    item["type"] = "correction"
+                # A "correction" that changes nothing ("No error") isn't one.
+                no_change = item["type"] == "correction" and item["suggestion"] in ("", item["original"])
+                # The same finding on a shorter or longer passage: keep the first.
+                overlaps = any(
+                    i["type"] == item["type"] and (i["original"] in item["original"] or item["original"] in i["original"])
+                    for i in items
+                )
+                if item["original"].strip() and not no_change and not overlaps:
+                    items.append(item)
+        return items
+
+    return ai_jobs.run("proofread", work, step=None, answer="")
 
 
 def translate_text(text: str, target_lang: str) -> list:
     """Translate `text` into `target_lang` (the prompts' {{TARGET_LANGUAGE}}):
     a list of passages with their translations (TRANSLATE_JSON_SCHEMA items)."""
     target = (target_lang or "").strip() or "English"
-    settings = load_settings()
-    if settings.get("useExternalAi"):
-        system = _prompt("TRANSLATE_SYSTEM.md").replace("{{TARGET_LANGUAGE}}", target)
-        return _parse_suggestions(_ai_complete(system, text, TRANSLATE_JSON_SCHEMA))
-    system = _prompt("TRANSLATE_SYSTEM_LOCAL.md").replace("{{TARGET_LANGUAGE}}", target)
+    cfg = selected_ai_model()
+
+    def work(job):
+        if not cfg.get("small"):
+            ai_jobs.update(job, status=f"Waiting for {ai_model_name(cfg)} …")
+            system = _prompt("TRANSLATE_SYSTEM.md").replace("{{TARGET_LANGUAGE}}", target)
+            raw = ai_chat(
+                system, text, cfg,
+                json_schema=TRANSLATE_JSON_SCHEMA, on_text=lambda t: ai_jobs.append(job, "answer", t),
+            )
+            return _parse_suggestions(raw)
+        system = _prompt("TRANSLATE_SYSTEM_SMALL.md").replace("{{TARGET_LANGUAGE}}", target)
+        items = []
+        for paragraph in _each_paragraph(job, text, cfg):
+            translation = ai_chat(
+                system, paragraph, cfg,
+                max_tokens=SMALL_MAX_TOKENS, temperature=0.2, on_text=lambda t: ai_jobs.append(job, "answer", t),
+            )
+            # (Nearly) unchanged: the paragraph is already in `target`.
+            if difflib.SequenceMatcher(None, paragraph, translation).ratio() < 0.9:
+                items.append({"original": paragraph, "suggestion": translation, "comment": ""})
+        return items
+
+    return ai_jobs.run("translate", work, step=None, answer="")
+
+
+def _each_paragraph(job: dict, text: str, cfg: dict):
+    """The prose paragraphs of `text`, keeping the job's progress up to date."""
     paragraphs = prose_paragraphs(text)
-    items = []
     for n, paragraph in enumerate(paragraphs, 1):
-        translation = llm_search.complete(
-            system, paragraph, settings.get("llmSearchModel"), _step(n, len(paragraphs))
-        ).strip()
-        # (Nearly) unchanged: the paragraph is already in `target`.
-        if translation and difflib.SequenceMatcher(None, paragraph, translation).ratio() < 0.9:
-            items.append({"original": paragraph, "suggestion": translation, "comment": ""})
-    return items
-
-
-def _step(n: int, total: int) -> str | None:
-    return f"paragraph {n} of {total}" if total > 1 else None
+        ai_jobs.update(
+            job,
+            step=f"paragraph {n} of {len(paragraphs)}" if len(paragraphs) > 1 else None,
+            status=f"Waiting for {ai_model_name(cfg)} …",
+            answer="",
+        )
+        yield paragraph
 
 
 def prose_paragraphs(text: str) -> list[str]:
     """The paragraphs of `text` (split at blank lines) that contain prose,
-    for the local model: without frontmatter, code blocks, and paragraphs of
+    for a small model: without frontmatter, code blocks, and paragraphs of
     only links, tags, citations or footnote markers."""
     body = re.sub(r"\A---\n.*?\n---[ \t]*(\n|\Z)", "", text, flags=re.S)
     out = []
@@ -1592,7 +1626,7 @@ def prose_paragraphs(text: str) -> list[str]:
 
 
 def _parse_suggestions(raw: str) -> list:
-    """The suggestions in an external provider's raw answer."""
+    """The suggestions in a model's raw answer."""
     suggestions = parse_json_list(raw)
     if suggestions is None:
         start = " ".join(raw.split())[:200]
@@ -1862,13 +1896,15 @@ class Handler(SimpleHTTPRequestHandler):
         path = parsed.path
         qs = parse_qs(parsed.query)
 
-        if path == "/api/llm-configs":
+        if path == "/api/ai-models":
             try:
                 settings = load_settings()
                 self.send_json({
-                    "configs": load_llm_configs(settings),
-                    "selected": settings.get("proofreadProvider"),
-                    "providers": LLM_PROVIDERS,
+                    "models": [
+                        {**m, "key": ai_model_key(m), "name": ai_model_name(m)} for m in load_ai_models(settings)
+                    ],
+                    "selected": settings.get("aiModel") or "",
+                    "presets": AI_PRESETS,
                 })
             except Exception as e:
                 self.send_error_json(str(e))
@@ -1984,8 +2020,8 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(search_vault(str(safe_path(vault_path)), query))
             except Exception as e:
                 self.send_error_json(str(e))
-        elif path == "/api/llm-search-status":
-            self.send_json(llm_search.status())
+        elif path == "/api/ai-status":
+            self.send_json(ai_jobs.status())
         elif path == "/api/zotero-cayw":
             # Proxy the Better BibTeX "cite as you write" picker. Doing this
             # server-side avoids the browser's flaky cross-origin long-poll to
@@ -2010,23 +2046,20 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        if path == "/api/add-llm-config":
+        if path == "/api/add-ai-model":
             try:
                 data = self.read_body()
-                add_llm_config(
-                    data.get("provider") or "",
-                    data.get("model") or "",
-                    data.get("apiKey") or "",
-                    data.get("url") or "",
+                entry = add_ai_model(
+                    data.get("url") or "", data.get("model") or "", data.get("apiKey") or "", data.get("small")
                 )
-                self.send_json({"ok": True})
+                self.send_json({"key": ai_model_key(entry)})
             except Exception as e:
                 self.send_error_json(str(e))
                 return
-        elif path == "/api/remove-llm-config":
+        elif path == "/api/remove-ai-model":
             try:
                 data = self.read_body()
-                remove_llm_config(data.get("provider") or "", data.get("model") or "")
+                remove_ai_model(data.get("key") or "")
                 self.send_json({"ok": True})
             except Exception as e:
                 self.send_error_json(str(e))
@@ -2265,8 +2298,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if not query:
                     raise ValueError("Type a question first")
                 vault = str(safe_path(data.get("vault_path") or ""))
-                model = load_settings().get("llmSearchModel")
-                self.send_json({"id": llm_search.start(vault, query, model)})
+                self.send_json({"id": start_llm_search(vault, query)})
             except Exception as e:
                 self.send_error_json(str(e))
 
@@ -2322,8 +2354,7 @@ class Handler(SimpleHTTPRequestHandler):
                 data = self.read_body()
                 vault = str(safe_path(data.get("vault_path") or ""))
                 targets, note_tags = tag_suggestion_request(vault, data)
-                model = load_settings().get("llmSearchModel")
-                self.send_json({"id": llm_search.start_tags(vault, targets, note_tags, model)})
+                self.send_json({"id": start_tag_suggestions(vault, targets, note_tags)})
             except Exception as e:
                 self.send_error_json(str(e))
 
