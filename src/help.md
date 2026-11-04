@@ -215,7 +215,7 @@ The suggestions appear in the side panel, with the similar notes behind each tag
 
 **Untagged notes:** in the **Tags** panel, open **#notag** and click **Suggest tags for these notes…** to get suggestions for all of them at once. They appear one note at a time (a few seconds each); click a note's name to open it, and **Add** to write its tags into the note. A note that is open in a tab is left alone: add its tags there, or close the tab first.
 
-**Which folders:** only notes in the folders listed as `"tagIncludedFolders"` in the settings file (`~/.humd-editor/settings.json`) are used as examples and get suggestions from **#notag**, for example `"tagIncludedFolders": ["z_annotations", "z_thoughts"]`. These two are also the default. A name matches at any depth, and notes outside these folders, including those directly in the vault's top folder, are left out. There is no control for this in the Settings dialog: `⌘`-click the settings button to open the file. A change applies from the next suggestion.
+**Which notes:** tags are learnt from all notes in the vault's folders, but not from notes directly in its top folder. Only untagged notes in the folders listed as `"tagIncludedFolders"` in the settings file (`~/.humd-editor/settings.json`) appear under **#notag**, for example `"tagIncludedFolders": ["annotations", "thoughts"]`. These two are also the default, and a name matches at any depth. There is no control for this in the Settings dialog: `⌘`-click the settings button to open the file. The **#notag** list follows a change after the next save, or when you reopen the app. The lists of the other tags always show all notes.
 
 The first suggestion can take a minute, while the search model loads.
 

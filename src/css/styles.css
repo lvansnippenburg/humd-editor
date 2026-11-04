@@ -613,6 +613,13 @@ body[data-platform="ios"] .resize-handle {
     border-radius: 4px;
     cursor: pointer;
     white-space: nowrap;
+    display: flex;
+    justify-content: space-between;
+    gap: 24px;
+}
+
+.eam-shortcut {
+    opacity: 0.6;
 }
 
 .eam-item:hover {

@@ -715,33 +715,42 @@ class AiJobs:
 ai_jobs = AiJobs()
 
 
-# The folders whose notes get tags suggested and are learnt from, unless
-# "tagIncludedFolders" in the settings says otherwise. A name matches at any depth.
+# The folders whose untagged notes are listed under #notag in the Tags panel
+# and can get tags suggested from there, unless "tagIncludedFolders" in the
+# settings says otherwise. A name matches at any depth.
 TAG_INCLUDED_FOLDERS = ["annotations", "thoughts"]
+
+
+def in_tag_included_folders(vault: str):
+    """A test for whether a note (absolute path) is in one of the folders for
+    the #notag list of the Tags panel."""
+    folders = set(load_settings().get("tagIncludedFolders", TAG_INCLUDED_FOLDERS))
+    root = Path(vault).resolve()
+    return lambda f: not folders.isdisjoint(Path(f).resolve().relative_to(root).parts[:-1])
 
 
 def tag_suggestion_request(vault: str, data: dict) -> tuple[list, dict]:
     """The targets and tagged notes for start_tag_suggestions, for POST
     /api/suggest-tags: {"text", "path"?} (a document, possibly unsaved) or
-    {"paths": [...]} (saved notes, e.g. the untagged ones). Only notes in the
-    included folders are used as tagged notes or as "paths" targets."""
+    {"paths": [...]} (saved notes: the untagged ones, of which only those in the
+    included folders are used). Tags are learnt from all notes in a folder of
+    the vault, so not from those at its top level."""
     root = Path(vault)
     rel = lambda p: str(Path(p).resolve().relative_to(root.resolve()))
     note_tags: dict = {}
     with _lock:
         tag_index = build_link_index(vault)["tag_index"]
-    folders = set(load_settings().get("tagIncludedFolders", TAG_INCLUDED_FOLDERS))
-    included = lambda f: not folders.isdisjoint(Path(f).parts[:-1])
     for entry in tag_index.values():
         for f in entry["files"]:
-            if included(rel(f)):
+            if len(Path(rel(f)).parts) > 1:
                 note_tags.setdefault(rel(f), []).append(entry["name"])
     if not note_tags:
         raise ValueError(
-            "No notes in the folders for tag suggestions have tags yet, so there are none to suggest"
+            "No notes in the vault's folders have tags yet, so there are none to suggest"
         )
     if data.get("paths"):
-        paths = [p for p in map(safe_path, data["paths"]) if included(rel(p))]
+        included = in_tag_included_folders(vault)
+        paths = [p for p in map(safe_path, data["paths"]) if included(p)]
         targets = [
             {"file": rel(p), "text": p.read_text(encoding="utf-8", errors="replace")} for p in paths
         ]
@@ -2249,6 +2258,10 @@ class Handler(SimpleHTTPRequestHandler):
                 data = self.read_body()
                 with _lock:
                     index = build_link_index(data["vault_path"])
+                # Only used for the #notag list of the Tags panel.
+                index["untagged"] = list(
+                    filter(in_tag_included_folders(data["vault_path"]), index["untagged"])
+                )
                 self.send_json(index)
             except Exception as e:
                 self.send_error_json(str(e))

@@ -22,19 +22,19 @@ export function buildGraphData(linkIndex) {
     return String(s).split(/[\\/]/).pop().replace(/\.md$/i, "").toLowerCase().trim();
   }
 
+  const vaultRoot = String(linkIndex.vaultPath || "").replace(/\\/g, "/").replace(/\/+$/, "");
+
   // Create document nodes from notes index
   for (const [key, path] of Object.entries(linkIndex.notes)) {
     const filePath = String(path);
     const label = filePath.split(/[\\/]/).pop().replace(/\.md$/i, "");
-    
+
     // Extract folder name from path
     const parts = filePath.split(/[\\/]/);
     const folder = parts.length >= 2 ? parts[parts.length - 2] : "";
 
-    // Only include notes inside a folder (at any level) whose name starts
-    // with "z_" — the vault's convention for graph/tag-relevant material.
-    const inZFolder = parts.slice(0, -1).some((seg) => seg.startsWith("z_"));
-    if (!inZFolder) {
+    // Notes at the top level of the vault aren't part of the graph.
+    if (parts.slice(0, -1).join("/") === vaultRoot) {
       continue;
     }
 
@@ -55,8 +55,8 @@ export function buildGraphData(linkIndex) {
   }
 
   // Create tag nodes from tag_index — only for tags with at least one file
-  // already included as a document node (i.e. inside a "z_" folder), so tags
-  // used solely outside those folders don't show up as disconnected nodes.
+  // already included as a document node, so tags used solely at the top level
+  // of the vault don't show up as disconnected nodes.
   if (linkIndex.tag_index) {
     for (const [tag, tagData] of Object.entries(linkIndex.tag_index)) {
       const docKeys = (tagData.files || [])

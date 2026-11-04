@@ -1552,6 +1552,7 @@ async function switchToTab(tabId) {
       notes: noteIndexCache,
       tag_index: tagIndexCache,
       backlinks: backlinksCache,
+      vaultPath: currentVaultPath,
     };
 
     const onDocClick = (noteKey) => {
@@ -2697,7 +2698,7 @@ function linkDialog({ text, target, headings }) {
         placeholder="A heading of this note, or https://…, zotero://…">
       <datalist id="${listId}"></datalist>
       <p class="settings-hint">Choose a heading of this note from the list, or enter a web or app address.</p>
-      <div class="prompt-dialog-buttons"><button class="cancel">Cancel</button><button class="primary">Insert</button></div>`;
+      <div class="prompt-dialog-buttons"><button class="cancel" title="Cancel (Esc)">Cancel</button><button class="primary" title="Insert (Enter)">Insert</button></div>`;
     const textInput = dlg.querySelector(".link-text");
     const targetInput = dlg.querySelector(".link-target");
     const list = dlg.querySelector("datalist");
@@ -2889,6 +2890,7 @@ function quitDialog(list) {
     discard.className = "quit-discard";
     const cancel = document.createElement("button");
     cancel.textContent = "Cancel";
+    cancel.title = "Cancel (Esc)";
     const save = document.createElement("button");
     save.className = "primary";
     save.textContent = names.length === 1 ? "Save" : "Save All";
@@ -3140,10 +3142,10 @@ function showEditorActionsMenu(x, y) {
   menu.innerHTML = "";
 
   const entries = [
-    { label: "Translate", action: runTranslate },
-    { label: "Proofread", action: runProofread },
+    { label: "Translate", shortcut: "⌘⇧L", action: runTranslate },
+    { label: "Proofread", shortcut: "⌘⇧P", action: runProofread },
     { label: "ZotSeek", action: runZotSeek },
-    { label: "Insert Comment", action: insertComment },
+    { label: "Insert Comment", shortcut: "⌘⇧M", action: insertComment },
     null,
     { label: "Change Case", action: toggleSelectionCase },
     { label: "Prepend Lines…", action: prependSelectedLines },
@@ -3162,6 +3164,12 @@ function showEditorActionsMenu(x, y) {
     const li = document.createElement("li");
     li.className = "eam-item";
     li.textContent = entry.label;
+    if (entry.shortcut) {
+      const shortcut = document.createElement("span");
+      shortcut.className = "eam-shortcut";
+      shortcut.textContent = entry.shortcut;
+      li.appendChild(shortcut);
+    }
     // mousedown (not click) so the action runs before the textarea blurs
     // and collapses the selection it needs to act on.
     li.addEventListener("mousedown", (e) => {
@@ -3507,8 +3515,10 @@ function promptDialog(message, defaultValue = "") {
     const ok = document.createElement("button");
     ok.className = "primary";
     ok.textContent = "OK";
+    ok.title = "OK (Enter)";
     const cancel = document.createElement("button");
     cancel.textContent = "Cancel";
+    cancel.title = "Cancel (Esc)";
     row.append(cancel, ok);
     dlg.append(label, input, row);
     document.body.appendChild(dlg);
@@ -5095,35 +5105,19 @@ function expandTag(tagName) {
   li.scrollIntoView({ block: "nearest" });
 }
 
-// Whether `filePath` lives inside a folder (at any level) whose name starts
-// with "z_" — the vault's convention for tags/graph-relevant material.
-function isInZFolder(filePath) {
-  const parts = String(filePath).split(/[\\/]/);
-  return parts.slice(0, -1).some((seg) => seg.startsWith("z_"));
-}
-
-// The notes the Tags panel lists: those in a "z_" folder, except the finished
-// texts in z_output. Suggest tags has its own list of folders, which should
-// cover these ("tagIncludedFolders" in the settings, see server.py).
-function isTagPanelFile(filePath) {
-  return isInZFolder(filePath) && !String(filePath).split(/[\\/]/).slice(0, -1).includes("z_output");
-}
-
 function buildTagsPanel() {
   const list = document.getElementById("tags-list");
   list.innerHTML = "";
 
-  // Only tags/files inside a "z_"-prefixed folder are shown. Recompute each
-  // tag's file list and count from that subset, dropping tags left empty.
-  const entries = Object.values(tagIndexCache)
-    .map((entry) => {
-      const files = (entry.files || []).filter(isTagPanelFile);
-      return { ...entry, files, count: files.length };
-    })
-    .filter((entry) => entry.count > 0);
+  // A tag's count is its number of notes, not of times it's used.
+  const entries = Object.values(tagIndexCache).map((entry) => {
+    const files = entry.files || [];
+    return { ...entry, files, count: files.length };
+  });
   entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 
-  const untagged = untaggedCache.filter(isTagPanelFile);
+  // Already limited to the "tagIncludedFolders" of the settings by the server.
+  const untagged = untaggedCache;
 
   // Pin a synthetic "#notag" entry to the top for files with no tags.
   const rows = [];
@@ -5431,6 +5425,7 @@ function confirmDialog(message) {
     ok.textContent = "Yes";
     const cancel = document.createElement("button");
     cancel.textContent = "No";
+    cancel.title = "No (Esc)";
     row.append(cancel, ok);
     dlg.append(label, row);
     document.body.appendChild(dlg);
@@ -5549,7 +5544,7 @@ function closeSettingsDialog() {
 function initGraphFolderSettings() {
   const container = document.getElementById("graph-folder-list");
   container.innerHTML = ""; // Clear existing
-  
+
   currentGraphFolderColors.forEach((item, index) => {
     const row = document.createElement("div");
     row.className = "graph-folder-row";
@@ -5557,14 +5552,14 @@ function initGraphFolderSettings() {
     row.style.gap = "8px";
     row.style.marginBottom = "8px";
     row.style.alignItems = "center";
-    
+
     const folderInput = document.createElement("input");
     folderInput.type = "text";
     folderInput.className = "graph-folder-input settings-input";
     folderInput.value = item.folder || "";
     folderInput.style.flex = "1";
     folderInput.dataset.index = index;
-    
+
     const colorInput = document.createElement("input");
     colorInput.type = "color";
     colorInput.className = "graph-color-input";
@@ -5573,29 +5568,29 @@ function initGraphFolderSettings() {
     colorInput.style.height = "32px";
     colorInput.style.border = "none";
     colorInput.dataset.index = index;
-    
+
     const removeBtn = document.createElement("button");
     removeBtn.textContent = "Remove";
     removeBtn.style.padding = "0 12px";
     removeBtn.onclick = () => removeGraphFolder(index);
-    
+
     // Add change handlers to update settings when inputs change
     folderInput.addEventListener('change', () => {
       currentGraphFolderColors[index].folder = folderInput.value.trim();
       graphFolderColors.splice(0, graphFolderColors.length, ...currentGraphFolderColors);
     });
-    
+
     colorInput.addEventListener('input', () => {
       currentGraphFolderColors[index].color = colorInput.value;
       graphFolderColors.splice(0, graphFolderColors.length, ...currentGraphFolderColors);
     });
-    
+
     row.appendChild(folderInput);
     row.appendChild(colorInput);
     row.appendChild(removeBtn);
     container.appendChild(row);
   });
-  
+
   // Set up add button
   const addBtn = document.querySelector(".add-folder-btn");
   if (addBtn) {
@@ -5607,30 +5602,30 @@ function initGraphFolderSettings() {
 function addGraphFolder() {
   const folderInput = document.querySelector(".graph-folder-input");
   const colorInput = document.querySelector(".graph-color-input");
-  
+
   if (!folderInput || !colorInput) return;
-  
+
   const folder = folderInput.value.trim();
   const color = colorInput.value;
-  
+
   if (!folder) return; // Don't add empty folders
-  
+
   // Check if folder already exists
   const exists = currentGraphFolderColors.some(item => item.folder === folder);
   if (exists) {
     alert(`Folder "${folder}" already has a color configured.`);
     return;
   }
-  
+
   currentGraphFolderColors.push({folder, color});
-  
+
   // Update graph module
   graphFolderColors.splice(0, graphFolderColors.length, ...currentGraphFolderColors);
-  
+
   // Reset inputs
   folderInput.value = "";
   colorInput.value = "#52c41a";
-  
+
   // Refresh UI
   initGraphFolderSettings();
 }

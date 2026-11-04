@@ -694,35 +694,55 @@ class TagSuggestionTests(SettingsTestCase):
         )
         self.assertEqual(targets, [{"file": "z_notes/c.md", "text": "No tags yet."}])
 
-    def test_other_folders_left_out(self):
-        (Path(self.vault) / "z_output").mkdir()
-        (Path(self.vault) / "z_output" / "draft.md").write_text("Chapter. #structure", encoding="utf-8")
-        (Path(self.vault) / "z_output" / "plain.md").write_text("Untagged chapter.", encoding="utf-8")
+    def test_learns_from_all_folders_but_not_the_top_level(self):
+        (Path(self.vault) / "output").mkdir()
+        (Path(self.vault) / "output" / "draft.md").write_text("Chapter. #structure", encoding="utf-8")
+        (Path(self.vault) / "x" / "y").mkdir(parents=True)
+        (Path(self.vault) / "x" / "y" / "d.md").write_text("Deep. #deep", encoding="utf-8")
         (Path(self.vault) / "top.md").write_text("At the top. #toplevel", encoding="utf-8")
-        targets, note_tags = server.tag_suggestion_request(
-            self.vault,
-            {"paths": [f"{self.vault}/z_output/plain.md", f"{self.vault}/z_notes/c.md"]},
-        )
-        self.assertEqual(sorted(note_tags), ["notes/a.md", "notes/b.md"])
-        self.assertEqual([t["file"] for t in targets], ["z_notes/c.md"])
-
-    def test_included_folder_matches_at_any_depth(self):
-        (Path(self.vault) / "x" / "notes").mkdir(parents=True)
-        (Path(self.vault) / "x" / "notes" / "d.md").write_text("Deep. #deep", encoding="utf-8")
         _, note_tags = server.tag_suggestion_request(self.vault, {"text": "Draft"})
-        self.assertEqual(note_tags["x/notes/d.md"], ["deep"])
+        self.assertEqual(sorted(note_tags), ["notes/a.md", "notes/b.md", "output/draft.md", "x/y/d.md"])
+
+    def test_only_top_level_tags(self):
+        for name in ("notes/a.md", "notes/b.md"):
+            (Path(self.vault) / name).unlink()
+        (Path(self.vault) / "top.md").write_text("At the top. #toplevel", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "No notes in the vault's folders have tags"):
+            server.tag_suggestion_request(self.vault, {"text": "Draft"})
+
+    def test_top_level_document_still_gets_suggestions(self):
+        targets, note_tags = server.tag_suggestion_request(
+            self.vault, {"path": f"{self.vault}/top.md", "text": "Draft"}
+        )
+        self.assertEqual(targets[0]["file"], "top.md")
+        self.assertIn("notes/a.md", note_tags)
+
+    def test_notes_request_only_in_included_folders(self):
+        (Path(self.vault) / "output").mkdir()
+        (Path(self.vault) / "output" / "plain.md").write_text("Untagged chapter.", encoding="utf-8")
+        targets, _ = server.tag_suggestion_request(
+            self.vault,
+            {"paths": [f"{self.vault}/output/plain.md", f"{self.vault}/z_notes/c.md"]},
+        )
+        self.assertEqual([t["file"] for t in targets], ["z_notes/c.md"])
 
     def test_default_folders(self):
         self.set_settings(vaultPath=self.vault)
         with mock.patch.object(server, "TAG_INCLUDED_FOLDERS", ["z_notes"]):
-            (Path(self.vault) / "z_notes" / "c.md").write_text("Now tagged. #fresh", encoding="utf-8")
-            _, note_tags = server.tag_suggestion_request(self.vault, {"text": "Draft"})
-        self.assertEqual(note_tags, {"z_notes/c.md": ["fresh"]})
+            included = server.in_tag_included_folders(self.vault)
+        self.assertTrue(included(f"{self.vault}/z_notes/c.md"))
+        self.assertFalse(included(f"{self.vault}/notes/a.md"))
 
-    def test_no_included_folders(self):
-        self.set_settings(vaultPath=self.vault, tagIncludedFolders=[])
-        with self.assertRaisesRegex(ValueError, "folders for tag suggestions"):
-            server.tag_suggestion_request(self.vault, {"text": "Draft"})
+    def test_in_included_folders(self):
+        included = server.in_tag_included_folders(self.vault)
+        self.assertTrue(included(f"{self.vault}/notes/a.md"))
+        self.assertTrue(included(f"{self.vault}/x/z_notes/deep.md"))
+        self.assertFalse(included(f"{self.vault}/output/draft.md"))
+        self.assertFalse(included(f"{self.vault}/top.md"))
+
+    def test_folders_above_the_vault_dont_count(self):
+        self.set_settings(vaultPath=self.vault, tagIncludedFolders=[Path(self.vault).name])
+        self.assertFalse(server.in_tag_included_folders(self.vault)(f"{self.vault}/notes/a.md"))
 
     def test_outside_vault_rejected(self):
         with self.assertRaises(PermissionError):
