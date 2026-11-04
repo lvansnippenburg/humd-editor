@@ -408,6 +408,16 @@ function extractFootnotes(md) {
 
 // Render markdown to a body-HTML fragment (no document shell). The shell is
 // built once by buildPreviewShell; only this fragment changes per edit.
+// The file path in a Markdown URL (`b%20c.png` is the file "b c.png"). A path
+// that isn't valid percent-encoding, such as `50%.png`, is taken literally.
+function decodeUrlPath(src) {
+  try {
+    return decodeURIComponent(src);
+  } catch {
+    return src;
+  }
+}
+
 // Rewrite <img src="..."> tags in the rendered HTML to use the /api/image
 // endpoint (for the sandboxed iframe to access vault images). Resolves relative
 // paths using the current file's directory, then converts to API URLs.
@@ -421,7 +431,7 @@ export function rewriteImageSources(htmlElement, filePath) {
     // Only rewrite local file paths (not external URLs or data URIs).
     if (src && !src.startsWith("http") && !src.startsWith("data:")) {
       // Resolve relative paths using the current file's directory.
-      const resolved = resolveImagePath(src, filePath);
+      const resolved = resolveImagePath(decodeUrlPath(src), filePath);
       img.setAttribute("src", apiBase + encodeURIComponent(resolved));
     }
   }

@@ -876,6 +876,39 @@ body[data-platform="ios"] .resize-handle {
     white-space: nowrap;
 }
 
+/* Where a file dragged over the editor will land: a line between paragraphs
+   (images) or a caret in the text (links). */
+.editor-drop-indicator {
+    position: fixed;
+    z-index: 9999;
+    display: none;
+    pointer-events: none;
+    background: var(--accent);
+    border-radius: 1px;
+}
+.editor-drop-indicator.is-line {
+    height: 2px;
+}
+.editor-drop-indicator.is-caret {
+    width: 2px;
+}
+
+/* Laid over the Markdown textarea during a drag, to find the character at the
+   pointer; its text is invisible (see textareaOffsetAt). */
+.editor-drop-mirror {
+    position: fixed;
+    z-index: 9998;
+    margin: 0;
+    box-sizing: border-box;
+    overflow: hidden;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    color: transparent;
+    background: transparent;
+    -webkit-user-select: text;
+    user-select: text;
+}
+
 /* drag-drop drop target highlight */
 .tree-drop-target > .tree-label {
     background: var(--active-file-bg) !important;

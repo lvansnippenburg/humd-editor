@@ -24,6 +24,7 @@ import {
 import { TextSelection } from "@milkdown/kit/prose/state";
 import { Slice } from "@milkdown/kit/prose/model";
 import { toggleMark } from "@milkdown/kit/prose/commands";
+import { closeHistory } from "@milkdown/kit/prose/history";
 import remarkGfm from "remark-gfm";
 import { humdSyntaxPlugins } from "./syntax.js";
 
@@ -158,6 +159,56 @@ export async function createEditor({ root, value, onChange }) {
         const content =
           doc.childCount === 1 && doc.firstChild.isTextblock ? doc.firstChild.content : doc.content;
         view.dispatch(view.state.tr.replaceSelection(new Slice(content, 0, 0)).scrollIntoView());
+      });
+    },
+
+    // Where a file dragged to the screen point (x, y) lands: { pos, rect }. A
+    // block goes before or after the top-level node there, whichever half the
+    // point is in, and `rect` is the line between the nodes; otherwise `pos`
+    // is the text position at the point and `rect` the caret there.
+    dropTarget(x, y, block = false) {
+      return withView((view) => {
+        const { doc } = view.state;
+        const box = view.dom.getBoundingClientRect();
+        const left = Math.min(Math.max(x, box.left + 1), box.right - 1);
+        const top = Math.min(Math.max(y, box.top + 1), box.bottom - 1);
+        const pos = view.posAtCoords({ left, top })?.pos ?? doc.content.size;
+        if (!block) return { pos, rect: view.coordsAtPos(pos) };
+
+        const $pos = doc.resolve(pos);
+        const start = $pos.depth ? $pos.before(1) : $pos.nodeAfter ? pos : pos - $pos.nodeBefore.nodeSize;
+        const r = view.nodeDOM(start).getBoundingClientRect();
+        const target = top > (r.top + r.bottom) / 2 ? start + doc.nodeAt(start).nodeSize : start;
+
+        const $target = doc.resolve(target);
+        const above = $target.nodeBefore && view.nodeDOM(target - $target.nodeBefore.nodeSize).getBoundingClientRect();
+        const below = $target.nodeAfter && view.nodeDOM(target).getBoundingClientRect();
+        const line = above && below ? (above.bottom + below.top) / 2 : above ? above.bottom : below.top;
+        return { pos: target, rect: { left: r.left, right: r.right, top: line, bottom: line } };
+      });
+    },
+
+    // Insert Markdown at a position from dropTarget, as one undoable step, and
+    // put the cursor after it.
+    insertAt(pos, markdown, block = false) {
+      editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx);
+        const parsed = ctx.get(parserCtx)(markdown);
+        if (!parsed) return;
+        const { doc } = view.state;
+        const tr = view.state.tr;
+        if (block) {
+          // An empty document is one empty paragraph: replace it.
+          const blank = doc.childCount === 1 && doc.firstChild.isTextblock && !doc.firstChild.content.size;
+          if (blank) tr.replaceWith(0, doc.content.size, parsed.content);
+          else tr.insert(pos, parsed.content);
+        } else {
+          const content =
+            parsed.childCount === 1 && parsed.firstChild.isTextblock ? parsed.firstChild.content : parsed.content;
+          tr.replaceRange(pos, pos, new Slice(content, 0, 0));
+        }
+        tr.setSelection(TextSelection.near(tr.doc.resolve(tr.mapping.map(pos)), -1));
+        view.dispatch(closeHistory(tr));
       });
     },
 

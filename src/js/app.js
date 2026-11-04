@@ -27,6 +27,7 @@ import {
   getWysiwygRoot,
   getWysiwygHandle,
   flushWysiwygToTextarea,
+  splitFrontMatter,
 } from "/js/wysiwyg.js";
 import { splitBlocks, uniqueFootnoteId, addFootnoteDefinition, findDefinitions } from "/js/source-merge.js";
 import { setPreviewStyleUserCss } from "/js/preview-style.js";
@@ -989,15 +990,33 @@ function swallowClickAfterDrag() {
   setTimeout(() => window.removeEventListener("click", stop, { capture: true }), 0);
 }
 
+// Within this many pixels of the editor's top or bottom edge, dragging a file
+// scrolls the editor.
+const DROP_AUTOSCROLL_ZONE = 40;
+
+// The visible (and scrolling) editing area: the formatted view or the textarea.
+function editorDropArea() {
+  const root = activeRichHandle() ? getWysiwygRoot(activePane()) : null;
+  return root?.closest(".milkdown") || document.getElementById("editor");
+}
+
 function addFileMouseDrag(li, filePath, fileName, isDir = false) {
   li.addEventListener("mousedown", (e) => {
     if (e.button !== 0) return;
     if (e.target.tagName === "INPUT") return;
+    // No text selection during the drag. That also stops the click from moving
+    // the focus, which a rename field needs in order to finish: move it here.
+    e.preventDefault();
+    document.activeElement?.blur();
 
     const startX = e.clientX,
       startY = e.clientY;
+    const asBlock = !isDir && mediaTypeForPath(filePath) === "image";
     let started = false,
-      ghost = null;
+      ghost = null,
+      indicator = null,
+      pointer = null,
+      autoscrollFrame = 0;
 
     function clearHighlights() {
       document
@@ -1012,9 +1031,8 @@ function addFileMouseDrag(li, filePath, fileName, isDir = false) {
       if (el?.closest("#trash-btn")) {
         return { destDir: null, dir: null, overEditor: false, trash: true };
       }
-      const editorEl = document.getElementById("editor");
-      const er = editorEl?.getBoundingClientRect();
-      if (er && x >= er.left && x <= er.right && y >= er.top && y <= er.bottom) {
+      const er = editorDropArea().getBoundingClientRect();
+      if (x >= er.left && x <= er.right && y >= er.top && y <= er.bottom) {
         return { destDir: null, dir: null, overEditor: true };
       }
       const dir = el?.closest(".tree-dir");
@@ -1033,6 +1051,58 @@ function addFileMouseDrag(li, filePath, fileName, isDir = false) {
       return { destDir: null, dir: null, overEditor: false };
     }
 
+    // Where the file would land if dropped at (x, y), or null if not in a document.
+    function dropTargetAt(x, y) {
+      if (isDir || !currentFilePath || !getDropZone(x, y).overEditor) return null;
+      const handle = activeRichHandle();
+      if (handle) return handle.dropTarget(x, y, asBlock);
+      return markdownDropTarget(document.getElementById("editor"), x, y, asBlock);
+    }
+
+    function updateDropIndicator() {
+      const target = dropTargetAt(pointer.x, pointer.y);
+      if (!target) {
+        indicator.style.display = "none";
+        return;
+      }
+      const { rect } = target;
+      indicator.style.display = "block";
+      if (asBlock) {
+        // The paragraph's edge may be scrolled out of view.
+        const area = editorDropArea().getBoundingClientRect();
+        indicator.style.left = rect.left + "px";
+        indicator.style.width = rect.right - rect.left + "px";
+        indicator.style.top = Math.min(Math.max(rect.top - 1, area.top), area.bottom - 2) + "px";
+      } else {
+        indicator.style.left = rect.left - 1 + "px";
+        indicator.style.top = rect.top + "px";
+        indicator.style.height = rect.bottom - rect.top + "px";
+      }
+    }
+
+    // Pixels per frame to scroll the editor, with the pointer near its top or
+    // bottom edge; faster closer to the edge.
+    function autoscrollSpeed() {
+      if (!dropTargetAt(pointer.x, pointer.y)) return 0;
+      const area = editorDropArea().getBoundingClientRect();
+      const fromTop = pointer.y - area.top;
+      const fromBottom = area.bottom - pointer.y;
+      if (fromTop < DROP_AUTOSCROLL_ZONE) return -Math.ceil(((DROP_AUTOSCROLL_ZONE - fromTop) / DROP_AUTOSCROLL_ZONE) * 14);
+      if (fromBottom < DROP_AUTOSCROLL_ZONE) return Math.ceil(((DROP_AUTOSCROLL_ZONE - fromBottom) / DROP_AUTOSCROLL_ZONE) * 14);
+      return 0;
+    }
+
+    function autoscroll() {
+      const speed = autoscrollSpeed();
+      if (!speed) {
+        autoscrollFrame = 0;
+        return;
+      }
+      editorDropArea().scrollTop += speed;
+      updateDropIndicator();
+      autoscrollFrame = requestAnimationFrame(autoscroll);
+    }
+
     function onMove(e) {
       if (!started) {
         if (Math.abs(e.clientX - startX) < 5 && Math.abs(e.clientY - startY) < 5) return;
@@ -1042,6 +1112,9 @@ function addFileMouseDrag(li, filePath, fileName, isDir = false) {
         ghost.innerHTML = isDir ? ICON_FOLDER_CLOSED : getFileIcon(fileName);
         ghost.appendChild(document.createTextNode(" " + fileName));
         document.body.appendChild(ghost);
+        indicator = document.createElement("div");
+        indicator.className = `editor-drop-indicator ${asBlock ? "is-line" : "is-caret"}`;
+        document.body.appendChild(indicator);
         document.body.style.userSelect = "none";
         document.body.style.cursor = "grabbing";
         document.body.classList.add("dragging-file");
@@ -1052,6 +1125,9 @@ function addFileMouseDrag(li, filePath, fileName, isDir = false) {
       const { dir, trash } = getDropZone(e.clientX, e.clientY);
       if (trash) document.getElementById("trash-btn")?.classList.add("tree-drop-target");
       else if (dir) dir.classList.add("tree-drop-target");
+      pointer = { x: e.clientX, y: e.clientY };
+      updateDropIndicator();
+      if (!autoscrollFrame && autoscrollSpeed()) autoscrollFrame = requestAnimationFrame(autoscroll);
     }
 
     function endDrag() {
@@ -1063,6 +1139,9 @@ function addFileMouseDrag(li, filePath, fileName, isDir = false) {
       document.body.style.cursor = "";
       document.body.classList.remove("dragging-file");
       ghost?.remove();
+      indicator?.remove();
+      removeDropMirror();
+      cancelAnimationFrame(autoscrollFrame);
       clearHighlights();
       return true;
     }
@@ -1077,6 +1156,7 @@ function addFileMouseDrag(li, filePath, fileName, isDir = false) {
     }
 
     async function onUp(e) {
+      const target = started ? dropTargetAt(e.clientX, e.clientY) : null;
       if (!endDrag()) return;
       swallowClickAfterDrag();
 
@@ -1106,22 +1186,34 @@ function addFileMouseDrag(li, filePath, fileName, isDir = false) {
 
       if (overEditor) {
         if (isDir) return; // dropping a folder into the editor is meaningless
-        const editor = document.getElementById("editor");
-        editor.focus();
-        const pos = editor.selectionStart;
+        if (!target) {
+          showStatus("Open a document first", true);
+          return;
+        }
         const ext = fileName.split(".").pop().toLowerCase();
+        // `![](a b.png)` isn't valid Markdown: a path has no spaces.
+        const relPath = relativeVaultPath(currentFilePath, filePath).replace(/ /g, "%20");
         let snippet;
-        if (mediaTypeForPath(filePath) === "image") {
+        if (asBlock) {
           // Images embed as a Markdown image, relative to the current document.
-          snippet = `![](${relativeVaultPath(currentFilePath, filePath)})`;
+          snippet = `![](${relPath})`;
         } else if (ext === "md" || ext === "html" || ext === "htm") {
           // Notes/pages link as a wikilink (resolved elsewhere in the app).
           snippet = `[[${fileName.replace(/\.(md|html?)$/i, "")}]]`;
         } else {
           // Everything else (pdf, …): a plain relative link.
-          snippet = `[${fileName}](${relativeVaultPath(currentFilePath, filePath)})`;
+          snippet = `[${fileName}](${relPath})`;
         }
-        editorReplace(editor, pos, pos, snippet);
+        const handle = activeRichHandle();
+        if (handle) {
+          handle.insertAt(target.pos, snippet, asBlock);
+          flushRichText();
+          handle.focus();
+        } else {
+          const editor = document.getElementById("editor");
+          snapshotForUndo();
+          editorReplace(editor, target.pos, target.pos, asBlock ? blockInsertText(editor.value, target.pos, snippet) : snippet);
+        }
         return;
       }
 
@@ -2649,6 +2741,133 @@ function editorReplace(editor, start, end, text) {
   editor.focus();
   editor.setSelectionRange(start, end);
   document.execCommand("insertText", false, text);
+}
+
+// ---- Where a file dragged over the Markdown view lands ----
+
+// A textarea can't tell which character is at a point, or where a character is
+// on screen. So during a drag a copy of its text, invisible, lies exactly over
+// it, with the same layout and scroll position; that copy can tell.
+let dropMirror = null;
+
+const DROP_MIRROR_STYLES = [
+  "fontFamily",
+  "fontSize",
+  "fontWeight",
+  "fontStyle",
+  "fontKerning",
+  "fontFeatureSettings",
+  "fontVariantLigatures",
+  "textRendering",
+  "lineHeight",
+  "letterSpacing",
+  "wordSpacing",
+  "tabSize",
+  "paddingTop",
+  "paddingRight",
+  "paddingBottom",
+  "paddingLeft",
+];
+
+function syncDropMirror(editor) {
+  if (!dropMirror) {
+    dropMirror = document.createElement("div");
+    dropMirror.className = "editor-drop-mirror";
+    dropMirror.appendChild(document.createTextNode(""));
+    document.body.appendChild(dropMirror);
+  }
+  const style = getComputedStyle(editor);
+  const box = editor.getBoundingClientRect();
+  DROP_MIRROR_STYLES.forEach((p) => (dropMirror.style[p] = style[p]));
+  dropMirror.style.left = box.left + editor.clientLeft + "px";
+  dropMirror.style.top = box.top + editor.clientTop + "px";
+  dropMirror.style.width = editor.clientWidth + "px";
+  dropMirror.style.height = editor.clientHeight + "px";
+  // The extra character gives a last empty line a height, as in the textarea.
+  const text = editor.value + "\u200b";
+  if (dropMirror.firstChild.data !== text) dropMirror.firstChild.data = text;
+  dropMirror.scrollTop = editor.scrollTop;
+}
+
+function removeDropMirror() {
+  dropMirror?.remove();
+  dropMirror = null;
+}
+
+// The character offset in the textarea at a screen point.
+function textareaOffsetAt(editor, x, y) {
+  syncDropMirror(editor);
+  const text = dropMirror.firstChild;
+  const range = document.caretRangeFromPoint?.(x, y);
+  const caret = range
+    ? { node: range.startContainer, offset: range.startOffset }
+    : (() => {
+        const p = document.caretPositionFromPoint?.(x, y);
+        return p ? { node: p.offsetNode, offset: p.offset } : null;
+      })();
+  if (caret?.node !== text) return editor.value.length;
+  return Math.min(caret.offset, editor.value.length);
+}
+
+// The screen rectangle of a text range in the textarea, once the mirror is in
+// sync. An empty range may have none (at the start of a line): then use the
+// character after it.
+function textareaRangeRect(start, end) {
+  const text = dropMirror.firstChild;
+  const range = document.createRange();
+  range.setStart(text, start);
+  range.setEnd(text, end);
+  const rect = range.getBoundingClientRect();
+  if (rect.height > 0 || start < end) return rect;
+  range.setEnd(text, Math.min(start + 1, text.length));
+  return range.getBoundingClientRect();
+}
+
+// Where a file dragged to a screen point lands in the textarea: { pos, rect },
+// as the formatted view's dropTarget. A block goes before or after the block
+// there (whichever half the point is in), never before the front matter.
+function markdownDropTarget(editor, x, y, block) {
+  const offset = textareaOffsetAt(editor, x, y);
+  if (!block) {
+    const rect = textareaRangeRect(offset, offset);
+    return { pos: offset, rect: { left: rect.left, top: rect.top, bottom: rect.bottom } };
+  }
+  const bodyStart = splitFrontMatter(editor.value).frontMatter.length;
+  const blocks = splitBlocks(editor.value.slice(bodyStart));
+  const style = getComputedStyle(editor);
+  const box = editor.getBoundingClientRect();
+  const line = (top) => ({
+    left: box.left + parseFloat(style.paddingLeft),
+    right: box.right - parseFloat(style.paddingRight),
+    top,
+    bottom: top,
+  });
+  if (!blocks.length) return { pos: bodyStart, rect: line(textareaRangeRect(bodyStart, bodyStart).top) };
+
+  const rectOf = (b) => textareaRangeRect(bodyStart + b.start, bodyStart + b.end);
+  let index = blocks.findIndex((b) => offset - bodyStart <= b.end);
+  if (index < 0) index = blocks.length - 1;
+  const rect = rectOf(blocks[index]);
+  const after = y > (rect.top + rect.bottom) / 2;
+  const neighbour = blocks[index + (after ? 1 : -1)];
+  const edge = after ? rect.bottom : rect.top;
+  const other = neighbour && rectOf(neighbour)[after ? "top" : "bottom"];
+  return {
+    pos: bodyStart + (after ? blocks[index].end : blocks[index].start),
+    rect: line(other === undefined ? edge : (edge + other) / 2),
+  };
+}
+
+// The text to insert at `pos` to make `snippet` a block of its own: with the
+// blank lines around it that aren't there yet.
+function blockInsertText(value, pos, snippet) {
+  const before = value.slice(0, pos);
+  const after = value.slice(pos);
+  const newlinesBefore = before.match(/\n*$/)[0].length;
+  const newlinesAfter = after.match(/^\n*/)[0].length;
+  const lead = before ? "\n".repeat(Math.max(0, 2 - newlinesBefore)) : "";
+  const trail = newlinesAfter === after.length ? "" : "\n".repeat(Math.max(0, 2 - newlinesAfter));
+  return lead + snippet + trail;
 }
 
 // ===== LINKS (⌘K) =====

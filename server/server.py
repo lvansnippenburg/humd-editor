@@ -1129,6 +1129,9 @@ def export_docx(markdown: str, source_path: str | None = None) -> bytes:
         ]
         if ref_doc_path:
             cmd.append(f"--reference-doc={ref_doc_path}")
+        # Image paths are relative to the note; Pandoc reads it from stdin.
+        if source_path:
+            cmd.append(f"--resource-path={Path(source_path).parent}")
 
         result = subprocess.run(
             cmd,

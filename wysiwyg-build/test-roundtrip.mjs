@@ -33,6 +33,7 @@ const samples = [
   "A citation [@abulafia2014, 12] and [see @a2020, p. 5; -@b2019, chap. 3].",
   "Not citations: [me@example.org], [a link](https://x.org) and [span]{.smallcaps}.",
   "Narrative @abulafia2014 says so.",
+  "![](../images/b%20c.png)",
   "A source [(Wirth, 2019, p. 303)](zotero://select/library/items/T5IBHT8B) here.",
 ];
 
