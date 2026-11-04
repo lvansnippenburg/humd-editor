@@ -826,7 +826,17 @@ function setupEventListeners() {
   document.getElementById("new-folder-btn").addEventListener("click", promptNewFolder);
   document.getElementById("graph-btn").addEventListener("click", openGraphTab);
   document.getElementById("change-vault-btn").addEventListener("click", changeVaultFolder);
-  document.getElementById("settings-btn").addEventListener("click", openSettingsDialog);
+  document.getElementById("settings-btn").addEventListener("click", async (e) => {
+    if (!e.metaKey) {
+      openSettingsDialog();
+      return;
+    }
+    try {
+      await apiPost("/api/open-settings-file");
+    } catch (err) {
+      showStatus(`Could not open the settings file: ${apiErrorMessage(err)}`, true);
+    }
+  });
   document.getElementById("ai-model-select").addEventListener("change", (e) => {
     // "Add a model…" isn't a choice: go back to the model shown before.
     if (e.target.value === "__add_new__") {

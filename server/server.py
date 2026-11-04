@@ -153,6 +153,15 @@ def save_settings(data: dict) -> None:
     tmp.replace(SETTINGS_PATH)
 
 
+def open_settings_file() -> None:
+    """Open the settings file in the system's default editor for it."""
+    result = subprocess.run(
+        ["open", str(SETTINGS_PATH)], capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Could not open the settings file")
+
+
 # ---------------------------------------------------------------------------
 # File tree helpers
 # ---------------------------------------------------------------------------
@@ -2071,6 +2080,13 @@ class Handler(SimpleHTTPRequestHandler):
                     existing = load_settings()
                     existing.update(data)
                     save_settings(existing)
+                self.send_json({"ok": True})
+            except Exception as e:
+                self.send_error_json(str(e))
+
+        elif path == "/api/open-settings-file":
+            try:
+                open_settings_file()
                 self.send_json({"ok": True})
             except Exception as e:
                 self.send_error_json(str(e))

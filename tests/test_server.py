@@ -299,6 +299,20 @@ class SettingsTestCase(unittest.TestCase):
         server.save_settings(settings)
 
 
+class OpenSettingsFileTests(SettingsTestCase):
+    def test_opens_the_settings_file(self):
+        with mock.patch.object(server.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stderr="")
+            server.open_settings_file()
+        self.assertEqual(run.call_args.args[0], ["open", str(server.SETTINGS_PATH)])
+
+    def test_reports_failure(self):
+        with mock.patch.object(server.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=1, stderr="no such file")
+            with self.assertRaisesRegex(RuntimeError, "no such file"):
+                server.open_settings_file()
+
+
 class AiModelTests(SettingsTestCase):
     def test_empty(self):
         self.assertEqual(server.load_ai_models(), [])

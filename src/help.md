@@ -47,6 +47,7 @@ All shortcuts work both in the formatted view and in the Markdown source (`⌘/`
 | `Enter` | Confirm (rename, new file) |
 | `Esc` | Cancel / close / Dismiss the popup (rename, new file, settings) |
 | `⌘`-click (or `Ctrl`-click) | Open the clicked link: a web or app link (`zotero://…`), or a `[[wikilink]]` in the Markdown view |
+| `⌘`-click on the settings button | Open the settings file (`~/.humd-editor/settings.json`) in its default editor |
 
 
 ## Markdown
