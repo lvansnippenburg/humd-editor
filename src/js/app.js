@@ -755,6 +755,19 @@ function setupEventListeners() {
 
   document.getElementById("file-tree-container").addEventListener("keydown", onFileTreeKeydown);
 
+  // Capture phase: otherwise the suggestions popup takes it as accepting (Tab).
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key !== "Tab" || !e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // Dialogs act on the document behind them: keep it in place.
+      if (!document.querySelector("dialog[open]")) switchToNextTab();
+    },
+    true,
+  );
+
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key === "/") {
       e.preventDefault();
@@ -1585,6 +1598,18 @@ async function switchToTab(tabId) {
 
   renderTabBar();
   saveUiState();
+}
+
+// Ctrl-Tab: the next tab to the right, after the last one back to the first.
+function switchToNextTab() {
+  if (tabs.length < 2) return;
+  // A footnote being edited writes itself back when it loses focus: let it do
+  // that while its own document is still showing.
+  const focused = document.activeElement;
+  if (document.getElementById("links-list").contains(focused)) focused.blur();
+  closeAutocomplete();
+  const current = tabs.findIndex((t) => t.id === activeTabId);
+  switchToTab(tabs[(current + 1) % tabs.length].id);
 }
 
 async function closeTab(tabId, skipSave = false) {

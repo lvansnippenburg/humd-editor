@@ -16,6 +16,7 @@ All shortcuts work both in the formatted view and in the Markdown source (`⌘/`
 | Shortcut | Action |
 | --- | --- |
 | `⌘S` | Save the current file |
+| `Ctrl Tab` | Go to the next open document (after the last one, back to the first) |
 | `⌘/` | Switch between the formatted document and its Markdown source |
 | `⌘Z` | Undo ^[Note that undo is not reliable when "autosave" is activated in the settings]|
 | `⌘Y` or `⌘⇧Z` | Redo |
