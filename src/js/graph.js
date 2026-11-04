@@ -1,7 +1,7 @@
 // Render a force-directed graph of documents and tags using d3.js.
-// Documents are small circles; tags are larger nodes. Links show:
-// - Document -> Tag (documents tagged with that tag)
-// - Document -> Document (based on wikilinks)
+// Documents are small circles; tags are larger nodes. Curved links show:
+// - Document -> Tag (documents tagged with that tag): dashed
+// - Document -> Document (based on wikilinks): with an arrow to the linked note
 
 import { splitFrontMatter } from "/js/wysiwyg.js";
 
@@ -139,6 +139,60 @@ export function graphNeighbourhood(nodes, links, centerId, steps) {
     nodes: nodes.filter((n) => reached.has(n.id)).map((n) => ({ ...n })),
     links: links.filter((l) => reached.has(l.source) && reached.has(l.target)).map((l) => ({ ...l })),
   };
+}
+
+const DOCUMENT_LINK_COLOR = "#e94b3c";
+const NODE_OPACITY = 0.8;
+const FADED_NODE_OPACITY = 0.15;
+const LINK_OPACITY = 0.5;
+const HOVERED_LINK_OPACITY = 0.9;
+const FADED_LINK_OPACITY = 0.06;
+const LINK_CURVE = 0.15; // how far a link bends, relative to its length
+const ARROW_LENGTH = 8;
+const ARROW_HALF_WIDTH = 3.5;
+
+// The curve of a link, from the edge of one circle to the edge of the other;
+// a link with an arrow stops short of the edge, for the arrow to fit. Null when
+// the circles are too close for it (e.g. a node dragged onto another).
+function linkCurve({ source, target, type }) {
+  const dx = target.x - source.x;
+  const dy = target.y - source.y;
+  const gap = type === "document-link" ? ARROW_LENGTH : 0;
+  if (Math.hypot(dx, dy) <= source.radius + target.radius + gap) return null;
+  // Bending to the same side of the direction keeps the two links of notes
+  // that link to each other apart.
+  const cx = (source.x + target.x) / 2 - dy * LINK_CURVE;
+  const cy = (source.y + target.y) / 2 + dx * LINK_CURVE;
+  // A curve leaves its end points in the direction of the control point.
+  const towardsControl = (node, distance) => {
+    const length = Math.hypot(cx - node.x, cy - node.y);
+    return [node.x + ((cx - node.x) / length) * distance, node.y + ((cy - node.y) / length) * distance];
+  };
+  return {
+    start: towardsControl(source, source.radius),
+    control: [cx, cy],
+    end: towardsControl(target, target.radius + gap),
+    tip: towardsControl(target, target.radius),
+  };
+}
+
+function linkPath(link) {
+  const curve = linkCurve(link);
+  if (!curve) return "";
+  const { start, control, end } = curve;
+  return `M${start}Q${control} ${end}`;
+}
+
+// The arrow at the end of a link: its point at the circle's edge, in line with
+// the end of the curve. A shape of its own, as WebKit doesn't reliably show SVG
+// markers on a graph that is drawn again.
+function linkArrowPath(link) {
+  const curve = linkCurve(link);
+  if (!curve) return "";
+  const { end, tip } = curve;
+  const sideX = (-(tip[1] - end[1]) / ARROW_LENGTH) * ARROW_HALF_WIDTH;
+  const sideY = ((tip[0] - end[0]) / ARROW_LENGTH) * ARROW_HALF_WIDTH;
+  return `M${tip}L${end[0] + sideX},${end[1] + sideY}L${end[0] - sideX},${end[1] - sideY}Z`;
 }
 
 const PREVIEW_SENTENCES = 5;
@@ -390,14 +444,28 @@ function drawGraph(
   // Add links
   const linkElements = g
     .append("g")
-    .selectAll("line")
+    .selectAll("path")
     .data(links)
     .enter()
-    .append("line")
-    .attr("stroke", (d) => (d.type === "tag-link" ? "#999" : "#e94b3c"))
+    .append("path")
+    .attr("fill", "none")
+    .attr("stroke", (d) => (d.type === "tag-link" ? "#999" : DOCUMENT_LINK_COLOR))
     .attr("stroke-width", (d) => (d.type === "tag-link" ? 1 : 2))
     .attr("stroke-dasharray", (d) => (d.type === "tag-link" ? "4,4" : "none"))
-    .attr("opacity", 0.5);
+    .attr("opacity", LINK_OPACITY)
+    .style("transition", "opacity 0.15s");
+
+  // Add the arrows of the links between documents
+  const arrowElements = g
+    .append("g")
+    .selectAll("path")
+    .data(links.filter((d) => d.type === "document-link"))
+    .enter()
+    .append("path")
+    .attr("class", "graph-link-arrow")
+    .attr("fill", DOCUMENT_LINK_COLOR)
+    .attr("opacity", LINK_OPACITY)
+    .style("transition", "opacity 0.15s");
 
   // Add nodes
   const nodeElements = g
@@ -411,7 +479,8 @@ function drawGraph(
       if (d.type === "tag") return "#4a90e2";
       return d.color || "#999"; // use node's color, fallback to gray
     })
-    .attr("opacity", 0.8)
+    .attr("opacity", NODE_OPACITY)
+    .style("transition", "opacity 0.15s")
     .style("cursor", (d) => (d.type === "document" ? "pointer" : "default"));
 
   // Add labels (shown on hover)
@@ -431,14 +500,34 @@ function drawGraph(
 
   const preview = createNotePreview(container, loadNoteText);
 
+  // Fade everything that isn't connected to the node.
+  const fadeAround = (d) => {
+    const touches = (link) => link.source === d || link.target === d;
+    const connected = new Set([d]);
+    for (const link of links) {
+      if (touches(link)) connected.add(link.source).add(link.target);
+    }
+    nodeElements.attr("opacity", (node) => (connected.has(node) ? NODE_OPACITY : FADED_NODE_OPACITY));
+    const linkOpacity = (link) => (touches(link) ? HOVERED_LINK_OPACITY : FADED_LINK_OPACITY);
+    linkElements.attr("opacity", linkOpacity);
+    arrowElements.attr("opacity", linkOpacity);
+  };
+  const clearFade = () => {
+    nodeElements.attr("opacity", NODE_OPACITY);
+    linkElements.attr("opacity", LINK_OPACITY);
+    arrowElements.attr("opacity", LINK_OPACITY);
+  };
+
   // Hover effects: a tag shows its name, a note a preview.
   nodeElements
     .on("mouseenter", (event, d) => {
+      fadeAround(d);
       labels.attr("opacity", (node) => ((node === d && d.type === "tag") || node === centerNode ? 1 : 0));
       if (d.type === "document") preview.show(d, event);
     })
     .on("mousemove", (event) => preview.move(event))
     .on("mouseleave", () => {
+      clearFade();
       labels.attr("opacity", (node) => (node === centerNode ? 1 : 0));
       preview.hide();
     });
@@ -539,11 +628,8 @@ function drawGraph(
 
   // Update positions on simulation tick
   const updatePositions = () => {
-    linkElements
-      .attr("x1", (d) => d.source.x)
-      .attr("y1", (d) => d.source.y)
-      .attr("x2", (d) => d.target.x)
-      .attr("y2", (d) => d.target.y);
+    linkElements.attr("d", linkPath);
+    arrowElements.attr("d", linkArrowPath);
 
     nodeElements.attr("cx", (d) => d.x).attr("cy", (d) => d.y);
 

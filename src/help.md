@@ -222,7 +222,7 @@ The first suggestion can take a minute, while the search model loads.
 
 ## Graph
 
-The graph shows your notes and tags, and the links between them; notes directly in the vault's top folder are left out. Hover over a note for a preview: its file name and first 5 sentences. Hover over a tag to see its name. Double-click a note (or `⌘`-click it) to open it.
+The graph shows your notes and tags, and the links between them; notes directly in the vault's top folder are left out. An arrow goes from a note to a note it links to; a dashed line connects a note to one of its tags. Hover over a note for a preview: its file name and first 5 sentences. Hover over a tag to see its name. Hovering also fades everything that isn't connected to the circle. Double-click a note (or `⌘`-click it) to open it.
 
 Choose a tag in the menu at the top to put it in the middle and show only what is related to it. **Steps** sets how far that goes (2 by default): 1 shows the notes with this tag, 2 also the other tags of those notes and the notes they link to or are linked from, and so on. **All notes** shows the whole graph again.
 
