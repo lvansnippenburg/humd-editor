@@ -715,29 +715,33 @@ class AiJobs:
 ai_jobs = AiJobs()
 
 
-# Finished texts, not notes: their tags are neither suggested nor learnt from.
-TAG_EXCLUDED_FOLDER = "z_output"
+# The folders whose notes get tags suggested and are learnt from, unless
+# "tagIncludedFolders" in the settings says otherwise. A name matches at any depth.
+TAG_INCLUDED_FOLDERS = ["annotations", "thoughts"]
 
 
 def tag_suggestion_request(vault: str, data: dict) -> tuple[list, dict]:
     """The targets and tagged notes for start_tag_suggestions, for POST
     /api/suggest-tags: {"text", "path"?} (a document, possibly unsaved) or
-    {"paths": [...]} (saved notes, e.g. the untagged ones). Notes in
-    TAG_EXCLUDED_FOLDER are left out of both."""
+    {"paths": [...]} (saved notes, e.g. the untagged ones). Only notes in the
+    included folders are used as tagged notes or as "paths" targets."""
     root = Path(vault)
     rel = lambda p: str(Path(p).resolve().relative_to(root.resolve()))
     note_tags: dict = {}
     with _lock:
         tag_index = build_link_index(vault)["tag_index"]
-    excluded = lambda f: TAG_EXCLUDED_FOLDER in Path(f).parts[:-1]
+    folders = set(load_settings().get("tagIncludedFolders", TAG_INCLUDED_FOLDERS))
+    included = lambda f: not folders.isdisjoint(Path(f).parts[:-1])
     for entry in tag_index.values():
         for f in entry["files"]:
-            if not excluded(rel(f)):
+            if included(rel(f)):
                 note_tags.setdefault(rel(f), []).append(entry["name"])
     if not note_tags:
-        raise ValueError("No notes in the vault have tags yet, so there are none to suggest")
+        raise ValueError(
+            "No notes in the folders for tag suggestions have tags yet, so there are none to suggest"
+        )
     if data.get("paths"):
-        paths = [p for p in map(safe_path, data["paths"]) if not excluded(rel(p))]
+        paths = [p for p in map(safe_path, data["paths"]) if included(rel(p))]
         targets = [
             {"file": rel(p), "text": p.read_text(encoding="utf-8", errors="replace")} for p in paths
         ]
@@ -1193,7 +1197,7 @@ AI_PRESETS = [
     {"name": "OpenAI", "url": "https://api.openai.com/v1", "example": "gpt-5-mini"},
     {"name": "Mistral", "url": "https://api.mistral.ai/v1", "example": "mistral-small-latest"},
     {"name": "Anthropic", "url": "https://api.anthropic.com/v1", "example": "claude-sonnet-5-5"},
-    {"name": "oMLX", "url": "http://127.0.0.1:8000/v1", "example": "mlx-community/Qwen3-4B-Instruct-2507-4bit", "small": True},
+    {"name": "Local LLM", "url": "http://127.0.0.1:8000/v1", "example": "mlx-community/Qwen3-4B-Instruct-2507-4bit", "small": True},
     {"name": "Ollama", "url": "http://localhost:11434/v1", "example": "qwen3:4b", "small": True},
 ]
 

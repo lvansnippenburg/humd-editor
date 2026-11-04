@@ -5102,9 +5102,9 @@ function isInZFolder(filePath) {
   return parts.slice(0, -1).some((seg) => seg.startsWith("z_"));
 }
 
-// The notes the Tags panel lists (and Suggest tags works on): those in a
-// "z_" folder, except the finished texts in z_output (TAG_EXCLUDED_FOLDER in
-// server.py).
+// The notes the Tags panel lists: those in a "z_" folder, except the finished
+// texts in z_output. Suggest tags has its own list of folders, which should
+// cover these ("tagIncludedFolders" in the settings, see server.py).
 function isTagPanelFile(filePath) {
   return isInZFolder(filePath) && !String(filePath).split(/[\\/]/).slice(0, -1).includes("z_output");
 }

@@ -331,7 +331,7 @@ class AiModelTests(SettingsTestCase):
                 {"url": "http://127.0.0.1:8000/v1", "model": "qwen", "apiKey": "", "small": True},
             ],
         )
-        self.assertEqual([server.ai_model_name(m) for m in models], ["Mistral", "oMLX"])
+        self.assertEqual([server.ai_model_name(m) for m in models], ["Mistral", "Local LLM"])
         self.assertEqual(server.ai_model_name({"url": "http://host:1234/v1"}), "host:1234")
         # Without a selection the first one is used.
         self.assertEqual(server.selected_ai_model()["model"], "mistral-small-latest")
@@ -669,11 +669,12 @@ class TagSuggestionTests(SettingsTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.vault = str(Path(self.tmp.name).resolve())
-        self.set_settings(vaultPath=self.vault)
+        self.set_settings(vaultPath=self.vault, tagIncludedFolders=["notes", "z_notes"])
+        (Path(self.vault) / "notes").mkdir()
         (Path(self.vault) / "z_notes").mkdir()
         for name, text in [
-            ("a.md", "About trade. #Merchants #trade"),
-            ("b.md", "---\ntags: [religion]\n---\nChurches."),
+            ("notes/a.md", "About trade. #Merchants #trade"),
+            ("notes/b.md", "---\ntags: [religion]\n---\nChurches."),
             ("z_notes/c.md", "No tags yet."),
         ]:
             (Path(self.vault) / name).write_text(text, encoding="utf-8")
@@ -682,7 +683,7 @@ class TagSuggestionTests(SettingsTestCase):
         targets, note_tags = server.tag_suggestion_request(
             self.vault, {"path": f"{self.vault}/z_notes/c.md", "text": "Draft #trade\n"}
         )
-        self.assertEqual(note_tags, {"a.md": ["Merchants", "trade"], "b.md": ["religion"]})
+        self.assertEqual(note_tags, {"notes/a.md": ["Merchants", "trade"], "notes/b.md": ["religion"]})
         self.assertEqual(
             targets, [{"file": "z_notes/c.md", "text": "Draft #trade\n", "existing": ["trade"]}]
         )
@@ -693,16 +694,35 @@ class TagSuggestionTests(SettingsTestCase):
         )
         self.assertEqual(targets, [{"file": "z_notes/c.md", "text": "No tags yet."}])
 
-    def test_z_output_left_out(self):
+    def test_other_folders_left_out(self):
         (Path(self.vault) / "z_output").mkdir()
         (Path(self.vault) / "z_output" / "draft.md").write_text("Chapter. #structure", encoding="utf-8")
         (Path(self.vault) / "z_output" / "plain.md").write_text("Untagged chapter.", encoding="utf-8")
+        (Path(self.vault) / "top.md").write_text("At the top. #toplevel", encoding="utf-8")
         targets, note_tags = server.tag_suggestion_request(
             self.vault,
             {"paths": [f"{self.vault}/z_output/plain.md", f"{self.vault}/z_notes/c.md"]},
         )
-        self.assertNotIn("z_output/draft.md", note_tags)
+        self.assertEqual(sorted(note_tags), ["notes/a.md", "notes/b.md"])
         self.assertEqual([t["file"] for t in targets], ["z_notes/c.md"])
+
+    def test_included_folder_matches_at_any_depth(self):
+        (Path(self.vault) / "x" / "notes").mkdir(parents=True)
+        (Path(self.vault) / "x" / "notes" / "d.md").write_text("Deep. #deep", encoding="utf-8")
+        _, note_tags = server.tag_suggestion_request(self.vault, {"text": "Draft"})
+        self.assertEqual(note_tags["x/notes/d.md"], ["deep"])
+
+    def test_default_folders(self):
+        self.set_settings(vaultPath=self.vault)
+        with mock.patch.object(server, "TAG_INCLUDED_FOLDERS", ["z_notes"]):
+            (Path(self.vault) / "z_notes" / "c.md").write_text("Now tagged. #fresh", encoding="utf-8")
+            _, note_tags = server.tag_suggestion_request(self.vault, {"text": "Draft"})
+        self.assertEqual(note_tags, {"z_notes/c.md": ["fresh"]})
+
+    def test_no_included_folders(self):
+        self.set_settings(vaultPath=self.vault, tagIncludedFolders=[])
+        with self.assertRaisesRegex(ValueError, "folders for tag suggestions"):
+            server.tag_suggestion_request(self.vault, {"text": "Draft"})
 
     def test_outside_vault_rejected(self):
         with self.assertRaises(PermissionError):
