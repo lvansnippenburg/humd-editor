@@ -1560,8 +1560,16 @@ async function switchToTab(tabId) {
       if (path) loadFile(path);
     };
 
+    // An open note's text may have unsaved edits: use that rather than the file.
+    const loadNoteText = async (noteKey) => {
+      const path = noteIndexCache[noteKey];
+      const open = tabs.find((t) => t.path === path && !t.isGraph && !t.isMedia);
+      if (open) return open.content;
+      return (await apiFetch(`/api/read-file?path=${encodeURIComponent(path)}`)).content;
+    };
+
     if (graphContainer) {
-      graphCleanup = renderGraph(graphContainer, linkIndex, onDocClick);
+      graphCleanup = renderGraph(graphContainer, linkIndex, onDocClick, loadNoteText);
     }
   } else {
     // Show document tab
@@ -1781,7 +1789,7 @@ async function loadFile(path, { replaceUnedited = false } = {}) {
 
     if (activeTabId !== null) {
       const cur = getActiveTab();
-      if (cur) {
+      if (cur && !cur.isGraph && !cur.isMedia) {
         clearTimeout(autoSaveDebounceTimer);
         clearTimeout(undoDebounceTimer);
         cur.content = getEditorContent();
@@ -1790,6 +1798,17 @@ async function loadFile(path, { replaceUnedited = false } = {}) {
         cur.redoStack = redoStack.slice();
       }
     }
+
+    // Coming from the graph or a media viewer: back to the editor.
+    if (graphCleanup) {
+      graphCleanup();
+      graphCleanup = null;
+    }
+    document.getElementById("editor").style.display = "block";
+    const graphContainer = document.getElementById("graph-container");
+    if (graphContainer) graphContainer.style.display = "none";
+    const mediaContainer = document.getElementById("media-container");
+    if (mediaContainer) mediaContainer.style.display = "none";
 
     const tabId = `tab-${++tabCounter}`;
     const initialSnap = { value: content, start: 0, end: 0 };

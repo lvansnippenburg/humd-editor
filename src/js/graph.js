@@ -3,6 +3,8 @@
 // - Document -> Tag (documents tagged with that tag)
 // - Document -> Document (based on wikilinks)
 
+import { splitFrontMatter } from "/js/wysiwyg.js";
+
 // Global variable to store folder color settings (set by main app)
 export let graphFolderColors = [
   {folder: "annotations", color: "#52c41a"},
@@ -110,7 +112,90 @@ export function buildGraphData(linkIndex) {
   return { nodes, links };
 }
 
-export function renderGraph(container, linkIndex, onDocumentClick) {
+// The nodes within `steps` steps of `centerId`, following links in both
+// directions, and the links between them. Copies, as the simulation changes
+// its nodes and links.
+export function graphNeighbourhood(nodes, links, centerId, steps) {
+  const neighbours = new Map(nodes.map((n) => [n.id, []]));
+  for (const { source, target } of links) {
+    neighbours.get(source).push(target);
+    neighbours.get(target).push(source);
+  }
+  const reached = new Set([centerId]);
+  let frontier = [centerId];
+  for (let step = 0; step < steps && frontier.length > 0; step++) {
+    const next = [];
+    for (const id of frontier) {
+      for (const other of neighbours.get(id)) {
+        if (!reached.has(other)) {
+          reached.add(other);
+          next.push(other);
+        }
+      }
+    }
+    frontier = next;
+  }
+  return {
+    nodes: nodes.filter((n) => reached.has(n.id)).map((n) => ({ ...n })),
+    links: links.filter((l) => reached.has(l.source) && reached.has(l.target)).map((l) => ({ ...l })),
+  };
+}
+
+const PREVIEW_SENTENCES = 5;
+const PREVIEW_MAX_CHARS = 700; // for notes without clear sentences
+
+// The first sentences of a note's Markdown, as plain text. Parts that aren't
+// running text (front matter, headings, code, tables, footnote definitions,
+// comments) are skipped.
+export function previewSentences(markdown, count = PREVIEW_SENTENCES) {
+  const text = splitFrontMatter(String(markdown).replace(/\r\n?/g, "\n"))
+    .body.replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/^ {0,3}(```|~~~)[\s\S]*?^ {0,3}\1.*$/gm, "");
+  const blocks = text.split(/\n[ \t]*\n/).flatMap((block) => {
+    const lines = block
+      .split("\n")
+      .filter((l) => !/^ {0,3}(#{1,6}\s|\||\[\^[^\]]+\]:|([-*_][ \t]*){3,}$)/.test(l));
+    // List items and quotes are separate pieces of text; other lines wrap.
+    const pieces = [];
+    for (const line of lines) {
+      if (/^\s*([-*+]|\d+[.)])\s/.test(line) || !pieces.length) pieces.push(line);
+      else pieces[pieces.length - 1] += ` ${line}`;
+    }
+    return pieces;
+  });
+  const segmenter = new Intl.Segmenter(undefined, { granularity: "sentence" });
+  const sentences = [];
+  for (const block of blocks) {
+    const plain = block
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, "") // images
+      .replace(/\^\[[^\]]*\]|\[\^[^\]]*\]|\[[^\]]*@[^\]]*\]/g, "") // footnotes, citations
+      .replace(/\[\[([^\]|]+)\|([^\]]*)\]\]/g, "$2") // [[note|alias]]
+      .replace(/\[\[([^\]]+)\]\]/g, "$1") // [[note]]
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1") // [text](url)
+      .replace(/<[^>]+>/g, "")
+      .replace(/(^|\s)#[\p{L}\p{N}_/-]+/gu, "$1") // #tags
+      .replace(/^\s*([-*+]|\d+[.)]|>+)\s+/, "")
+      .replace(/(\*\*|__|==|~~|[*`])/g, "")
+      .replace(/(^|[^\p{L}\p{N}])_([^_]+)_(?![\p{L}\p{N}])/gu, "$1$2") // _italic_
+      .replace(/\s+/g, " ")
+      .replace(/ ([.,;:!?])/g, "$1") // left by what was taken out
+      .trim();
+    if (!plain) continue;
+    for (const { segment } of segmenter.segment(plain)) {
+      sentences.push(segment.trim());
+      if (sentences.length === count) break;
+    }
+    if (sentences.length === count) break;
+  }
+  const preview = sentences.join(" ");
+  return preview.length > PREVIEW_MAX_CHARS ? `${preview.slice(0, PREVIEW_MAX_CHARS).trimEnd()}…` : preview;
+}
+
+// The chosen view: kept when the graph is redrawn on returning to its tab.
+const graphView = { tag: "", steps: 2 };
+
+// loadNoteText(id) gives a promise for a note's Markdown, for its preview.
+export function renderGraph(container, linkIndex, onDocumentClick, loadNoteText) {
   if (!window.d3) {
     console.error("d3.js not loaded");
     return;
@@ -128,10 +213,6 @@ export function renderGraph(container, linkIndex, onDocumentClick) {
     return;
   }
 
-  // Get container dimensions
-  const width = container.clientWidth || 800;
-  const height = container.clientHeight || 600;
-
   // Create controls div
   const controls = document.createElement("div");
   controls.style.position = "absolute";
@@ -139,6 +220,9 @@ export function renderGraph(container, linkIndex, onDocumentClick) {
   controls.style.right = "8px";
   controls.style.zIndex = "10";
   controls.style.display = "flex";
+  controls.style.flexWrap = "wrap";
+  controls.style.justifyContent = "flex-end";
+  controls.style.alignItems = "center";
   controls.style.gap = "4px";
 
   const buttonStyle = (btn) => {
@@ -153,6 +237,49 @@ export function renderGraph(container, linkIndex, onDocumentClick) {
     btn.onmouseover = () => (btn.style.background = "var(--bg-secondary)");
     btn.onmouseout = () => (btn.style.background = "var(--bg-primary)");
   };
+
+  // The tag to centre on, with its number of notes.
+  const tagNodes = nodes
+    .filter((n) => n.type === "tag")
+    .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
+  if (!tagNodes.some((n) => n.id === graphView.tag)) graphView.tag = "";
+
+  const tagSelect = document.createElement("select");
+  tagSelect.className = "graph-tag-select";
+  tagSelect.title = "Centre the graph on a tag";
+  tagSelect.setAttribute("aria-label", "Tag");
+  buttonStyle(tagSelect);
+  tagSelect.style.maxWidth = "200px";
+  tagSelect.add(new Option("All notes", ""));
+  for (const tag of tagNodes) {
+    const count = links.filter((l) => l.target === tag.id).length;
+    tagSelect.add(new Option(`${tag.label} (${count})`, tag.id));
+  }
+  tagSelect.value = graphView.tag;
+  controls.appendChild(tagSelect);
+
+  // The number of steps from the tag: 1 is its notes, 2 also what those notes
+  // are related to, and so on.
+  const stepsLabel = document.createElement("label");
+  stepsLabel.textContent = "Steps";
+  stepsLabel.title = "How far to go from the tag: 1 shows its notes, 2 also their other tags and linked notes, and so on";
+  stepsLabel.style.display = "flex";
+  stepsLabel.style.alignItems = "center";
+  stepsLabel.style.gap = "4px";
+  stepsLabel.style.marginRight = "4px";
+  stepsLabel.style.fontSize = "12px";
+  stepsLabel.style.color = "var(--text-primary)";
+  const stepsInput = document.createElement("input");
+  stepsInput.className = "graph-steps-input";
+  stepsInput.type = "number";
+  stepsInput.min = "1";
+  stepsInput.step = "1";
+  stepsInput.value = String(graphView.steps);
+  buttonStyle(stepsInput);
+  stepsInput.style.width = "56px";
+  stepsInput.style.cursor = "text";
+  stepsLabel.appendChild(stepsInput);
+  controls.appendChild(stepsLabel);
 
   const zoomInBtn = document.createElement("button");
   zoomInBtn.textContent = "Zoom In";
@@ -170,6 +297,64 @@ export function renderGraph(container, linkIndex, onDocumentClick) {
   controls.appendChild(fitBtn);
 
   container.appendChild(controls);
+
+  let stopDrawing = null;
+  const draw = () => {
+    stopDrawing?.();
+    const shown = graphView.tag
+      ? graphNeighbourhood(nodes, links, graphView.tag, graphView.steps)
+      : { nodes: nodes.map((n) => ({ ...n })), links: links.map((l) => ({ ...l })) };
+    stopDrawing = drawGraph(container, shown, graphView.tag, onDocumentClick, loadNoteText, {
+      zoomInBtn,
+      zoomOutBtn,
+      fitBtn,
+    });
+  };
+
+  tagSelect.addEventListener("change", () => {
+    graphView.tag = tagSelect.value;
+    draw();
+  });
+  stepsInput.addEventListener("input", () => {
+    const steps = parseInt(stepsInput.value, 10);
+    if (!(steps >= 1) || steps === graphView.steps) return; // e.g. while retyping
+    graphView.steps = steps;
+    if (graphView.tag) draw();
+  });
+  // Don't leave something unusable in the box.
+  stepsInput.addEventListener("change", () => {
+    stepsInput.value = String(graphView.steps);
+  });
+
+  draw();
+
+  // Cleanup function
+  return () => stopDrawing();
+}
+
+// Draw `nodes` and `links` in a new SVG, in place of the previous one. With
+// `centerId`, that node stays in the middle of the view. Returns a function
+// that stops the simulation.
+function drawGraph(
+  container,
+  { nodes, links },
+  centerId,
+  onDocumentClick,
+  loadNoteText,
+  { zoomInBtn, zoomOutBtn, fitBtn },
+) {
+  container.querySelector("svg")?.remove();
+
+  // Get container dimensions
+  const width = container.clientWidth || 800;
+  const height = container.clientHeight || 600;
+
+  const centerNode = nodes.find((n) => n.id === centerId);
+  if (centerNode) {
+    centerNode.radius = 18;
+    centerNode.fx = width / 2;
+    centerNode.fy = height / 2;
+  }
 
   // Create SVG
   const svg = window.d3
@@ -195,11 +380,12 @@ export function renderGraph(container, linkIndex, onDocumentClick) {
         .distance(30),
     )
     .force("charge", window.d3.forceManyBody().strength(-150))
-    .force("center", window.d3.forceCenter(width / 2, height / 2))
     .force(
       "collide",
       window.d3.forceCollide().radius((d) => d.radius + 6),
     );
+  // A centred node holds everything in place, as all nodes are connected to it.
+  if (!centerNode) simulation.force("center", window.d3.forceCenter(width / 2, height / 2));
 
   // Add links
   const linkElements = g
@@ -236,28 +422,41 @@ export function renderGraph(container, linkIndex, onDocumentClick) {
     .enter()
     .append("text")
     .attr("text-anchor", "middle")
-    .attr("dy", "0.3em")
+    .attr("dy", (d) => (d === centerNode ? `${d.radius + 12}px` : "0.3em"))
     .attr("font-size", "11px")
     .attr("pointer-events", "none")
-    .attr("opacity", 0)
+    .attr("opacity", (d) => (d === centerNode ? 1 : 0))
     .text((d) => d.label)
     .style("fill", "var(--text-primary)");
 
-  // Hover effects
+  const preview = createNotePreview(container, loadNoteText);
+
+  // Hover effects: a tag shows its name, a note a preview.
   nodeElements
     .on("mouseenter", (event, d) => {
-      labels.attr("opacity", (node) => (node === d ? 1 : 0));
+      labels.attr("opacity", (node) => ((node === d && d.type === "tag") || node === centerNode ? 1 : 0));
+      if (d.type === "document") preview.show(d, event);
     })
+    .on("mousemove", (event) => preview.move(event))
     .on("mouseleave", () => {
-      labels.attr("opacity", 0);
+      labels.attr("opacity", (node) => (node === centerNode ? 1 : 0));
+      preview.hide();
     });
 
-  // Command+click to open document (allows regular click to drag)
+  // Command+click or a double-click opens a document (a regular click can
+  // start a drag).
   nodeElements.on("click", (event, d) => {
     if ((event.metaKey || event.ctrlKey) && d.type === "document" && onDocumentClick) {
       event.preventDefault();
       onDocumentClick(d.id);
     }
+  });
+  nodeElements.on("dblclick", (event, d) => {
+    if (d.type !== "document" || !onDocumentClick) return;
+    event.preventDefault();
+    event.stopPropagation(); // keep it from the zoom on double-click
+    preview.hide();
+    onDocumentClick(d.id);
   });
 
   // Add drag behavior to nodes
@@ -265,18 +464,20 @@ export function renderGraph(container, linkIndex, onDocumentClick) {
     window.d3
       .drag()
       .on("start", (event, d) => {
-        if (!event.active) simulation.alphaTarget(0.3).restart();
         d.fx = d.x;
         d.fy = d.y;
       })
       .on("drag", (event, d) => {
+        // Only now: nodes moving on a mere press would get in the way of a double-click.
+        preview.hide();
+        simulation.alphaTarget(0.3).restart();
         d.fx = event.x;
         d.fy = event.y;
       })
       .on("end", (event, d) => {
         if (!event.active) simulation.alphaTarget(0);
-        d.fx = null;
-        d.fy = null;
+        d.fx = d === centerNode ? width / 2 : null;
+        d.fy = d === centerNode ? height / 2 : null;
       }),
   );
 
@@ -292,6 +493,22 @@ export function renderGraph(container, linkIndex, onDocumentClick) {
 
   // Function to fit all nodes in view
   const fitToScreen = () => {
+    if (centerNode) {
+      // Keep the centred node in the middle: scale to the farthest node from it.
+      const reach = (axis, size) =>
+        (2 * Math.max(...nodes.map((n) => Math.abs(n[axis] - centerNode[axis]) + n.radius))) / size;
+      const scale = Math.min(2, 0.85 / Math.max(reach("x", width), reach("y", height)));
+      svg
+        .transition()
+        .duration(750)
+        .call(
+          zoom.transform,
+          window.d3.zoomIdentity
+            .translate(width / 2 - scale * centerNode.x, height / 2 - scale * centerNode.y)
+            .scale(scale),
+        );
+      return;
+    }
     const bounds = g.node().getBBox();
     const fullWidth = bounds.width;
     const fullHeight = bounds.height;
@@ -321,7 +538,7 @@ export function renderGraph(container, linkIndex, onDocumentClick) {
   fitBtn.onclick = fitToScreen;
 
   // Update positions on simulation tick
-  simulation.on("tick", () => {
+  const updatePositions = () => {
     linkElements
       .attr("x1", (d) => d.source.x)
       .attr("y1", (d) => d.source.y)
@@ -331,11 +548,100 @@ export function renderGraph(container, linkIndex, onDocumentClick) {
     nodeElements.attr("cx", (d) => d.x).attr("cy", (d) => d.y);
 
     labels.attr("x", (d) => d.x).attr("y", (d) => d.y);
-  });
+  };
+  simulation.on("tick", updatePositions);
+
+  if (centerNode) {
+    // Show the result of a choice settled, so the fit below is the right one.
+    simulation.stop();
+    simulation.tick(300);
+    updatePositions();
+    fitToScreen();
+    return () => {
+      preview.remove();
+      simulation.stop();
+    };
+  }
 
   // Fit to screen after simulation settles
-  setTimeout(fitToScreen, 500);
+  const fitTimer = setTimeout(fitToScreen, 500);
 
-  // Cleanup function
-  return () => simulation.stop();
+  return () => {
+    clearTimeout(fitTimer);
+    preview.remove();
+    simulation.stop();
+  };
+}
+
+// The box with a note's name and first sentences, next to the pointer.
+function createNotePreview(container, loadNoteText) {
+  const el = document.createElement("div");
+  el.className = "graph-note-preview";
+  el.style.display = "none";
+  const name = document.createElement("div");
+  name.className = "graph-note-preview-name";
+  const text = document.createElement("div");
+  text.className = "graph-note-preview-text";
+  el.append(name, text);
+  container.appendChild(el);
+
+  let timer = null;
+  let shownNode = null;
+  let pointer = { x: 0, y: 0 };
+  const texts = new Map(); // note id -> preview text, while this graph is shown
+
+  const place = () => {
+    if (el.style.display === "none") return;
+    const gap = 14;
+    const margin = 8;
+    const { offsetWidth: w, offsetHeight: h } = el;
+    let left = pointer.x + gap;
+    let top = pointer.y + gap;
+    if (left + w > window.innerWidth - margin) left = pointer.x - gap - w;
+    if (top + h > window.innerHeight - margin) top = Math.max(margin, window.innerHeight - margin - h);
+    el.style.left = `${Math.max(margin, left)}px`;
+    el.style.top = `${top}px`;
+  };
+
+  const hide = () => {
+    clearTimeout(timer);
+    shownNode = null;
+    el.style.display = "none";
+  };
+
+  return {
+    show(node, event) {
+      hide();
+      pointer = { x: event.clientX, y: event.clientY };
+      shownNode = node;
+      // A short wait, so moving across the graph doesn't read every note on the way.
+      timer = setTimeout(async () => {
+        name.textContent = node.label;
+        text.textContent = texts.get(node.id) || "";
+        el.style.display = "block";
+        place();
+        if (texts.has(node.id) || !loadNoteText) return;
+        let preview = "";
+        try {
+          preview = previewSentences(await loadNoteText(node.id));
+        } catch (err) {
+          console.warn("Could not read the note for its preview:", err);
+          return;
+        }
+        texts.set(node.id, preview);
+        if (shownNode !== node) return;
+        text.textContent = preview;
+        place();
+      }, 200);
+    },
+    move(event) {
+      pointer = { x: event.clientX, y: event.clientY };
+      place();
+    },
+    hide,
+    remove() {
+      hide();
+      el.remove();
+    },
+  };
 }

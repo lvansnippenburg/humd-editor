@@ -6,6 +6,7 @@
 - [Formatted view and Markdown](#formatted-view-and-markdown)
 - [Searching](#searching)
 - [AI assistance](#ai-assistance)
+- [Graph](#graph)
 - [Version control](#version-control)
 - [Tips](#tips)
 
@@ -218,6 +219,12 @@ The suggestions appear in the side panel, with the similar notes behind each tag
 **Which notes:** tags are learnt from all notes in the vault's folders, but not from notes directly in its top folder. Only untagged notes in the folders listed as `"tagIncludedFolders"` in the settings file (`~/.humd-editor/settings.json`) appear under **#notag**, for example `"tagIncludedFolders": ["annotations", "thoughts"]`. These two are also the default, and a name matches at any depth. There is no control for this in the Settings dialog: `⌘`-click the settings button to open the file. The **#notag** list follows a change after the next save, or when you reopen the app. The lists of the other tags always show all notes.
 
 The first suggestion can take a minute, while the search model loads.
+
+## Graph
+
+The graph shows your notes and tags, and the links between them; notes directly in the vault's top folder are left out. Hover over a note for a preview: its file name and first 5 sentences. Hover over a tag to see its name. Double-click a note (or `⌘`-click it) to open it.
+
+Choose a tag in the menu at the top to put it in the middle and show only what is related to it. **Steps** sets how far that goes (2 by default): 1 shows the notes with this tag, 2 also the other tags of those notes and the notes they link to or are linked from, and so on. **All notes** shows the whole graph again.
 
 ## Version control
 

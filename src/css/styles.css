@@ -633,6 +633,37 @@ body[data-platform="ios"] .resize-handle {
     background: var(--border);
 }
 
+/* ===== GRAPH ===== */
+.graph-note-preview {
+    position: fixed;
+    z-index: 9000;
+    width: max-content;
+    max-width: 340px;
+    padding: 8px 10px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+    pointer-events: none;
+}
+
+.graph-note-preview-name {
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.graph-note-preview-text {
+    margin-top: 4px;
+    color: var(--text-secondary);
+}
+
+.graph-note-preview-text:empty {
+    display: none;
+}
+
 /* ===== TAGS PANEL ===== */
 #tags-list {
     list-style: none;
