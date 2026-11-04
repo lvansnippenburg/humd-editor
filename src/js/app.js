@@ -4716,9 +4716,20 @@ function buildLinksPanel(focusFootnoteNum) {
       const num = document.createElement("span");
       num.className = "fn-num";
       num.textContent = `${i + 1}.`;
+      // Plain text until clicked; swapped for the textarea while it has focus.
+      const text = document.createElement("div");
+      text.className = "fn-text";
+      text.title = "Click to edit";
+      text.tabIndex = 0;
+      const showText = (value) => {
+        const empty = !value.trim();
+        text.textContent = empty ? "(empty — click to edit)" : value;
+        text.classList.toggle("empty", empty);
+      };
+      showText(fn.content);
       const ta = document.createElement("textarea");
       ta.value = fn.content;
-      ta.rows = 2;
+      ta.rows = 1;
       ta.spellcheck = true;
       let t = null;
       // A footnote's text doesn't change the serialised text, so Milkdown
@@ -4727,20 +4738,56 @@ function buildLinksPanel(focusFootnoteNum) {
         setWysiwygFootnoteContent(wysiwygPane, fn.pos, ta.value);
         flushRichText();
       };
+      const fitToContent = () => {
+        ta.style.height = "auto";
+        // scrollHeight leaves out the border, which the height includes.
+        ta.style.height = `${ta.scrollHeight + ta.offsetHeight - ta.clientHeight}px`;
+      };
+      const startEditing = () => {
+        if (!text.isConnected) return;
+        text.replaceWith(ta);
+        fitToContent();
+        ta.focus();
+        ta.setSelectionRange(ta.value.length, ta.value.length);
+      };
+      // On mousedown, not click: a footnote being edited closes as this one
+      // opens, which can move this one out from under the pointer before mouseup.
+      text.addEventListener("mousedown", (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        startEditing();
+      });
+      text.addEventListener("click", startEditing);
+      text.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        e.preventDefault();
+        startEditing();
+      });
       ta.addEventListener("input", () => {
+        fitToContent();
         clearTimeout(t);
         t = setTimeout(commit, 250);
+      });
+      ta.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape") return;
+        e.preventDefault();
+        e.stopPropagation();
+        ta.blur();
       });
       ta.addEventListener("blur", () => {
         clearTimeout(t);
         commit();
+        // Only the window lost focus (switching apps): carry on editing on return.
+        if (document.activeElement === ta) return;
+        showText(ta.value);
+        if (ta.isConnected) ta.replaceWith(text);
       });
       li.appendChild(num);
-      li.appendChild(ta);
+      li.appendChild(text);
       list.appendChild(li);
       if (focusFootnoteNum === i + 1) {
         requestAnimationFrame(() => {
-          ta.focus();
+          startEditing();
           ta.scrollIntoView({ block: "nearest" });
         });
       }

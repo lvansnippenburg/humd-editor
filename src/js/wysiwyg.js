@@ -154,6 +154,9 @@ export function getWysiwygFootnotes(pane) {
 }
 export function setWysiwygFootnoteContent(pane, pos, content) {
   pane._mkHandle?.setFootnoteContent(pos, content);
+  // This redraws the marker without its number, and Milkdown's change callback
+  // (which renumbers) doesn't run: the serialised text stays the same.
+  pane._mkHandle?.renumberFootnotes();
 }
 
 // onRender(rootEl) runs after the content is (re)drawn, e.g. to point image
