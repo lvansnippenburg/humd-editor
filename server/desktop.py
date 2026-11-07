@@ -118,6 +118,29 @@ class Api:
             pass
         return True
 
+    def open_html_window(self, html, title="Preview"):
+        """Show rendered HTML (Cmd+click on a file in the file tree) in its own
+        scrollable, read-only window. Secondary windows get no `closing`
+        handler, so closing them never triggers the quit flow."""
+        width, height = 900, 1000
+        pos = {}
+        # Put it beside the main window (right of it if there's room, else
+        # left), so the preview and the editor can be seen side by side.
+        try:
+            main = self._window
+            screen = webview.screens[0]
+            height = min(height, int(main.height))
+            x = int(main.x) + int(main.width)
+            if x + width > screen.width:
+                x = max(0, int(main.x) - width)
+            pos = dict(x=x, y=int(main.y))
+        except Exception:
+            pass
+        webview.create_window(
+            title, html=html, width=width, height=height, min_size=(400, 300), **pos
+        )
+        return True
+
 
 def _screen_signature() -> str:
     """A stable fingerprint of the current display layout (sorted resolutions)."""
@@ -205,6 +228,75 @@ _HIDDEN_MENU_ITEMS = {
     "WKMenuItemIdentifierDownloadImage",
     "WKMenuItemIdentifierDownloadMedia",
 }
+
+
+def _disable_window_tabbing():
+    """Keep every window a real, separate window.
+
+    With macOS's "Prefer tabs when opening documents" setting (or in
+    full-screen), new windows are merged as tabs into the frontmost one, so an
+    HTML preview window (Api.open_html_window) couldn't be placed side by side
+    with the editor. It must be set before any window is shown.
+    """
+    try:
+        import AppKit
+    except ImportError:  # not macOS
+        return
+    AppKit.NSWindow.setAllowsAutomaticWindowTabbing_(False)
+
+
+def _add_window_menu():
+    """Add the standard macOS Window menu to the menu bar.
+
+    We only provide the classic items (Minimize, Zoom, Bring All to Front)
+    and register the menu as NSApp's windowsMenu. AppKit then fills in the
+    rest itself, following the current macOS conventions and the system
+    language: Minimize All / Zoom All (with Option), Fill, Center, Full
+    Screen, Move & Resize (halves, quarters, arrangements, Return to Previous
+    Size), Full Screen Tile, Move to <other display>, Stage Manager items
+    and the list of open windows (editor + HTML preview windows) to switch
+    between. ⌘` cycles through the windows as in any Mac app.
+
+    pywebview rebuilds the menu bar each time a window becomes key, so the
+    menu is added in a wrapper around its _recreate_menus. The same NSMenu is
+    reused every time: AppKit keeps the window list only in the menu that was
+    registered, and registering it again would add a separator each time.
+    """
+    try:
+        import AppKit
+        from webview.platforms import cocoa
+    except ImportError:  # not macOS
+        return
+
+    recreate_menus = cocoa.BrowserView._recreate_menus
+    window_menu = None
+
+    def _recreate_menus(self, user_menu):
+        nonlocal window_menu
+        main_menu = recreate_menus(self, user_menu)
+        if window_menu is None:
+            window_menu = AppKit.NSMenu.alloc().initWithTitle_("Window")
+            window_menu.addItemWithTitle_action_keyEquivalent_(
+                "Minimize", "performMiniaturize:", "m"
+            )
+            window_menu.addItemWithTitle_action_keyEquivalent_("Zoom", "performZoom:", "")
+            window_menu.addItem_(AppKit.NSMenuItem.separatorItem())
+            window_menu.addItemWithTitle_action_keyEquivalent_(
+                "Bring All to Front", "arrangeInFront:", ""
+            )
+        # pywebview empties the previous menu bar, which detaches our menu;
+        # guard anyway, as a menu can only belong to one menu item.
+        if window_menu.supermenu() is not None:
+            parent = window_menu.supermenu()
+            parent.removeItemAtIndex_(parent.indexOfItemWithSubmenu_(window_menu))
+        item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Window", None, "")
+        item.setSubmenu_(window_menu)
+        main_menu.addItem_(item)
+        if AppKit.NSApp.windowsMenu() is not window_menu:
+            AppKit.NSApp.setWindowsMenu_(window_menu)
+        return main_menu
+
+    cocoa.BrowserView._recreate_menus = _recreate_menus
 
 
 def _enable_text_services():
@@ -333,6 +425,10 @@ def _remove_duplicate_menu_items():
         main_menu = AppKit.NSApp.mainMenu()
         for i in range(main_menu.numberOfItems()):
             menu = main_menu.itemAtIndex_(i).submenu()
+            # The Window menu is managed by AppKit (see _add_window_menu); its
+            # window list may legitimately hold equal titles (same file twice).
+            if menu is not None and menu is AppKit.NSApp.windowsMenu():
+                continue
             seen = set()
             for item in list(menu.itemArray() if menu else []):
                 if item.isSeparatorItem():
@@ -417,6 +513,13 @@ def main():
             _save_window_geometry(state, signature)
         finally:
             geometry_saved.set()
+            # webview.start() only returns once every window is gone, so close
+            # any open HTML preview windows (Api.open_html_window) as well.
+            for w in [w for w in webview.windows if w is not window]:
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
 
     window.events.shown += on_shown
     window.events.moved += on_moved
@@ -430,6 +533,8 @@ def main():
     # save dialog. Harmless in the browser build, which never runs this file.
     webview.settings["ALLOW_DOWNLOADS"] = True
     _enable_text_services()
+    _disable_window_tabbing()
+    _add_window_menu()
 
     # Blocks on the GUI loop (main thread, required on macOS); returns when the
     # window is closed.

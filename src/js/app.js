@@ -1482,7 +1482,26 @@ function renderFileTree(nodes, container = null) {
       nameEl.textContent = node.name;
       li.appendChild(iconEl);
       li.appendChild(nameEl);
-      li.addEventListener("click", () => loadFile(node.path, { replaceUnedited: true }));
+      li.addEventListener("click", (e) => {
+        // Cmd+click: open the rendered file in a new window instead of a tab.
+        if (e.metaKey && !mediaTypeForPath(node.path)) {
+          // Size/position features make browsers open a separate window (not
+          // a tab), placed beside this one so both can be seen side by side.
+          const w = 900;
+          const right = window.screenX + window.outerWidth;
+          const left = right + w <= screen.availWidth ? right : Math.max(0, window.screenX - w);
+          const popup = window.pywebview
+            ? null
+            : window.open(
+                "",
+                "_blank",
+                `popup,width=${w},height=${window.outerHeight},left=${left},top=${window.screenY}`
+              );
+          openFileInHtmlWindow(node.path, popup);
+          return;
+        }
+        loadFile(node.path, { replaceUnedited: true });
+      });
       nameEl.addEventListener("dblclick", (e) => {
         e.stopPropagation();
         startInlineRename(nameEl, node.path);
@@ -4194,10 +4213,12 @@ function updateDocumentStats() {
 // printing. Wikilinked notes are inlined (like "Export to Word" does) so the
 // printed/PDF output is self-contained, and rendering goes through Pandoc,
 // with formatted citations and bibliography, matching Word export.
-async function buildPrintDocument() {
-  if (!currentFilePath) return null;
-  const content = document.getElementById("editor").value;
-  const filePath = currentFilePath;
+// Defaults to the open document; pass `content`/`filePath` to render another file.
+async function buildPrintDocument(
+  content = document.getElementById("editor").value,
+  filePath = currentFilePath
+) {
+  if (!filePath) return null;
 
   const numberSectionsOverride = parseNumberSectionsOverride(content);
   const effectiveNumberSections = numberSectionsOverride ?? currentNumberSections;
@@ -4334,6 +4355,36 @@ async function printPreview() {
     window.pywebview.api.print_preview(html);
   } else {
     iframe.contentWindow.print();
+  }
+}
+
+// Cmd+click in the file tree: render a file (same pipeline as print) and show
+// it as a standalone, scrollable HTML page in its own window. In the desktop
+// app the native bridge opens a new window; in a browser the caller must pass
+// a `popup` it opened synchronously in the click handler (popup blockers
+// reject window.open after an await).
+async function openFileInHtmlWindow(path, popup = null) {
+  const title = path.split("/").pop().replace(/\.md$/, "");
+  try {
+    showStatus(`Rendering ${title}…`);
+    const result = await apiFetch(`/api/read-file?path=${encodeURIComponent(path)}`);
+    const iframe = await buildPrintDocument(result.content ?? "", path);
+    const html = iframe && getPrintableHtml(iframe);
+    if (!html) throw new Error("nothing to show");
+
+    if (window.pywebview?.api?.open_html_window) {
+      await window.pywebview.api.open_html_window(html, title);
+    } else if (popup && !popup.closed) {
+      popup.document.open();
+      popup.document.write(html);
+      popup.document.close();
+    } else {
+      throw new Error("the new window was blocked");
+    }
+    showStatus(`Opened ${title} in a new window`);
+  } catch (err) {
+    popup?.close();
+    showStatus(`Error opening ${title}: ${err.message || err}`, true);
   }
 }
 

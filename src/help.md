@@ -41,6 +41,7 @@ All shortcuts work both in the formatted view and in the Markdown source (`⌘/`
 | `⌘F` | Search (in the formatted view: the text as shown) |
 | `⌘H` | Search and replace |
 | `↑` / `↓` in the file browser | Open the previous / next file |
+| `⌘`+click a file in the file browser | Open it as rendered HTML in a new window |
 | `[[` | Suggests note names (for linking) |
 | `#` | suggests existing tags |
 | `↑` / `↓` | Move through the suggestions |
