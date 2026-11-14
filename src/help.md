@@ -58,6 +58,10 @@ All shortcuts work both in the formatted view and in the Markdown source (`⌘/`
 A single return (one press of the enter key) starts a new line in the formatted document. To start a new *paragraph* — with a little space above it — leave a blank line by hitting the enter key twice.
 It is also possible to add a \\ before the return to add a blank line without breaking the paragraph flow.
 
+### Pasting
+
+Text pasted into the Markdown view keeps its formatting: HTML copied from a web page, Word, Google Docs or Apple Notes is converted to Markdown (headings, bold, italic, strikethrough, highlight, sub- and superscript, code, links, web images, lists, quotes and tables). Everything that has no Markdown equivalent is removed; its text is kept. Text that is already Markdown is pasted as is, and so is anything pasted inside a code block. To paste only the plain text, use **Paste and Match Style** (`⌥⇧⌘V`). In the formatted view, pasted Markdown is shown formatted (headings, emphasis, links, lists, citations, wikilinks, footnotes, …), also when it was copied from an app that puts a formatted copy on the clipboard as well (TextEdit, Notes, a browser, VS Code); formatted text from other sources keeps its formatting.
+
 ### Formatting
 
 There are three levels of headers, marked by 1,2, or 3 `#` characters, followed by a space and then the text of the headline. Default, headers will be numbered. To suppres the numbers for a header, make sure to put `{-}` at the end.

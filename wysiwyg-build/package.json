@@ -5,7 +5,8 @@
   "description": "Build tooling for the Milkdown-based rich-text editor. Outputs a single vendored bundle to ../src/js/vendor/milkdown.bundle.js — run `npm run build` after changing anything here. The desktop app build (build_app.sh / PyInstaller) does NOT run this; it ships the committed bundle.",
   "scripts": {
     "build": "node build.mjs",
-    "test": "node test-roundtrip.mjs"
+    "test": "node test-roundtrip.mjs",
+    "test:paste": "node test-paste.mjs"
   },
   "dependencies": {
     "@milkdown/kit": "^7.5.0",

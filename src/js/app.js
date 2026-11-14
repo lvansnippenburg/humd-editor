@@ -31,6 +31,7 @@ import {
 } from "/js/wysiwyg.js";
 import { splitBlocks, uniqueFootnoteId, addFootnoteDefinition, findDefinitions } from "/js/source-merge.js";
 import { setPreviewStyleUserCss } from "/js/preview-style.js";
+import { clipboardToMarkdown } from "/js/paste.js";
 
 // ===== STATE =====
 
@@ -388,6 +389,8 @@ function setupPaneEventListeners(pane) {
   const editor = pane.editorEl;
   editor.addEventListener("input", onEditorInput);
   editor.addEventListener("keydown", onEditorKeydown);
+  editor.addEventListener("keydown", onEditorPasteKeydown);
+  editor.addEventListener("paste", onEditorPaste);
   editor.addEventListener("scroll", scheduleCommentGutterRender, { passive: true });
   editor.addEventListener("blur", () => setTimeout(closeAutocomplete, 100));
   editor.addEventListener("blur", onEditorBlurCommit);
@@ -2760,6 +2763,69 @@ function editorReplace(editor, start, end, text) {
   editor.focus();
   editor.setSelectionRange(start, end);
   document.execCommand("insertText", false, text);
+}
+
+// ---- Pasting: HTML (web pages, Word, Google Docs) becomes Markdown ----
+//
+// See paste.js for what is converted and when the plain text is kept.
+// "Paste and Match Style" (⌥⇧⌘V; ⇧⌘V in Chrome) pastes the plain text
+// unchanged. The paste event doesn't say which keys started it, so the
+// keydown just before it is remembered.
+let rawPasteUntil = 0;
+
+function onEditorPasteKeydown(e) {
+  if (e.metaKey && e.shiftKey && (e.key === "v" || e.key === "V" || e.code === "KeyV")) {
+    rawPasteUntil = Date.now() + 1000;
+  }
+}
+
+// Inside a ``` / ~~~ fenced code block, text is code: never convert it.
+function insideCodeFence(text, pos) {
+  const fences = text.slice(0, pos).match(/^ {0,3}(```|~~~)/gm);
+  return !!fences && fences.length % 2 === 1;
+}
+
+function onEditorPaste(e) {
+  const editor = e.currentTarget;
+  if (Date.now() < rawPasteUntil) {
+    rawPasteUntil = 0;
+    return;
+  }
+  const data = e.clipboardData;
+  if (!data || !currentFilePath) return;
+  if (insideCodeFence(editor.value, editor.selectionStart)) return;
+
+  let md;
+  try {
+    md = clipboardToMarkdown(data.getData("text/html"), data.getData("text/plain"), [...data.types]);
+  } catch (err) {
+    console.warn("Paste conversion failed; pasting plain text", err);
+    return;
+  }
+  if (md === null) return;
+  e.preventDefault();
+
+  const start = editor.selectionStart;
+  const end = editor.selectionEnd;
+  const before = editor.value.slice(0, start);
+  const after = editor.value.slice(end);
+  // Several blocks, or one that must start a line (heading, list, quote,
+  // table, code, rule): give it lines of its own.
+  const isBlock = md.includes("\n\n") || /^(#{1,6} |[-+*] |\d+[.)] |> |\||```|---$)/.test(md);
+  let insert = md;
+  if (isBlock) {
+    if (before && !before.endsWith("\n\n")) insert = (before.endsWith("\n") ? "\n" : "\n\n") + insert;
+    if (after && !after.startsWith("\n\n")) insert += after.startsWith("\n") ? "\n" : "\n\n";
+  }
+
+  // Set the value directly rather than via execCommand("insertText"), which
+  // macOS Smart Dashes would apply to "---" rules and table separators.
+  snapshotForUndo();
+  editor.value = before + insert + after;
+  const caret = before.length + insert.length;
+  editor.setSelectionRange(caret, caret);
+  onEditorInput();
+  showStatus("Pasted as Markdown (⌥⇧⌘V pastes plain text)");
 }
 
 // ---- Where a file dragged over the Markdown view lands ----

@@ -20,13 +20,15 @@ import {
   insert,
   callCommand,
   $remark,
+  $prose,
 } from "@milkdown/kit/utils";
-import { TextSelection } from "@milkdown/kit/prose/state";
+import { TextSelection, Plugin, PluginKey } from "@milkdown/kit/prose/state";
 import { Slice } from "@milkdown/kit/prose/model";
 import { toggleMark } from "@milkdown/kit/prose/commands";
 import { closeHistory } from "@milkdown/kit/prose/history";
 import remarkGfm from "remark-gfm";
 import { humdSyntaxPlugins } from "./syntax.js";
+import { markdownForRichTextPaste } from "../../src/js/paste.js";
 
 // GFM's default single-tilde strikethrough (`~x~`) collides with Pandoc
 // subscript, which humd uses. Swap Milkdown's bundled remark-gfm for one with
@@ -40,6 +42,42 @@ const remarkGfmSingleTildeOff = $remark(
     function () {
       return remarkGfm.call(this, { singleTilde: false });
     },
+);
+
+// Paste Markdown as Markdown. Milkdown's clipboard plugin uses the HTML
+// version whenever the clipboard has one, so Markdown copied from most apps
+// arrived as literal, escaped text (and from VS Code as a code block). This
+// runs first: when the plain text is Markdown (see markdownForRichTextPaste
+// in src/js/paste.js) it is parsed with the editor's own Markdown parser, so
+// the humd syntax (citations, wikilinks, footnotes, …) comes through too.
+// Shift+paste ("Paste and Match Style") and code blocks are left alone.
+const markdownPaste = $prose(
+  (ctx) =>
+    new Plugin({
+      key: new PluginKey("HUMD_MARKDOWN_PASTE"),
+      props: {
+        handlePaste(view, event) {
+          const data = event.clipboardData;
+          if (!data || view.input?.shiftKey) return false;
+          if (view.state.selection.$from.parent.type.spec.code) return false;
+          let markdown;
+          try {
+            markdown = markdownForRichTextPaste(
+              data.getData("text/html"),
+              data.getData("text/plain"),
+              data.getData("vscode-editor-data"),
+            );
+          } catch {
+            return false;
+          }
+          if (markdown === null) return false;
+          const doc = ctx.get(parserCtx)(markdown.replace(/\r\n?/g, "\n"));
+          if (!doc || typeof doc === "string" || !doc.content.size) return false;
+          view.dispatch(view.state.tr.replaceSelection(Slice.maxOpen(doc.content)).scrollIntoView());
+          return true;
+        },
+      },
+    }),
 );
 
 // Walk the doc, collecting footnote nodes in reading order.
@@ -81,6 +119,7 @@ export async function createEditor({ root, value, onChange }) {
     .use(gfmWithoutRemark)
     .use(remarkGfmSingleTildeOff)
     .use(history)
+    .use(markdownPaste)
     .use(clipboard)
     .use(listener)
     .use(humdSyntaxPlugins)

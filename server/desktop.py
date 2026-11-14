@@ -356,6 +356,22 @@ def _enable_text_services():
         add_edit_menu(self, mainMenu)
         edit_menu = mainMenu.itemAtIndex_(1).submenu()
 
+        # Paste and Match Style (⌥⇧⌘V) after Paste: the Markdown editor
+        # converts pasted HTML to Markdown; this pastes the plain text as is.
+        paste_index = next(
+            (i for i, it in enumerate(edit_menu.itemArray()) if it.action() == "paste:"), None
+        )
+        if paste_index is not None:
+            item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Paste and Match Style", "pasteAsPlainText:", "v"
+            )
+            item.setKeyEquivalentModifierMask_(
+                AppKit.NSEventModifierFlagCommand
+                | AppKit.NSEventModifierFlagShift
+                | AppKit.NSEventModifierFlagOption
+            )
+            edit_menu.insertItem_atIndex_(item, paste_index + 1)
+
         def submenu(title, entries):
             menu = AppKit.NSMenu.alloc().initWithTitle_(title)
             for entry in entries:
