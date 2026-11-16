@@ -10,13 +10,28 @@
 - [Version control](#version-control)
 - [Tips](#tips)
 
+## File menu
+
+The **File** menu of the desktop app has New File, New Folder, Open Vault Folder…, Close File, Save, Save As…, Revert to Saved, Rename…, Reveal in Finder, Move to Trash, Export as PDF…, Export as Word…, Print… and Quit.
+
+- **Revert to Saved** drops the unsaved changes of the current document and shows it as it is saved on disk; `⌘Z` brings the changes back.
+- **Rename…** makes the file's name editable in the file browser (as hovering over it does); `[[wikilinks]]` to the note are updated.
+- **Reveal in Finder** shows the file selected in a Finder window.
+- **Move to Trash** saves any unsaved changes, then moves the file to the Trash (Finder's *Put Back* restores it) and closes it. **Export as PDF…** saves the document as it would be printed (A4, with citations and bibliography). In the browser version, which has no menu bar, the same shortcuts work (except `⌘N` and `⌘W`, which the browser keeps for itself), and the buttons for these commands stay visible; Export as PDF uses the browser's print dialog (*Save as PDF*).
+
 ## Shortcuts 
 
 All shortcuts work both in the formatted view and in the Markdown source (`⌘/` switches).
 
 | Shortcut | Action |
 | --- | --- |
+| `⌘N` | New file |
+| `⌥⌘N` | New folder |
+| `⌘O` | Open a different vault folder |
+| `⌘W` | Close the current file (in a preview window: close that window) |
 | `⌘S` | Save the current file |
+| `⇧⌘S` | Save As: save the file under a new name or in another folder of the vault, and continue there |
+| `⌘P` | Print |
 | `Ctrl Tab` | Go to the next open document (after the last one, back to the first) |
 | `⌘/` | Switch between the formatted document and its Markdown source |
 | `⌘Z` | Undo ^[Note that undo is not reliable when "autosave" is activated in the settings]|

@@ -752,6 +752,13 @@ async function changeVaultFolder() {
 
 // ===== EVENT LISTENERS =====
 
+// In the desktop app the File menu replaces some buttons (styles.css).
+function markDesktopApp() {
+  document.body.classList.add("desktop-app");
+}
+if (window.pywebview) markDesktopApp();
+else window.addEventListener("pywebviewready", markDesktopApp, { once: true });
+
 function setupEventListeners() {
   initResizableHandles();
 
@@ -778,9 +785,11 @@ function setupEventListeners() {
       const pane = panes.find((p) => p.id === activePaneId);
       if (pane) toggleWysiwygForPane(pane);
     }
-    if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+    const fileCommand = fileCommandForKey(e);
+    if (fileCommand) {
       e.preventDefault();
-      saveCurrentFile(true);
+      if (!e.repeat) runFileCommand(fileCommand);
+      return;
     }
     if ((e.metaKey || e.ctrlKey) && e.key === "f") {
       e.preventDefault();
@@ -1168,18 +1177,7 @@ function addFileMouseDrag(li, filePath, fileName, isDir = false) {
 
       if (trash) {
         try {
-          await apiPost("/api/trash-file", { path: filePath });
-          // Close any open tabs for the trashed file/folder (folders: every tab
-          // under that path) without trying to save them.
-          for (const t of tabs.filter(
-            (t) => t.path === filePath || t.path.startsWith(filePath + "/"),
-          )) {
-            await closeTab(t.id, true);
-          }
-          await refreshFileTree();
-          await buildLinkIndex();
-          maybeGitCommit();
-          showStatus(`Moved "${fileName}" to Trash`);
+          await trashPath(filePath);
         } catch (err) {
           showStatus(`Trash failed: ${apiErrorMessage(err)}`, true);
           runPendingTreeRefresh();
@@ -4422,6 +4420,224 @@ async function printPreview() {
   } else {
     iframe.contentWindow.print();
   }
+}
+
+// ===== FILE MENU =====
+//
+// The commands of the File menu. In the desktop app the native File menu
+// (server/desktop.py) calls window.humdFileCommand(name); the shortcuts are
+// handled here as well, so they also work in a browser (where ⌘N and ⌘W stay
+// the browser's own). The buttons the menu replaces are hidden in the
+// desktop app (body.desktop-app, see styles.css).
+
+const FILE_COMMANDS = {
+  "new-file": () => {
+    switchSidebarTab("files");
+    return promptNewFile();
+  },
+  "new-folder": () => {
+    switchSidebarTab("files");
+    return promptNewFolder();
+  },
+  "open-vault": changeVaultFolder,
+  close: () => (activeTabId !== null ? closeTab(activeTabId) : undefined),
+  save: () => saveCurrentFile(true),
+  "save-as": saveFileAs,
+  revert: revertToSaved,
+  rename: renameCurrentFile,
+  reveal: revealCurrentFileInFinder,
+  trash: trashCurrentFile,
+  "export-pdf": exportToPdf,
+  "export-word": exportToWord,
+  print: printPreview,
+};
+
+function runFileCommand(name) {
+  const command = FILE_COMMANDS[name];
+  if (!command) return;
+  // A dialog (settings, table, quit, …) is in front: leave the document alone.
+  if (name !== "save" && document.querySelector("dialog[open]")) return;
+  Promise.resolve()
+    .then(command)
+    .catch((err) => showStatus(`Error: ${apiErrorMessage(err)}`, true));
+}
+window.humdFileCommand = runFileCommand;
+
+// The File command for a key press: ⌘N, ⌥⌘N, ⌘O, ⌘W, ⌘S, ⇧⌘S, ⌘P (Ctrl
+// elsewhere; on a Mac Ctrl+N/O/P move the cursor in text, so ⌘ only).
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
+function fileCommandForKey(e) {
+  if (!(IS_MAC ? e.metaKey : e.ctrlKey)) return null;
+  const key = e.key.length === 1 ? e.key.toLowerCase() : "";
+  if (e.altKey) return !e.shiftKey && e.code === "KeyN" ? "new-folder" : null;
+  if (e.shiftKey) return key === "s" ? "save-as" : null;
+  return { n: "new-file", o: "open-vault", w: "close", s: "save", p: "print" }[key] || null;
+}
+
+const dirName = (path) => path.slice(0, path.lastIndexOf("/"));
+
+// Save As…: write the document to a new file (inside the vault) and continue
+// there, in the same tab. The original file keeps its last saved version.
+async function saveFileAs() {
+  const tab = getActiveTab();
+  if (!currentFilePath || !tab || tab.isGraph || tab.isMedia) {
+    showStatus("Open a document first", true);
+    return;
+  }
+  flushRichText();
+  const name = currentFilePath.split("/").pop();
+  let path;
+  if (window.pywebview?.api?.choose_save_path) {
+    path = await window.pywebview.api.choose_save_path(dirName(currentFilePath), name, "md");
+  } else {
+    const res = await apiPost("/api/pick-save-path", {
+      prompt: "Save As",
+      default_name: name,
+      default_dir: dirName(currentFilePath),
+    });
+    path = res.path;
+  }
+  if (!path) return;
+  if (!/\.md$/i.test(path)) path += ".md";
+  if (path === currentFilePath) {
+    await saveCurrentFile(true);
+    return;
+  }
+  const vault = (currentVaultPath || "").replace(/\/$/, "");
+  if (!vault || !path.startsWith(vault + "/")) {
+    showStatus("Save As: choose a location inside the vault folder", true);
+    return;
+  }
+  // The file being replaced may be open in another tab: drop that tab
+  // without saving it over the new content.
+  const other = tabs.find((t) => t.path === path && t.id !== activeTabId);
+  if (other) await closeTab(other.id, true);
+
+  await apiPost("/api/write-file", { path, content: getEditorContent() });
+  // The edits now live in the new file: let it take this tab's place.
+  isDirty = false;
+  tab.isDirty = false;
+  tab.edited = false;
+  await refreshFileTree();
+  await loadFile(path, { replaceUnedited: true });
+  await buildLinkIndex();
+  showStatus(`Saved as ${path.split("/").pop()}`);
+}
+
+// Export as PDF…: the same document as Print, saved as a PDF by the desktop
+// app (see Api.export_pdf). A browser's print dialog saves PDFs itself.
+async function exportToPdf() {
+  if (!currentFilePath) {
+    showStatus("Open a file to export", true);
+    return;
+  }
+  if (!window.pywebview?.api?.export_pdf) {
+    showStatus("Choose “Save as PDF” in the print dialog");
+    await printPreview();
+    return;
+  }
+  showStatus("Preparing PDF…");
+  const iframe = await buildPrintDocument();
+  const html = iframe && getPrintableHtml(iframe);
+  if (!html) {
+    showStatus("Nothing to export");
+    return;
+  }
+  const name = currentFilePath.split("/").pop().replace(/\.md$/i, "") + ".pdf";
+  const res = await window.pywebview.api.export_pdf(html, name, dirName(currentFilePath));
+  if (res?.cancelled) showStatus("PDF export cancelled");
+  else if (res?.error) showStatus(`PDF export failed: ${res.error}`, true);
+  else showStatus(`Exported ${res.path.split("/").pop()}`);
+}
+
+// Move a file or folder to the system Trash (recoverable) and close its tabs
+// (for a folder: every tab under it) without saving them. Used by dragging
+// onto the Trash button and by File > Move to Trash.
+async function trashPath(filePath) {
+  await apiPost("/api/trash-file", { path: filePath });
+  for (const t of tabs.filter((t) => t.path === filePath || t.path.startsWith(filePath + "/"))) {
+    await closeTab(t.id, true);
+  }
+  await refreshFileTree();
+  await buildLinkIndex();
+  maybeGitCommit();
+  showStatus(`Moved "${filePath.split("/").pop()}" to Trash`);
+}
+
+// The open file (document or image/PDF viewer) a File command acts on.
+function activeFileTab() {
+  const tab = getActiveTab();
+  if (!tab || tab.isGraph) {
+    showStatus("Open a file first", true);
+    return null;
+  }
+  return tab;
+}
+
+// Rename…: the file's name in the file browser becomes editable, as when
+// hovering it, so it's renamed the same way ([[wikilinks]] to it follow).
+async function renameCurrentFile() {
+  const tab = activeFileTab();
+  if (!tab) return;
+  switchSidebarTab("files");
+  await revealFileInTree(tab.path);
+  const item = [...document.querySelectorAll("#file-tree .file-item")].find(
+    (li) => li.dataset.path === tab.path,
+  );
+  const nameEl = item?.querySelector(".tree-item-name");
+  if (!nameEl) {
+    showStatus("The file isn't shown in the file browser", true);
+    return;
+  }
+  item.scrollIntoView({ block: "nearest" });
+  await startInlineRename(nameEl, tab.path);
+}
+
+async function revealCurrentFileInFinder() {
+  const tab = activeFileTab();
+  if (tab) await apiPost("/api/reveal-file", { path: tab.path });
+}
+
+// Move to Trash: unsaved changes are saved first, so the file in the Trash
+// is the latest version (Finder's Put Back restores it).
+async function trashCurrentFile() {
+  const tab = activeFileTab();
+  if (!tab) return;
+  if (tab.id === activeTabId && !tab.isMedia) await saveCurrentFile();
+  await trashPath(tab.path);
+}
+
+// Revert to Saved: drop the unsaved changes and show the file as saved on
+// disk. Undoable: ⌘Z brings the changes back.
+async function revertToSaved() {
+  const tab = activeFileTab();
+  if (!tab) return;
+  if (tab.isMedia) {
+    showStatus("Nothing to revert in a viewer", true);
+    return;
+  }
+  flushRichText(); // edits still waiting in the formatted view
+  clearTimeout(autoSaveDebounceTimer);
+  const { content } = await apiFetch(`/api/read-file?path=${encodeURIComponent(tab.path)}`);
+  if (content === getEditorContent()) {
+    isDirty = false;
+    tab.isDirty = false;
+    renderTabBar();
+    showStatus("No unsaved changes");
+    return;
+  }
+  snapshotForUndo();
+  setEditorContent(content);
+  isDirty = false;
+  tab.isDirty = false;
+  tab.content = content;
+  updateDocumentStats();
+  renderEditorCommentGutter();
+  buildOutline();
+  buildLinksPanel();
+  renderTabBar();
+  await updateTagsBar(tab.path);
+  showStatus("Reverted to the saved version (⌘Z undoes this)");
 }
 
 // Cmd+click in the file tree: render a file (same pipeline as print) and show

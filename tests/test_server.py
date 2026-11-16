@@ -262,6 +262,24 @@ class PathConfinementTests(unittest.TestCase):
             server.safe_path("/anything")
 
 
+class RevealInFinderTests(unittest.TestCase):
+    setUp = PathConfinementTests.setUp
+    tearDown = PathConfinementTests.tearDown
+
+    def test_reveals_a_vault_file(self):
+        note = Path(self.vault) / "note.md"
+        note.write_text("x")
+        with mock.patch.object(server.subprocess, "run") as run:
+            server.reveal_in_finder(str(note))
+        self.assertEqual(run.call_args.args[0], ["open", "-R", str(note)])
+
+    def test_refuses_outside_the_vault(self):
+        with mock.patch.object(server.subprocess, "run") as run:
+            with self.assertRaises(PermissionError):
+                server.reveal_in_finder("/etc/hosts")
+        run.assert_not_called()
+
+
 class VersionTests(unittest.TestCase):
     def test_version_is_stable_hex(self):
         v = server._compute_version()

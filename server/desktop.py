@@ -141,6 +141,149 @@ class Api:
         )
         return True
 
+    def choose_save_path(self, directory="", filename="", kind="md"):
+        """Show the native Save dialog (File > Save As…, Export as PDF…).
+        Returns the chosen path, or None when cancelled."""
+        types = {"md": ("Markdown (*.md)",), "pdf": ("PDF (*.pdf)",)}.get(kind, ())
+        try:
+            result = self._window.create_file_dialog(
+                webview.FileDialog.SAVE,
+                directory=directory or "",
+                save_filename=filename or "",
+                file_types=types,
+            )
+        except Exception:
+            # Some pywebview versions reject file_types in a Save dialog.
+            result = self._window.create_file_dialog(
+                webview.FileDialog.SAVE, directory=directory or "", save_filename=filename or ""
+            )
+        if not result:
+            return None
+        path = result if isinstance(result, str) else result[0]
+        ext = "." + kind
+        if kind in ("md", "pdf") and not path.lower().endswith(ext):
+            path += ext
+        return path
+
+    def export_pdf(self, html, filename="document.pdf", directory=""):
+        """File > Export as PDF…: ask where to save, then render the document
+        (the same standalone HTML as Print) to a paginated PDF with WebKit's
+        own print engine, saving to the file instead of printing. Page size
+        and margins come from the document's CSS (@page in preview.css).
+        Returns {"path"}, {"cancelled": True} or {"error"}."""
+        path = self.choose_save_path(directory, filename, "pdf")
+        if not path:
+            return {"cancelled": True}
+        try:
+            from PyObjCTools import AppHelper
+        except ImportError:
+            return {"error": "PDF export needs macOS"}
+        done = threading.Event()
+        result = {}
+
+        def finished(ok, error=None):
+            result.update(ok=ok, error=error)
+            done.set()
+
+        AppHelper.callAfter(_render_pdf, html, path, finished)  # GUI thread
+        if not done.wait(120):
+            return {"error": "PDF export timed out"}
+        if not result.get("ok"):
+            return {"error": result.get("error") or "PDF export failed"}
+        return {"path": path}
+
+
+# PDF rendering (Api.export_pdf). Runs on the main (GUI) thread: the HTML is
+# loaded into an off-screen WKWebView and printed with "save to file" as the
+# print job's destination. WebKit only lays out pages for a print operation
+# that runs modally for a window, hence the off-screen window. The objects are
+# kept here until the job finishes.
+_pdf_jobs = set()
+_pdf_delegate_class = None
+
+
+def _render_pdf(html, path, finished):
+    try:
+        _start_pdf_job(html, path, finished)
+    except Exception as e:
+        finished(False, str(e))
+
+
+def _start_pdf_job(html, path, finished):
+    global _pdf_delegate_class
+    import AppKit
+    import objc
+    import WebKit
+    from Foundation import NSURL, NSMakeRect, NSObject
+    from PyObjCTools import AppHelper
+
+    if _pdf_delegate_class is None:
+
+        class HumdPdfJob(NSObject):
+            def webView_didFinishNavigation_(self, web_view, navigation):
+                # A moment for images and web fonts to arrive.
+                AppHelper.callLater(0.5, self.printToFile)
+
+            def webView_didFailNavigation_withError_(self, web_view, navigation, error):
+                self.finish(False, str(error.localizedDescription()))
+
+            def webView_didFailProvisionalNavigation_withError_(self, web_view, navigation, error):
+                self.finish(False, str(error.localizedDescription()))
+
+            @objc.python_method
+            def printToFile(self):
+                try:
+                    info = AppKit.NSPrintInfo.sharedPrintInfo().copy()
+                    settings = info.dictionary()
+                    settings[AppKit.NSPrintJobDisposition] = AppKit.NSPrintSaveJob
+                    settings[AppKit.NSPrintJobSavingURL] = NSURL.fileURLWithPath_(self.path)
+                    info.setHorizontalPagination_(AppKit.NSPrintingPaginationModeFit)
+                    info.setVerticalPagination_(AppKit.NSPrintingPaginationModeAutomatic)
+                    op = self.webView.printOperationWithPrintInfo_(info)
+                    op.setShowsPrintPanel_(False)
+                    op.setShowsProgressPanel_(False)
+                    size = info.paperSize()
+                    op.view().setFrame_(NSMakeRect(0, 0, size.width, size.height))
+                    op.runOperationModalForWindow_delegate_didRunSelector_contextInfo_(
+                        self.window, self, b"printOperationDidRun:success:contextInfo:", None
+                    )
+                except Exception as e:
+                    self.finish(False, str(e))
+
+            @objc.typedSelector(b"v@:@Z^v")
+            def printOperationDidRun_success_contextInfo_(self, op, success, context):
+                ok = bool(success) and os.path.exists(self.path)
+                # Clean up once the print session has ended: closing its
+                # window from inside this callback blocks the run loop.
+                AppHelper.callAfter(self.finish, ok, None if ok else "the PDF could not be written")
+
+            @objc.python_method
+            def finish(self, ok, error):
+                if self not in _pdf_jobs:
+                    return
+                _pdf_jobs.discard(self)
+                self.webView.setNavigationDelegate_(None)
+                self.window.orderOut_(None)
+                self.callback(ok, error)
+
+        _pdf_delegate_class = HumdPdfJob
+
+    job = _pdf_delegate_class.new()
+    job.path = path
+    job.callback = finished
+    job.window = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        NSMakeRect(-10000, -10000, 800, 1000), AppKit.NSWindowStyleMaskBorderless, 2, False
+    )
+    job.window.setReleasedWhenClosed_(False)
+    job.webView = WebKit.WKWebView.alloc().initWithFrame_configuration_(
+        NSMakeRect(0, 0, 800, 1000), WebKit.WKWebViewConfiguration.new()
+    )
+    job.window.setContentView_(job.webView)
+    job.window.orderBack_(None)
+    job.webView.setNavigationDelegate_(job)
+    _pdf_jobs.add(job)
+    job.webView.loadHTMLString_baseURL_(html, None)
+
 
 def _screen_signature() -> str:
     """A stable fingerprint of the current display layout (sorted resolutions)."""
@@ -243,6 +386,110 @@ def _disable_window_tabbing():
     except ImportError:  # not macOS
         return
     AppKit.NSWindow.setAllowsAutomaticWindowTabbing_(False)
+
+
+# File menu: (title, command, key, modifiers). The command is run by the page
+# (window.humdFileCommand in app.js), which also handles the same shortcuts
+# itself, so they work in the browser too. A key the page handles never
+# reaches the menu (WebKit only passes unhandled keys on), so nothing runs
+# twice. None is a separator; "quit" is the app's own Quit.
+_CMD, _SHIFT, _OPT = 1 << 20, 1 << 17, 1 << 19
+FILE_MENU = [
+    ("New File", "new-file", "n", _CMD),
+    ("New Folder", "new-folder", "n", _CMD | _OPT),
+    ("Open Vault Folder…", "open-vault", "o", _CMD),
+    None,
+    ("Close File", "close", "w", _CMD),
+    ("Save", "save", "s", _CMD),
+    ("Save As…", "save-as", "s", _CMD | _SHIFT),
+    ("Revert to Saved", "revert", "", 0),
+    None,
+    ("Rename…", "rename", "", 0),
+    ("Reveal in Finder", "reveal", "", 0),
+    ("Move to Trash", "trash", "", 0),
+    None,
+    ("Export as PDF…", "export-pdf", "", 0),
+    ("Export as Word…", "export-word", "", 0),
+    None,
+    ("Print…", "print", "p", _CMD),
+    None,
+    ("Quit Humd Editor", "quit", "q", _CMD),
+]
+
+
+def _add_file_menu(api):
+    """Add the File menu (see FILE_MENU) after the app menu.
+
+    Menu clicks are passed to the page from a background thread
+    (evaluate_js waits for the page, so it can't run on the GUI thread).
+    In an HTML preview window (Cmd+click in the file tree), Close File closes
+    that window; other commands act on the editor window, which is brought
+    to the front. Quit uses the app menu's own Quit item (with the unsaved-
+    changes check)."""
+    try:
+        import json
+
+        import AppKit
+        from Foundation import NSObject
+        from webview.platforms import cocoa
+    except ImportError:  # not macOS
+        return
+
+    class HumdFileMenuTarget(NSObject):
+        def fileCommand_(self, sender):
+            command = sender.representedObject()
+            main = getattr(api._window, "native", None) if api._window else None
+            key = AppKit.NSApp.keyWindow()
+            if main is not None and key is not None and key != main:
+                if command == "close":
+                    key.performClose_(None)
+                    return
+                main.makeKeyAndOrderFront_(None)
+            script = f"window.humdFileCommand && window.humdFileCommand({json.dumps(command)})"
+
+            def run():
+                try:
+                    api._window.evaluate_js(script)
+                except Exception:
+                    pass
+
+            threading.Thread(target=run, daemon=True).start()
+
+    target = HumdFileMenuTarget.new()
+    recreate_menus = cocoa.BrowserView._recreate_menus
+
+    def _recreate_menus(self, user_menu):
+        main_menu = recreate_menus(self, user_menu)
+        app_menu = main_menu.itemAtIndex_(0).submenu()
+        quit_item = next(
+            (it for it in (app_menu.itemArray() if app_menu else []) if it.keyEquivalent() == "q"),
+            None,
+        )
+        menu = AppKit.NSMenu.alloc().initWithTitle_("File")
+        for entry in FILE_MENU:
+            if entry is None:
+                menu.addItem_(AppKit.NSMenuItem.separatorItem())
+                continue
+            title, command, key, mask = entry
+            if command == "quit":
+                if quit_item is None:
+                    continue
+                item = menu.addItemWithTitle_action_keyEquivalent_(title, quit_item.action(), key)
+                item.setTarget_(quit_item.target())
+            else:
+                item = menu.addItemWithTitle_action_keyEquivalent_(title, "fileCommand:", key)
+                item.setTarget_(target)
+                item.setRepresentedObject_(command)
+            if key:
+                item.setKeyEquivalentModifierMask_(mask)
+        while menu.numberOfItems() and menu.itemAtIndex_(menu.numberOfItems() - 1).isSeparatorItem():
+            menu.removeItemAtIndex_(menu.numberOfItems() - 1)
+        file_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("File", None, "")
+        file_item.setSubmenu_(menu)
+        main_menu.insertItem_atIndex_(file_item, 1)
+        return main_menu
+
+    cocoa.BrowserView._recreate_menus = _recreate_menus
 
 
 def _add_window_menu():
@@ -551,6 +798,7 @@ def main():
     _enable_text_services()
     _disable_window_tabbing()
     _add_window_menu()
+    _add_file_menu(api)
 
     # Blocks on the GUI loop (main thread, required on macOS); returns when the
     # window is closed.

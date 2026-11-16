@@ -1820,6 +1820,40 @@ def pick_folder(prompt: str = "Select your Markdown vault folder") -> str | None
     return None
 
 
+def reveal_in_finder(path: str) -> None:
+    """Show a file of the vault selected in a Finder window."""
+    file_path = str(safe_path(path, must_exist=True))
+    subprocess.run(["open", "-R", file_path], check=True)
+
+
+def pick_save_path(prompt: str = "Save As", default_name: str = "", default_dir: str = "") -> str | None:
+    """A Save dialog (File > Save As… in the browser version; the desktop app
+    uses its native dialog). macOS asks itself before replacing a file.
+    The arguments are passed as argv, not interpolated, against injection."""
+    script = (
+        "on run argv\n"
+        "  set p to item 1 of argv\n"
+        "  set n to item 2 of argv\n"
+        "  set d to item 3 of argv\n"
+        "  if d is not \"\" then\n"
+        "    return POSIX path of (choose file name with prompt p default name n "
+        "default location (POSIX file d as alias))\n"
+        "  end if\n"
+        "  return POSIX path of (choose file name with prompt p default name n)\n"
+        "end run"
+    )
+    if default_dir and not os.path.isdir(default_dir):
+        default_dir = ""
+    r = subprocess.run(
+        ["osascript", "-e", script, prompt, default_name, default_dir],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode == 0:
+        return r.stdout.strip()
+    return None
+
+
 def pick_file(extensions: list, prompt: str = "Select a file") -> str | None:
     # Sanitise extensions (they come from the client) to a safe alphanumeric set
     # and pass the prompt as an argument to avoid AppleScript injection.
@@ -2221,6 +2255,15 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:
                 self.send_error_json(str(e))
 
+        elif path == "/api/reveal-file":
+            # File > Reveal in Finder: select the file in a Finder window.
+            try:
+                data = self.read_body()
+                reveal_in_finder(data["path"])
+                self.send_json({"ok": True})
+            except Exception as e:
+                self.send_error_json(str(e))
+
         elif path == "/api/trash-file":
             try:
                 data = self.read_body()
@@ -2275,6 +2318,19 @@ class Handler(SimpleHTTPRequestHandler):
                 prompt = data.get("prompt", "Select your Markdown vault folder")
                 folder = pick_folder(prompt)
                 self.send_json({"path": folder})
+            except Exception as e:
+                self.send_error_json(str(e))
+
+        elif path == "/api/pick-save-path":
+            try:
+                data = self.read_body()
+                self.send_json({
+                    "path": pick_save_path(
+                        data.get("prompt", "Save As"),
+                        data.get("default_name", ""),
+                        data.get("default_dir", ""),
+                    )
+                })
             except Exception as e:
                 self.send_error_json(str(e))
 

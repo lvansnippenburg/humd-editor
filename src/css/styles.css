@@ -2200,3 +2200,14 @@ sup {
     color: var(--text-primary);
     cursor: pointer;
 }
+
+/* In the desktop app the File menu (New File, New Folder, Open Vault Folder…,
+   Export as Word…, Print…) replaces these buttons. The browser version has no
+   menu bar and keeps them. */
+body.desktop-app #new-file-btn,
+body.desktop-app #new-folder-btn,
+body.desktop-app #change-vault-btn,
+body.desktop-app .export-docx-btn,
+body.desktop-app .print-btn {
+    display: none;
+}
