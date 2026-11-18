@@ -151,7 +151,7 @@ This will render as:
 
 ## Formatted view and Markdown
 
-A document is shown **formatted** — headings, bold, lists, quotes, tables, images and links as they will look — and you can edit it right there. Press `⌘/` (or click the button at the right of the editor toolbar) to switch to its **Markdown source**, and again to switch back. The app remembers your choice for the next document and the next time you start it. The line at the bottom of the editor shows the number of words and characters, and which view you're in.
+A document is shown **formatted** — headings, bold, lists, quotes, tables, images and links as they will look — and you can edit it right there. Press `⌘/` (or click the button at the right of the editor toolbar) to switch to its **Markdown source**, and again to switch back. The app remembers your choice for the next document and the next time you start it. The line at the bottom of the editor shows the number of words and characters, and which view you're in. While text is selected, it shows the numbers for the selection only (*Selection: …*).
 
 The formatted view uses the styling under **Settings → Preview Styling** — fonts, paragraph spacing, indentation of lists and quotes, heading numbers — the same styling used when printing.
 
@@ -232,7 +232,7 @@ Click the **Translate** button (or press `⌘⇧L`) to translate the whole docum
 
 ### Suggest tags
 
-Click the **Suggest tags** button (or press `⌘⇧G`) to get tags for the current document, chosen from the tags already used in your vault. The notes most similar in meaning that already have tags are found (as in [LLM search](#llm-search), with the same requirements), and the AI model picks the tags that fit, with those notes and their tags as examples. No new tags are invented, and tags the document already has are skipped.
+Choose **Suggest Tags** in the **Text actions** menu (the **⋯** button in the toolbar), or press `⌘⇧G`, to get tags for the current document, chosen from the tags already used in your vault. The notes most similar in meaning that already have tags are found (as in [LLM search](#llm-search), with the same requirements), and the AI model picks the tags that fit, with those notes and their tags as examples. No new tags are invented, and tags the document already has are skipped.
 
 The suggestions appear in the side panel, with the similar notes behind each tag. Click a tag to leave it out, then **Add** to put the tags (as `#tags`) on a new line at the bottom of the document; `⌘Z` undoes it.
 

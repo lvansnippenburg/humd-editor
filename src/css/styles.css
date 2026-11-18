@@ -1056,12 +1056,6 @@ body.dragging-file #trash-btn {
     margin: 6px 0;
 }
 
-#suggest-tags-btn {
-    flex-shrink: 0;
-    align-self: center;
-    margin: 6px 0;
-}
-
 #export-docx-btn {
     flex-shrink: 0;
     align-self: center;
@@ -1251,6 +1245,11 @@ body.dragging-file #trash-btn {
 
 .editor-status-line .doc-mode {
     opacity: 0.75;
+}
+
+/* Counts for the selected text only (see showStats in app.js). */
+.editor-status-line .doc-stats-selection {
+    color: var(--accent);
 }
 
 /* Settings: file path rows */

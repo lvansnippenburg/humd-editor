@@ -419,7 +419,6 @@ function setupPaneEventListeners(pane) {
     const rect = e.currentTarget.getBoundingClientRect();
     showEditorActionsMenu(rect.left, rect.bottom + 4);
   });
-  pane.containerEl.querySelector(".suggest-tags-btn").addEventListener("click", runSuggestTags);
   pane.containerEl.querySelector(".export-docx-btn").addEventListener("click", exportToWord);
   pane.containerEl.querySelector(".print-btn").addEventListener("click", printPreview);
 
@@ -3466,6 +3465,7 @@ function showEditorActionsMenu(x, y) {
   const entries = [
     { label: "Translate", shortcut: "⌘⇧L", action: runTranslate },
     { label: "Proofread", shortcut: "⌘⇧P", action: runProofread },
+    { label: "Suggest Tags", shortcut: "⌘⇧G", action: runSuggestTags },
     { label: "ZotSeek", action: runZotSeek },
     { label: "Insert Comment", shortcut: "⌘⇧M", action: insertComment },
     null,
@@ -4246,31 +4246,87 @@ function findSelectionOccurrences() {
 // Words and characters of the rendered text (so Markdown syntax isn't
 // counted), shown in the status line under the editor. Also keeps the
 // formatted view's heading numbering in line with the document's front matter.
+// The text Markdown shows as: front matter dropped, comments aren't text.
+function markdownAsText(markdown) {
+  const tmp = document.createElement("div");
+  tmp.innerHTML = renderMarkdownBody(markdown);
+  return tmp.textContent || "";
+}
+
+function textStats(text) {
+  text = text.trim();
+  const words = text === "" ? 0 : text.split(/\s+/).length;
+  const chars = text.replace(/\s/g, "").length;
+  return `${words.toLocaleString()} words · ${text.length.toLocaleString()} characters (${chars.toLocaleString()} without spaces)`;
+}
+
+// pane.documentStats: the whole document's counts, kept so a selection
+// change only has to count the selection.
+
 function updateDocumentStats() {
   const pane = panes.find((p) => p.id === activePaneId);
   if (!pane) return;
-  const statsEl = pane.containerEl.querySelector(".doc-stats");
   const tab = getActiveTab();
   if (!currentFilePath || !tab || tab.isMedia || tab.isGraph) {
-    if (statsEl) statsEl.textContent = "";
+    pane.documentStats = "";
+    showStats(pane);
     updateModeIndicators(pane);
     return;
   }
   const content = document.getElementById("editor").value;
-  const tmp = document.createElement("div");
-  tmp.innerHTML = renderMarkdownBody(content); // drops front matter; comments aren't text
-  const text = (tmp.textContent || "").trim();
-  const words = text === "" ? 0 : text.split(/\s+/).length;
-  const chars = text.replace(/\s/g, "").length;
-  if (statsEl) {
-    statsEl.textContent = `${words.toLocaleString()} words · ${text.length.toLocaleString()} characters (${chars.toLocaleString()} without spaces)`;
-  }
+  pane.documentStats = textStats(markdownAsText(content));
+  showStats(pane);
   if (isWysiwygActive(pane)) {
     const override = parseNumberSectionsOverride(content);
     setWysiwygNumberSections(pane, override ?? currentNumberSections);
   }
   updateModeIndicators(pane);
 }
+
+// The selected text, as shown (null when nothing is selected): in the
+// formatted view the text itself, in the Markdown view the selected Markdown
+// as it reads, so markup and comments aren't counted.
+function selectedTextForStats(pane) {
+  if (isWysiwygActive(pane)) {
+    const handle = getWysiwygHandle(pane);
+    return handle?.hasSelection() ? handle.selectedText() : null;
+  }
+  const editor = pane.editorEl;
+  if (!editor || editor.selectionStart === editor.selectionEnd) return null;
+  return markdownAsText(editor.value.slice(editor.selectionStart, editor.selectionEnd));
+}
+
+// The status line: the counts for the selection while there is one, else
+// for the whole document.
+function showStats(pane) {
+  const statsEl = pane.containerEl.querySelector(".doc-stats");
+  if (!statsEl) return;
+  const tab = getActiveTab();
+  let selected = null;
+  if (pane.documentStats && tab && !tab.isMedia && !tab.isGraph) {
+    try {
+      selected = selectedTextForStats(pane);
+    } catch {}
+  }
+  statsEl.textContent = selected !== null ? `Selection: ${textStats(selected)}` : pane.documentStats || "";
+  statsEl.classList.toggle("doc-stats-selection", selected !== null);
+}
+
+// Selection changes (in either view) update the status line, at most once
+// per frame. "selectionchange" covers mouse, keyboard and Select All.
+let statsFrame = 0;
+document.addEventListener(
+  "selectionchange",
+  () => {
+    if (statsFrame) return;
+    statsFrame = requestAnimationFrame(() => {
+      statsFrame = 0;
+      const pane = panes.find((p) => p.id === activePaneId);
+      if (pane) showStats(pane);
+    });
+  },
+  true,
+);
 
 // ===== PRINT =====
 
