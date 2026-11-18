@@ -6,7 +6,8 @@
   "scripts": {
     "build": "node build.mjs",
     "test": "node test-roundtrip.mjs",
-    "test:paste": "node test-paste.mjs"
+    "test:paste": "node test-paste.mjs",
+    "test:quick-open": "node test-quick-open.mjs"
   },
   "dependencies": {
     "@milkdown/kit": "^7.5.0",

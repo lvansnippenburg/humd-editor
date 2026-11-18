@@ -397,7 +397,8 @@ _CMD, _SHIFT, _OPT = 1 << 20, 1 << 17, 1 << 19
 FILE_MENU = [
     ("New File", "new-file", "n", _CMD),
     ("New Folder", "new-folder", "n", _CMD | _OPT),
-    ("Open Vault Folder…", "open-vault", "o", _CMD),
+    ("Open…", "open", "o", _CMD),
+    ("Open Vault Folder…", "open-vault", "o", _CMD | _SHIFT),
     None,
     ("Close File", "close", "w", _CMD),
     ("Save", "save", "s", _CMD),

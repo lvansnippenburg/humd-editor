@@ -12,8 +12,9 @@
 
 ## File menu
 
-The **File** menu of the desktop app has New File, New Folder, Open Vault Folder…, Close File, Save, Save As…, Revert to Saved, Rename…, Reveal in Finder, Move to Trash, Export as PDF…, Export as Word…, Print… and Quit.
+The **File** menu of the desktop app has New File, New Folder, Open…, Open Vault Folder…, Close File, Save, Save As…, Revert to Saved, Rename…, Reveal in Finder, Move to Trash, Export as PDF…, Export as Word…, Print… and Quit.
 
+- **Open…** (`⌘O`) asks for a file: type part of its name and the files whose names contain it are listed (folder on the right); type a `/` to search in folder names too. Choose with `↑`/`↓` and `Enter`, or click; the file opens as if clicked in the file browser.
 - **Revert to Saved** drops the unsaved changes of the current document and shows it as it is saved on disk; `⌘Z` brings the changes back.
 - **Rename…** makes the file's name editable in the file browser (as hovering over it does); `[[wikilinks]]` to the note are updated.
 - **Reveal in Finder** shows the file selected in a Finder window.
@@ -27,7 +28,8 @@ All shortcuts work both in the formatted view and in the Markdown source (`⌘/`
 | --- | --- |
 | `⌘N` | New file |
 | `⌥⌘N` | New folder |
-| `⌘O` | Open a different vault folder |
+| `⌘O` | Open a file: type part of its name and choose it from the list |
+| `⇧⌘O` | Open a different vault folder |
 | `⌘W` | Close the current file (in a preview window: close that window) |
 | `⌘S` | Save the current file |
 | `⇧⌘S` | Save As: save the file under a new name or in another folder of the vault, and continue there |

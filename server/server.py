@@ -200,6 +200,29 @@ def list_dir_internal(dir_path: str, is_root: bool) -> list:
     return entries
 
 
+def list_vault_files(vault_path: str) -> list:
+    """Every file in the vault the editor can open (notes, images, PDFs), as
+    sorted absolute paths; hidden files and folders are skipped. For
+    File > Open… (⌘O)."""
+    result = []
+
+    def walk(path):
+        try:
+            entries = list(os.scandir(path))
+        except (PermissionError, FileNotFoundError):
+            return
+        for entry in entries:
+            if entry.name.startswith("."):
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                walk(entry.path)
+            elif entry.name.lower().endswith(_VIEWABLE_EXTS):
+                result.append(entry.path)
+
+    walk(vault_path)
+    return sorted(result, key=str.lower)
+
+
 # ---------------------------------------------------------------------------
 # Vault hash (for change detection)
 # ---------------------------------------------------------------------------
@@ -1981,6 +2004,15 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(
                     list_dir_internal(str(safe_path(vault_path)), is_root=True)
                 )
+            except Exception as e:
+                self.send_error_json(str(e))
+        elif path == "/api/vault-files":
+            vault_path = qs.get("path", [None])[0]
+            if not vault_path:
+                self.send_error_json("path required")
+                return
+            try:
+                self.send_json(list_vault_files(str(safe_path(vault_path))))
             except Exception as e:
                 self.send_error_json(str(e))
         elif path == "/api/list-dir":

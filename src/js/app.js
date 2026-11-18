@@ -32,6 +32,7 @@ import {
 import { splitBlocks, uniqueFootnoteId, addFootnoteDefinition, findDefinitions } from "/js/source-merge.js";
 import { setPreviewStyleUserCss } from "/js/preview-style.js";
 import { clipboardToMarkdown } from "/js/paste.js";
+import { matchVaultFiles } from "/js/quick-open.js";
 
 // ===== STATE =====
 
@@ -4439,6 +4440,7 @@ const FILE_COMMANDS = {
     switchSidebarTab("files");
     return promptNewFolder();
   },
+  open: openFileDialog,
   "open-vault": changeVaultFolder,
   close: () => (activeTabId !== null ? closeTab(activeTabId) : undefined),
   save: () => saveCurrentFile(true),
@@ -4463,18 +4465,132 @@ function runFileCommand(name) {
 }
 window.humdFileCommand = runFileCommand;
 
-// The File command for a key press: ⌘N, ⌥⌘N, ⌘O, ⌘W, ⌘S, ⇧⌘S, ⌘P (Ctrl
+// The File command for a key press: ⌘N, ⌥⌘N, ⌘O, ⇧⌘O, ⌘W, ⌘S, ⇧⌘S, ⌘P (Ctrl
 // elsewhere; on a Mac Ctrl+N/O/P move the cursor in text, so ⌘ only).
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
 function fileCommandForKey(e) {
   if (!(IS_MAC ? e.metaKey : e.ctrlKey)) return null;
   const key = e.key.length === 1 ? e.key.toLowerCase() : "";
   if (e.altKey) return !e.shiftKey && e.code === "KeyN" ? "new-folder" : null;
-  if (e.shiftKey) return key === "s" ? "save-as" : null;
-  return { n: "new-file", o: "open-vault", w: "close", s: "save", p: "print" }[key] || null;
+  if (e.shiftKey) return { s: "save-as", o: "open-vault" }[key] || null;
+  return { n: "new-file", o: "open", w: "close", s: "save", p: "print" }[key] || null;
 }
 
 const dirName = (path) => path.slice(0, path.lastIndexOf("/"));
+
+// Open… (⌘O): type part of a file's name, pick it from the list (↑/↓ and
+// Enter, or a click), and it opens as if clicked in the file browser.
+// Matching: see quick-open.js.
+async function openFileDialog() {
+  if (!currentVaultPath) {
+    showStatus("Choose a vault folder first", true);
+    return;
+  }
+  if (document.getElementById("open-file-dialog")) return;
+
+  const dlg = document.createElement("dialog");
+  dlg.id = "open-file-dialog";
+  dlg.className = "prompt-dialog open-file-dialog";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "settings-input";
+  input.placeholder = "Type the name of a file…";
+  input.spellcheck = false;
+  input.autocomplete = "off";
+  input.setAttribute("aria-label", "File name");
+  const list = document.createElement("ul");
+  list.className = "open-file-list";
+  list.setAttribute("role", "listbox");
+  const hint = document.createElement("p");
+  hint.className = "open-file-hint";
+  dlg.append(input, list, hint);
+  document.body.appendChild(dlg);
+
+  let files = [];
+  let loaded = false;
+  let matches = [];
+  let index = 0;
+
+  const close = () => {
+    dlg.close();
+    dlg.remove();
+  };
+  const openMatch = async (i) => {
+    const match = matches[i];
+    if (!match) return;
+    close();
+    await loadFile(match.path, { replaceUnedited: true });
+  };
+  const render = () => {
+    list.innerHTML = "";
+    matches.forEach((m, i) => {
+      const li = document.createElement("li");
+      li.className = "ac-item open-file-item" + (i === index ? " active" : "");
+      li.setAttribute("role", "option");
+      const icon = document.createElement("span");
+      icon.className = "tree-file-icon";
+      icon.innerHTML = getFileIcon(m.path.split("/").pop());
+      const name = document.createElement("span");
+      name.className = "ac-label";
+      name.textContent = m.name;
+      const folder = document.createElement("span");
+      folder.className = "open-file-folder";
+      folder.textContent = m.folder;
+      li.append(icon, name, folder);
+      li.addEventListener("mousedown", (e) => e.preventDefault()); // keep focus in the field
+      li.addEventListener("click", () => openMatch(i));
+      list.appendChild(li);
+    });
+    list.querySelector(".active")?.scrollIntoView({ block: "nearest" });
+    const q = input.value.trim();
+    hint.textContent = !loaded
+      ? "Loading…"
+      : !q
+        ? `${files.length} files in the vault — type part of a name (a / searches folders too)`
+        : matches.length
+          ? "↑ ↓ to choose, Enter to open"
+          : "No file name contains that";
+  };
+  const update = () => {
+    matches = matchVaultFiles(files, currentVaultPath, input.value);
+    index = 0;
+    render();
+  };
+
+  input.addEventListener("input", update);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!matches.length) return;
+      index = (index + (e.key === "ArrowDown" ? 1 : -1) + matches.length) % matches.length;
+      render();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      openMatch(index);
+    }
+  });
+  dlg.addEventListener("cancel", (e) => {
+    e.preventDefault();
+    close();
+  });
+  // A click on the backdrop (outside the box) closes it, as Esc does.
+  dlg.addEventListener("click", (e) => {
+    if (e.target === dlg) close();
+  });
+
+  dlg.showModal();
+  input.focus();
+  render();
+  try {
+    files = await apiFetch(`/api/vault-files?path=${encodeURIComponent(currentVaultPath)}`);
+    loaded = true;
+  } catch (err) {
+    close();
+    showStatus(`Couldn't list the vault: ${apiErrorMessage(err)}`, true);
+    return;
+  }
+  if (dlg.isConnected) update();
+}
 
 // Save As…: write the document to a new file (inside the vault) and continue
 // there, in the same tab. The original file keeps its last saved version.

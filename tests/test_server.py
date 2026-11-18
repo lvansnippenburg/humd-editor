@@ -262,6 +262,19 @@ class PathConfinementTests(unittest.TestCase):
             server.safe_path("/anything")
 
 
+class VaultFilesTests(unittest.TestCase):
+    def test_lists_openable_files_in_all_folders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "sub" / "deeper").mkdir(parents=True)
+            (root / ".hidden").mkdir()
+            for rel in ["Note.md", "sub/b.md", "sub/deeper/pic.PNG", "sub/paper.pdf",
+                        "sub/data.csv", ".hidden/secret.md", ".dotfile.md"]:
+                (root / rel).write_text("x")
+            got = [str(Path(p).relative_to(root)) for p in server.list_vault_files(tmp)]
+        self.assertEqual(got, ["Note.md", "sub/b.md", "sub/deeper/pic.PNG", "sub/paper.pdf"])
+
+
 class RevealInFinderTests(unittest.TestCase):
     setUp = PathConfinementTests.setUp
     tearDown = PathConfinementTests.tearDown

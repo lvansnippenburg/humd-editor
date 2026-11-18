@@ -2211,3 +2211,53 @@ body.desktop-app .export-docx-btn,
 body.desktop-app .print-btn {
     display: none;
 }
+
+/* File > Open… (⌘O): type part of a file name, pick from the list. */
+.open-file-dialog {
+    width: 520px;
+    max-width: 90vw;
+    margin-top: 12vh; /* near the top, like a quick-open panel */
+}
+
+.open-file-list {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+    max-height: 50vh;
+    overflow-y: auto;
+}
+
+.open-file-list:empty {
+    display: none;
+}
+
+.open-file-item {
+    justify-content: flex-start;
+}
+
+.open-file-item .tree-file-icon {
+    display: inline-flex;
+    flex-shrink: 0;
+}
+
+.open-file-item .open-file-folder {
+    margin-left: auto;
+    padding-left: 12px;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    direction: rtl; /* a long folder path is cut at the start, keeping its end */
+    text-align: right;
+}
+
+.open-file-item.active .open-file-folder,
+.open-file-item:hover .open-file-folder {
+    color: rgba(255, 255, 255, 0.8);
+}
+
+.open-file-hint {
+    margin: 8px 0 0 !important;
+    font-size: 11.5px !important;
+    color: var(--text-secondary);
+}
